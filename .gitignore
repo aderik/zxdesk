@@ -1,0 +1,8 @@
+# tools holds pasmo, Fuse's ROM and the esxDOS image, none of which are
+# ours to distribute; shots is screenshot output.
+/tools/
+/shots/
+build/
+__pycache__/
+.DS_Store
+*.zip
