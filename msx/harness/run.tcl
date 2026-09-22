@@ -42,7 +42,7 @@ proc dump {} {
     puts -nonewline $f [debug read_block memory 0 0x4000]
     close $f
     binary scan [debug read_block memory 0x4000 8] H* at4000
-    note "dumped at [machine_info time], pc [reg PC], 4000: $at4000, slots [debug read_block {slotted memory} 0 0]"
+    note "dumped at [machine_info time], pc [reg PC], sp [reg SP], 4000: $at4000"
 }
 
 # With the throttle off the renderer skips frames and a screenshot is

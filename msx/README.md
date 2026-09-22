@@ -70,9 +70,13 @@ Input injection:
   of the same byte, and ApplyDelta clobbers E: read them first.
 
 Steps are timed on the ROM's own frame counter (`Frames` at $C008),
-polled every emulated frame: a key changed when the counter reads T is
-seen by exactly the poll of iteration T+1, so a held key's frame count
-is a number, not a window.
+polled every emulated frame. That was meant to make a held key's frame
+count exact; measured, injection still lands a frame either way (the
+60 Hz machine saw 21 frames for a 20 frame hold once the frame had
+more work in it). So the ROM counts the frames it saw each key held
+(`HeldX`, `HeldY`, `KbdHeld`) and the harness recomputes the ramp and
+the repeat count for that number: the arithmetic is asserted exactly,
+the hold length is read.
 
 Subjects, all asserted (phase 1):
 
@@ -105,12 +109,13 @@ Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$4DAE, 3502 bytes, 29266 free; RAM $C000-$C515, 1301 bytes, heap 10987 to $F000, 896 reserve
+    msxdesk.rom: code $4000-$4E70, 3696 bytes, 29072 free; RAM $C000-$C81C, 2076 bytes, heap 10212 to $F000, 896 reserve
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and
 $F000-$F380 is the stack's, under the BIOS work area. The RAM storage
-backend's four 256 byte files and directory are 1,088 of the 1,301.
+backend's four 256 byte files and directory are 1,088 of the 2,076,
+the name table shadow 768.
 
 The ZX storage layer dispatched through the operands of JP
 instructions it patched at run time; a ROM cannot be patched, so the
@@ -118,12 +123,22 @@ six vectors are a table in RAM and each entry point jumps through IX
 (HL carries the name or the buffer). The hit test table is copied to
 RAM for the same reason.
 
-## Screen model, phase 1
+## Screen model
 
-Screen 2's colour table is one colour byte per pattern row per third of
-the screen, so the same glyph is black on white in the bar's third and
-white on black in the status row's third without a second copy. The
-middle third (rows 8-15) has no text yet; when windows put text there,
-that third's glyph colours will be theirs, and a window title bar that
-wants a second scheme in the same third needs a second glyph bank
-(96 glyphs x 8 = 768 bytes of PGT per bank per third).
+Everything paints into a shadow of the name table in RAM (`ShadowNT`,
+768 bytes) and marks the row dirty; `NtFlush` copies the dirty rows to
+VRAM right after the interrupt, 32 OUTs a row at 41 cycles apart. A
+save-under is an LDIR out of the shadow and a read-modify-write is a
+byte, which is what the ZX code did to its screen and what VRAM behind
+a port cannot do.
+
+Screen 2's colour table is one colour byte per pattern row per third,
+so the font is loaded twice: at $20-$7F black on white and at $A0-$FF
+white on black, the same bytes with the colours swapped, in all three
+thirds. Inverted text is a code with bit 7 set, anywhere on the
+screen; the status band is inverted spaces. Codes $80-$9F are the
+desktop tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
+
+The stack is set to $F380 in Init: the BIOS called the cartridge on
+its own stack, and C-BIOS and a real BIOS need not agree where that
+was. VDP register writes go through `WrtVdp`, under DI like `SetWrt`.

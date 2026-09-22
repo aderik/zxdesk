@@ -169,7 +169,7 @@ def expected_nt():
     """The screen the ROM paints, built here from the same layout rules."""
     bar = bytearray(b" " * COLS)
     bar[1:1 + 28] = b"ZX DESK   FILE   VIEW   HELP"
-    rows = [bytes(bar), bytes([0x81]) * COLS] + [bytes([0x80]) * COLS] * 21 + [b" " * COLS]
+    rows = [bytes(bar), bytes([0x81]) * COLS] + [bytes([0x80]) * COLS] * 21 + [bytes([0xA0]) * COLS]
     return b"".join(rows)
 
 
@@ -202,8 +202,17 @@ def boot_checks(syms, fails):
     font = r.bios[cgtabl + 32 * 8:cgtabl + 128 * 8]
     for third in range(3):
         base = PGT + third * 0x800 + 32 * 8
-        check(fails, f"font-{third}", r.vram[base:base + len(font)] == font,
-              f"glyphs 32-127 from BIOS ${cgtabl:04X}, crc32 {zlib.crc32(font):08x}")
+        inv = base + 0x80 * 8
+        check(fails, f"font-{third}", r.vram[base:base + len(font)] == font and r.vram[inv:inv + len(font)] == font,
+              f"glyphs 32-127 from BIOS ${cgtabl:04X}, crc32 {zlib.crc32(font):08x}, and again at $A0")
+    check(fails, "colours",
+          all(r.vram[0x2000 + t * 0x800 + 32 * 8:0x2000 + t * 0x800 + 128 * 8] == b"\x1f" * 768
+              and r.vram[0x2000 + t * 0x800 + 0xA0 * 8:0x2000 + t * 0x800 + 0x100 * 8] == b"\xf1" * 768
+              for t in range(3)),
+          "font $1F and inverted bank $F1 in all three thirds")
+    import re
+    sp = int(re.search(r"sp (\d+)", r.log).group(1))
+    check(fails, "stack", 0xF000 < sp <= 0xF380, f"SP ${sp:04X} at the dump, reserve $F000-$F380")
     shape = rom[syms["PtrShape"] - ROMBASE:syms["PtrShape"] - ROMBASE + 32]
     check(fails, "sprite-shape", r.vram[0x3800:0x3820] == shape, "32 bytes at $3800")
     check(fails, "vdp-regs", r.vdp[1] == 0xE2 and r.vdp[7] == 0x0F,
@@ -246,10 +255,15 @@ def key_checks(syms, fails):
     # RIGHT (row 8 bit 7) held 20 frames, then DOWN (bit 6) 10 frames.
     r = Run(syms, [(5, "key_down 8 0x80"), (20, "key_up 8 0x80"),
                    (5, "key_down 8 0x40"), (10, "key_up 8 0x40"), (5, "")], "cursor")
-    want = (120 + ramp(20), 90 + ramp(10))
-    check(fails, "cursor-ramp", r.ptr() == want, f"pointer {r.ptr()}, expected {want}")
+    # Injection lands within a frame either way of the step, so the ROM
+    # counts the frames it saw each key held and the ramp is recomputed
+    # for that count: the arithmetic is exact, the hold length is read.
+    hx, hy = r.peek("HeldX"), r.peek("HeldY")
+    want = (120 + ramp(hx), 90 + ramp(hy))
+    check(fails, "cursor-ramp", r.ptr() == want and 19 <= hx <= 21 and 9 <= hy <= 11,
+          f"pointer {r.ptr()}, expected {want} for {hx} and {hy} frames held")
     c = r.counts()
-    check(fails, "cursor-events", c[3] == 0 and c[0] == 30, f"events {c}: 30 moves, no keys")
+    check(fails, "cursor-events", c[3] == 0 and c[0] == hx + hy, f"events {c}: {hx + hy} moves, no keys")
 
     # A (row 2 bit 6) tapped for 3 frames, SHIFT+1 (row 6 bit 0, row 0 bit 1)
     # for 3 frames, SPACE (row 8 bit 0) as the button for 5 frames.
@@ -260,14 +274,16 @@ def key_checks(syms, fails):
     check(fails, "key-events", c[3] == 3 and c[1] == 1 and c[2] == 1,
           f"events {c}: 3 keys, one press, one release")
     status = r.nt()[STATROW * COLS:STATROW * COLS + 4]
-    check(fails, "status-echo", status == b"A! " + b" ", f"status row {status!r}")
+    check(fails, "status-echo", status == bytes(c | 0x80 for c in b"A!  "), f"status row {status!r}, inverted bank")
     check(fails, "last-key", r.peek("LastKey") == ord(" "), f"last key {r.peek('LastKey')}")
 
     # Held for 30 frames: one press, one repeat at 20, then every 3.
     r = Run(syms, [(5, "key_down 3 0x01"), (30, "key_up 3 0x01"), (5, "")], "repeat")
     c = r.counts()
-    check(fails, "key-repeat", c[3] == 1 + 1 + (30 - 20) // 3, f"events {c}: expected 5 keys")
-    check(fails, "repeat-echo", r.nt()[STATROW * COLS:STATROW * COLS + 5] == b"CCCCC",
+    held = r.peek("KbdHeld")
+    want = 1 + (0 if held < 20 else 1 + (held - 20) // 3)
+    check(fails, "key-repeat", c[3] == want and 29 <= held <= 31, f"events {c}: expected {want} keys for {held} frames held")
+    check(fails, "repeat-echo", r.nt()[STATROW * COLS:STATROW * COLS + 5] == bytes([ord("C") | 0x80] * 5),
           f"status row {r.nt()[STATROW * COLS:STATROW * COLS + 6]!r}")
 
 

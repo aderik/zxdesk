@@ -149,6 +149,8 @@ KbdPoll:
                 or      a
                 jr      z,KbpNone               ; held, but not mapped
                 ld      c,a
+                ld      hl,KbdHeld
+                inc     (hl)
                 ld      a,(KbdLast)
                 cp      c
                 jr      nz,KbpNew

@@ -159,6 +159,7 @@ HdlKey:
                 and     SCRCOLS-1
                 ld      (StatCol),a
                 ld      a,b
+                or      INVBANK                 ; the status band is inverted
                 ld      b,STATROW
                 jp      PutChar
 

@@ -51,10 +51,16 @@ T_LATTICE       equ     $80             ; the desktop halftone
 T_RULE          equ     $81             ; lattice with the menu bar's rule on top
 
 ; ---- Colours, ink in the high nibble
-C_BAR           equ     $1F             ; black on white: menu bar glyphs
+C_TEXT          equ     $1F             ; black on white: the glyphs, every third
+C_INVERSE       equ     $F1             ; white on black: the inverted bank
 C_LATTICE       equ     $EF             ; grey on white
-C_STATUS        equ     $F1             ; white on black: status row glyphs
 C_POINTER       equ     $01             ; black
+STACKTOP        equ     $F380           ; the BIOS work area starts here
+
+; ---- Glyph banks. The font sits at $20-$7F as itself and again at
+; $A0-$FF with the colours swapped, so inverted text is a code with
+; bit 7 set, in any third, without a second pattern set.
+INVBANK         equ     $80
 
 ; ------------------------------------------------------------
 ;  Work RAM. `var name,size` hands out addresses from $C000 up;
@@ -76,6 +82,9 @@ _ram            defl    _ram+size
                 var     PtrX, 1
                 var     PtrY, 1
                 var     Dirs, 1
+                var     HeldX, 1        ; frames a horizontal key was held, for
+                var     HeldY, 1        ; the harness: injection lands within a
+                var     KbdHeld, 1      ; frame either way, the ramp is exact
                 var     HoldCnt, 1
                 var     Speed, 1
                 var     MouseDX, 1      ; last frame's raw deltas, for the harness
@@ -93,8 +102,13 @@ _ram            defl    _ram+size
                 var     EvCounts, 4     ; ptrmove, btndown, btnup, key
                 var     LastKey, 1
                 var     StatCol, 1
+                var     PrintInv, 1     ; nonzero: PrintStr uses the inverted bank
                 var     EvQueue, EVSLOTS*4
                 var     LastHit, 1      ; what the last press landed on
+                ; the name table's shadow: everything paints here and
+                ; NtFlush copies the dirty rows out after the interrupt
+                var     ShadowNT, SCRCOLS*SCRROWS
+                var     DirtyRows, 3    ; a bit per row
                 ; the heap
                 var     HpWant, 2
                 var     HpOwner, 1
@@ -181,16 +195,17 @@ HEAPEND         equ     $F000
                 defs    6,0
 
 Init:
+                ; The BIOS called us on its own stack, wherever that was;
+                ; the budget assumes $F000-$F380, so say so.
+                ld      sp,STACKTOP
                 ld      a,2
                 call    CHGMOD
-                ld      a,$0F           ; white border, as the ZX had
-                out     (VDPCTRL),a
-                ld      a,$87           ; register 7, backdrop
-                out     (VDPCTRL),a
-                ld      a,$E2           ; 16K, display on, interrupts, 16x16
-                out     (VDPCTRL),a     ; sprites: CHGMOD leaves them 8x8 and
-                ld      a,$81           ; the arrow lost its tail
-                out     (VDPCTRL),a
+                ld      b,$0F           ; white border, as the ZX had
+                ld      c,7
+                call    WrtVdp
+                ld      b,$E2           ; 16K, display on, interrupts, 16x16
+                ld      c,1             ; sprites: CHGMOD leaves them 8x8 and
+                call    WrtVdp          ; the arrow lost its tail
                 ld      a,$E2
                 ld      (RG1SAV),a      ; keep the BIOS's shadow honest
                 call    LoadFont
@@ -198,6 +213,10 @@ Init:
                 call    LoadColours
                 call    LoadSprite
                 call    InitScreen
+                ld      a,$FF                   ; the whole shadow goes out on
+                ld      (DirtyRows),a           ; the first frame, whatever
+                ld      (DirtyRows+1),a         ; the marks say
+                ld      (DirtyRows+2),a
 
                 ld      hl,TxtMarker
                 ld      de,Marker
@@ -210,6 +229,9 @@ Init:
                 xor     a
                 ld      (HoldCnt),a
                 ld      (KbdLast),a
+                ld      (HeldX),a
+                ld      (HeldY),a
+                ld      (KbdHeld),a
                 ld      (MouseDX),a
                 ld      (MouseDY),a
                 ld      a,$FF
@@ -250,6 +272,7 @@ MainLoop:
                 halt
                 call    FrameWatch
                 call    PtrUpdate
+                call    NtFlush
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
@@ -349,6 +372,18 @@ RiK3:           bit     6,e
 RiK4:
                 ld      a,c
                 ld      (Dirs),a
+                and     $03
+                jr      z,RiNoHx
+                ld      hl,HeldX
+                inc     (hl)
+RiNoHx:
+                ld      a,c
+                and     $0C
+                jr      z,RiNoHy
+                ld      hl,HeldY
+                inc     (hl)
+RiNoHy:
+                ld      a,c
 
                 ; A digital device needs a ramp or the pointer is either
                 ; twitchy or glacial. One pixel to start, rising to seven
@@ -584,6 +619,19 @@ MnWait:         dec     a
 ;  the active display as well as in the border.
 ; ------------------------------------------------------------
 
+; B = value, C = register. The same latch race as SetWrt: an interrupt
+; between the two control writes and the value lands in the wrong
+; register, so the pair is held under DI.
+WrtVdp:
+                di
+                ld      a,b
+                out     (VDPCTRL),a
+                ld      a,c
+                or      $80
+                out     (VDPCTRL),a
+                ei
+                ret
+
 ; HL = VRAM address to write from. The two control writes are held
 ; under DI: the BIOS interrupt handler reads the status register,
 ; which resets the VDP's address latch, and an interrupt between the
@@ -622,31 +670,23 @@ CopyVram:
                 jr      nz,CopyVram
                 ret
 
-; A = character, B = row, C = column.
-PutChar:
-                push    af
-                call    CellAddr
-                call    SetWrt
-                pop     af
-                out     (VDPDATA),a
-                ret
+; ------------------------------------------------------------
+;  The name table's shadow. Menus, windows and the desktop paint
+;  cells here, in RAM, where a save-under is an LDIR and a
+;  read-modify-write is a byte; NtFlush copies the rows that
+;  changed to VRAM once a frame, in the border, 32 OUTs a row at
+;  more than 29 cycles apart. This is the Konami approach the
+;  port was chosen for: 768 bytes of name table stand in for
+;  12K of pattern and colour data.
+; ------------------------------------------------------------
 
-; HL = null terminated text, B = row, C = column.
-PrintStr:
-                push    hl
-                call    CellAddr
-                call    SetWrt
-                pop     hl
-PsLoop:
-                ld      a,(hl)
-                or      a
-                ret     z
-                out     (VDPDATA),a
-                inc     hl
-                jr      PsLoop          ; 7+4+5+11+6+12 = 45 between OUTs
-
-; B = row, C = column. Returns HL = name table address.
+; B = row, C = column. Returns HL = the shadow cell, and marks the
+; row dirty.
 CellAddr:
+                push    bc
+                ld      a,b
+                call    MarkRow
+                pop     bc
                 ld      l,b
                 ld      h,0
                 add     hl,hl
@@ -656,22 +696,165 @@ CellAddr:
                 add     hl,hl
                 ld      b,0
                 add     hl,bc
-                ld      bc,NT
+                ld      bc,ShadowNT
                 add     hl,bc
                 ret
+
+; A = row: set its bit in DirtyRows.
+MarkRow:
+                ld      c,a
+                and     7
+                ld      b,a
+                ld      a,$01
+                jr      z,MrBit
+MrShift:
+                add     a,a
+                djnz    MrShift
+MrBit:
+                ld      e,a
+                ld      a,c
+                rrca
+                rrca
+                rrca
+                and     3
+                ld      hl,DirtyRows
+                add     a,l
+                ld      l,a
+                jr      nc,MrNoCy
+                inc     h
+MrNoCy:
+                ld      a,(hl)
+                or      e
+                ld      (hl),a
+                ret
+
+; A = character, B = row, C = column.
+PutChar:
+                push    af
+                call    CellAddr
+                pop     af
+                ld      (hl),a
+                ret
+
+; HL = null terminated text, B = row, C = column. Bit 7 of every code
+; is set when PrintInv is nonzero, which is the inverted bank.
+PrintStr:
+                push    hl
+                call    CellAddr
+                pop     de
+                ex      de,hl                   ; HL = text, DE = cell
+                ld      a,(PrintInv)
+                ld      c,a
+PsLoop:
+                ld      a,(hl)
+                or      a
+                ret     z
+                or      c
+                ld      (de),a
+                inc     hl
+                inc     de
+                jr      PsLoop
 
 ; A = tile, B = row: a whole row of one tile.
 FillRow:
                 push    af
                 ld      c,0
                 call    CellAddr
-                call    SetWrt
                 pop     af
                 ld      b,SCRCOLS
-                jp      FillVram
+FrLoop:
+                ld      (hl),a
+                inc     hl
+                djnz    FrLoop
+                ret
+
+; The dirty rows of the shadow to VRAM. Called right after the
+; interrupt, so the first rows go out in the border; the rest are
+; still safe because 4+7+11+6+13 = 41 cycles separate the OUTs.
+NtFlush:
+                ld      a,(DirtyRows)
+                ld      hl,(DirtyRows+1)
+                or      h
+                or      l
+                ret     z
+                ld      c,0                     ; the row
+NfRow:
+                ld      a,c
+                rrca
+                rrca
+                rrca
+                and     3
+                ld      hl,DirtyRows
+                add     a,l
+                ld      l,a
+                jr      nc,NfNoCy
+                inc     h
+NfNoCy:
+                ld      a,c
+                and     7
+                ld      b,a
+                ld      a,$01
+                jr      z,NfBit
+NfShift:
+                add     a,a
+                djnz    NfShift
+NfBit:
+                and     (hl)
+                jr      z,NfNext
+                push    bc
+                push    hl
+                ld      b,c
+                ld      c,0
+                call    ShadowRow               ; HL = the shadow row
+                push    hl
+                ld      l,b
+                ld      h,0
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                ld      bc,NT
+                add     hl,bc
+                call    SetWrt
+                pop     hl
+                ld      b,SCRCOLS
+NfOut:
+                ld      a,(hl)
+                out     (VDPDATA),a
+                inc     hl
+                nop
+                djnz    NfOut
+                pop     hl
+                pop     bc
+NfNext:
+                inc     c
+                ld      a,c
+                cp      SCRROWS
+                jr      c,NfRow
+                xor     a
+                ld      (DirtyRows),a
+                ld      (DirtyRows+1),a
+                ld      (DirtyRows+2),a
+                ret
+
+; B = row. Returns HL = its shadow row, B intact, without marking.
+ShadowRow:
+                ld      l,b
+                ld      h,0
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                ld      de,ShadowNT
+                add     hl,de
+                ret
 
 ; The menu bar, the desktop lattice with its rule, the status band.
 InitScreen:
+                xor     a
+                ld      (PrintInv),a
                 ld      a,' '
                 ld      b,MENUROW
                 call    FillRow
@@ -692,31 +875,39 @@ IsLattice:
                 ld      a,b
                 cp      STATROW
                 jr      c,IsLattice
-                ld      a,' '
-                ld      b,STATROW
+                ld      a,' '+INVBANK           ; the status band is inverted
+                ld      b,STATROW               ; text on the inverted bank
                 jp      FillRow
 
-; The BIOS font, glyphs 32-127, into all three thirds. CHGMOD 2 on
-; C-BIOS leaves the pattern table clear, the real BIOS fills it with
-; the font; copying it ourselves makes the two the same.
+; The BIOS font, glyphs 32-127, into all three thirds, twice: at $20
+; as itself and at $A0 for the inverted bank. CHGMOD 2 on C-BIOS
+; leaves the pattern table clear, the real BIOS fills it with the
+; font; copying it ourselves makes the two the same.
 LoadFont:
                 ld      hl,PGT+32*8
                 ld      b,3
 LfThird:
                 push    bc
                 push    hl
-                call    SetWrt
-                ld      hl,(CGTABL)
-                ld      bc,32*8
+                call    LfBank
+                pop     hl
+                push    hl
+                ld      bc,INVBANK*8
                 add     hl,bc
-                ld      bc,96*8
-                call    CopyVram
+                call    LfBank
                 pop     hl
                 ld      bc,$0800
                 add     hl,bc
                 pop     bc
                 djnz    LfThird
                 ret
+LfBank:
+                call    SetWrt
+                ld      hl,(CGTABL)
+                ld      bc,32*8
+                add     hl,bc
+                ld      bc,96*8
+                jp      CopyVram
 
 ; Our tiles into all three thirds of the pattern table.
 LoadTiles:
@@ -736,56 +927,43 @@ LtThird:
                 djnz    LtThird
                 ret
 
-; The colour table is per pattern per third, so a glyph's colour
-; depends on which band of the screen it sits in: the bar's third
-; is black on white, the status row's third white on black, the
-; middle third grey on white for the lattice. Later phases put
-; text in the middle third and will want a second glyph bank.
+; The colour table is per pattern per third, and the same for every
+; third here: the font black on white, the inverted bank white on
+; black, the tiles their own. Text in any band of the screen has the
+; same two schemes, which is what windows and the status row want.
 LoadColours:
                 ld      hl,CT
                 call    SetWrt
-                ld      a,C_BAR
-                call    FillThirdGlyphs
-                call    FillThirdTiles
-                ld      a,C_LATTICE
-                call    FillThirdGlyphs
-                call    FillThirdTiles
-                ld      a,C_STATUS
-                call    FillThirdGlyphs
-                jp      FillThirdTiles
-
-; A = colour for the 128 font patterns of one third, 1024 bytes.
-FillThirdGlyphs:
-                ld      d,4
-FtgLoop:
-                push    de
-                ld      b,0             ; 256
-                push    af
-                call    FillVram
-                pop     af
-                pop     de
-                dec     d
-                jr      nz,FtgLoop
-                ret
-
-; Our tiles' colours, then the rest of the third: codes $80-$FF are
-; 128 patterns, 1024 bytes, of which the tiles take TILESEND-Tiles.
-FillThirdTiles:
-                ld      hl,TileColours
+                ld      b,3
+LcThird:
+                push    bc
+                ld      a,C_TEXT                ; $00-$7F, 1024 bytes
+                call    Fill1K
+                ld      hl,TileColours          ; our tiles at $80
                 ld      bc,TILESEND-Tiles
                 call    CopyVram
-                ld      a,$F1
-                ld      b,0             ; 256
+                ld      a,C_TEXT                ; the rest up to $A0
+                ld      b,(INVBANK+32)*8-(TILESEND-Tiles)-256
                 call    FillVram
-                ld      a,$F1
+                ld      a,C_INVERSE             ; $A0-$FF, 768 bytes
+                call    Fill768
+                pop     bc
+                djnz    LcThird
+                ret
+
+Fill1K:
+                ld      c,a
                 ld      b,0
-                call    FillVram
-                ld      a,$F1
+                call    FvLoop
+                ld      a,c
+Fill768:
+                ld      c,a
                 ld      b,0
-                call    FillVram
-                ld      a,$F1
-                ld      b,256-(TILESEND-Tiles)
-                jp      FillVram
+                call    FvLoop
+                ld      b,0
+                call    FvLoop
+                ld      b,0
+                jp      FvLoop
 
 ; Sprite pattern 0 (16 by 16, 32 bytes) and the attribute table:
 ; sprite 0 is the pointer, sprite 1 closes the table.
@@ -817,7 +995,7 @@ TILESEND:
 TileColours:
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
-                defb    C_BAR,C_LATTICE,C_LATTICE,C_LATTICE
+                defb    C_TEXT,C_LATTICE,C_LATTICE,C_LATTICE
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
 
 ; The arrow, eleven rows, in the left half of a 16 by 16 sprite.
