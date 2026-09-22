@@ -138,6 +138,13 @@ _ram            defl    _ram+size
                 var     MnY, 1
                 var     MnW, 1
                 var     MnH, 1
+                var     MnCount, 1
+                var     MnItemPtr, 2
+                var     MnTitleCol, 1
+                var     MnTitleW, 1
+                var     MenuPick, 1     ; last item chosen, $FF for none
+                var     MnLastMenu, 1
+                var     MnSave, MNSAVESZ
                 var     CtlTable, 16    ; CTLTABSZ, which is defined later
                 ; the live window's application
                 var     WinApp, 2
@@ -246,6 +253,10 @@ Init:
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
+                ld      (MnLastMenu),a
+                dec     a
+                ld      (MenuPick),a
+                xor     a
                 ld      (TodayY),a
                 ld      (TodayM),a
                 inc     a
@@ -838,8 +849,12 @@ NfNext:
                 ld      (DirtyRows+2),a
                 ret
 
-; B = row. Returns HL = its shadow row, B intact, without marking.
+; B = row. Returns HL = its shadow row, without marking. Everything
+; else is kept: SaveUnder walks with DE as its destination and the
+; first version handed it ShadowNT instead, which put the lattice
+; on the menu bar.
 ShadowRow:
+                push    de
                 ld      l,b
                 ld      h,0
                 add     hl,hl
@@ -849,6 +864,7 @@ ShadowRow:
                 add     hl,hl
                 ld      de,ShadowNT
                 add     hl,de
+                pop     de
                 ret
 
 ; The menu bar, the desktop lattice with its rule, the status band.
@@ -1024,6 +1040,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "hittest.inc"
                 include "app.inc"
                 include "calendar.inc"
+                include "menus.inc"
                 include "test.inc"
 
 RomEnd:

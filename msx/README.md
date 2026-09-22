@@ -103,13 +103,24 @@ ZX TEST build did, with openMSX in place of the Python Z80:
 
 In the normal build a SPACE press at (130, 75) records CTL_DESKTOP.
 
+Menus (`menus.inc`, the ZX pull downs on the cell grid, one row per
+item, save-under out of the shadow):
+
+| subject | what is checked |
+|---|---|
+| menu-open | a press on FILE opens menu 2: the name table equals the oracle built from the MenuDefs read out of the ROM, title inverted, six item rows |
+| menu-open-1/4 | ZX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
+| menu-pick | FILE then a press on row 3 picks SAVE (item 2 of menu 2), the menu closes |
+| menu-restore | after the pick the name table is byte for byte the boot one again |
+| menu-away | VIEW then a press on the desktop: no pick, closed, restored |
+
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
 ## Memory budget
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$4E70, 3696 bytes, 29072 free; RAM $C000-$C81C, 2076 bytes, heap 10212 to $F000, 896 reserve
+    msxdesk.rom: code $4000-$5084, 4228 bytes, 28540 free; RAM $C000-$C85F, 2143 bytes, heap 10145 to $F000, 896 reserve
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and

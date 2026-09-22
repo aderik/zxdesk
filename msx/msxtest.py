@@ -367,6 +367,75 @@ def test_build_checks(tsyms, fails):
     check(fails, "hit-table", hits == (4, 5, 0, 0, 6), f"bar, desktop, status, off edge, open drop: {hits}, expected (4, 5, 0, 0, 6)")
 
 
+def menu_defs(syms):
+    """The menu definitions read out of the ROM, so the oracle paints
+    from the same data the ROM does."""
+    rom = open(ROM, "rb").read()
+    defs = []
+    p = syms["MenuDefs"] - ROMBASE
+    for _ in range(4):
+        col, width, dropw, count = rom[p:p + 4]
+        ip = int.from_bytes(rom[p + 4:p + 6], "little") - ROMBASE
+        items = []
+        for _ in range(count):
+            e = rom.index(b"\0", ip)
+            items.append(rom[ip:e])
+            ip = e + 1
+        defs.append((col, width, dropw, items))
+        p += 6
+    return defs
+
+
+def menu_checks(syms, fails, vram0):
+    """A pull down: opened from the bar, painted over the desktop with
+    the title inverted, closed by a pick or a press elsewhere with the
+    cells underneath put back exactly."""
+    print("menus:")
+    defs = menu_defs(syms)
+    nt0 = vram0[NT:NT + COLS * ROWS]
+
+    def press_at(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 8 0x01"), (5, "key_up 8 0x01")]
+
+    def expected_open(menu):
+        col, width, dropw, items = defs[menu - 1]
+        nt = bytearray(nt0)
+        for c in range(col, col + width):
+            nt[c] ^= 0x80
+        x = min(col, COLS - dropw)
+        for i, item in enumerate(items):
+            row = (1 + i) * COLS
+            nt[row + x:row + x + dropw] = (b" " + item).ljust(dropw)
+        return bytes(nt)
+
+    # FILE, title at column 10: a press at x 88 is cell 11
+    r = Run(syms, press_at(88, 3) + [(10, "")], "menu-open")
+    check(fails, "menu-open", r.peek("MenuOpen") == 2 and r.nt() == expected_open(2),
+          f"MenuOpen {r.peek('MenuOpen')}, name table crc32 {zlib.crc32(r.nt()):08x}, "
+          f"expected {zlib.crc32(expected_open(2)):08x}")
+    # ZX DESK, at the left edge, and HELP, whose drop is nudged in from the right
+    r = Run(syms, press_at(8, 3) + [(10, "")], "menu-open-1")
+    check(fails, "menu-open-1", r.peek("MenuOpen") == 1 and r.nt() == expected_open(1),
+          f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}")
+    r = Run(syms, press_at(200, 3) + [(10, "")], "menu-open-4")
+    check(fails, "menu-open-4", r.peek("MenuOpen") == 4 and r.nt() == expected_open(4),
+          f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}")
+    # open FILE, then pick SAVE, the third item, on row 3
+    r = Run(syms, press_at(88, 3) + press_at(96, 27) + [(10, "")], "menu-pick")
+    check(fails, "menu-pick", (r.peek("MenuPick"), r.peek("MnLastMenu"), r.peek("MenuOpen")) == (2, 2, 0),
+          f"pick {r.peek('MenuPick')} from menu {r.peek('MnLastMenu')}, open {r.peek('MenuOpen')}")
+    check(fails, "menu-restore", r.nt() == nt0, f"name table crc32 {zlib.crc32(r.nt()):08x} after the pick, "
+          f"boot {zlib.crc32(nt0):08x}")
+    # open VIEW, press on the desktop away from it: no pick, put back
+    r = Run(syms, press_at(140, 3) + press_at(40, 120) + [(10, "")], "menu-away")
+    check(fails, "menu-away", (r.peek("MenuPick"), r.peek("MenuOpen"), r.peek("LastHit")) == (0xFF, 0, 4)
+          and r.nt() == nt0,
+          f"pick {r.peek('MenuPick')}, open {r.peek('MenuOpen')}, last hit {r.peek('LastHit')} (the bar press), "
+          f"crc32 {zlib.crc32(r.nt()):08x}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -374,6 +443,7 @@ def main():
     vram0 = boot_checks(syms, fails)
     mouse_checks(syms, fails, vram0)
     key_checks(syms, fails)
+    menu_checks(syms, fails, vram0)
     test_build_checks(tsyms, fails)
     if fails:
         print("FAILED:", ", ".join(fails))

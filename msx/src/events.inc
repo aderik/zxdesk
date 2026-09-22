@@ -140,9 +140,42 @@ HdlBtnDown:
                 rrca
                 and     $1F
                 ld      c,a
+                ld      a,(MenuOpen)
+                or      a
+                jr      z,HbdNoMenu
+                ; An open menu owns the press: an item is picked, anything
+                ; else just shuts it.
+                push    bc
                 call    HitTest
+                pop     bc
+                cp      CTL_MENUDROP
+                jr      z,HbdPick
+                ld      a,$FF
+                ld      (MenuPick),a
+                jr      HbdShut
+HbdPick:
+                call    MenuItemAt
+                ld      (MenuPick),a
+HbdShut:
+                ld      a,(MenuOpen)
+                ld      (MnLastMenu),a
+                call    MenuClose
+                ld      a,(MenuPick)
+                cp      $FF
+                ret     z
+                jp      MenuAction
+HbdNoMenu:
+                push    bc
+                call    HitTest
+                pop     bc
                 ld      (LastHit),a
-                ret
+                cp      CTL_MENUBAR
+                ret     nz
+                call    MenuHitTitle
+                or      a
+                ret     z
+                jp      MenuOpenDrop
+
 HdlBtnUp:
                 ld      hl,EvCounts+2
                 inc     (hl)
