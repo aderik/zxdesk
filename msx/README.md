@@ -1,7 +1,7 @@
 # ZX Desk for MSX1
 
 The MSX1 port lives under `msx/`. The ZX tree above it is the source it
-is ported from and stays untouched. Plan and phases: `msx/PLAN.md`.
+is ported from and stays untouched.
 
     msx/test.sh             build the toolchain image once, assemble, run every subject, assert
     msx/test.sh --shell     a shell inside the image

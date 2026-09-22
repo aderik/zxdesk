@@ -6,3 +6,6 @@ build/
 __pycache__/
 .DS_Store
 *.zip
+
+# private notes, not for the public repo
+/docs/
