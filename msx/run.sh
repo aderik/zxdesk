@@ -33,8 +33,9 @@ if command -v openmsx >/dev/null; then
   if [[ -d "$ROOT/msx/roms" ]]; then
     ln -sf "$ROOT"/msx/roms/* "$USERROMS/"
   fi
-  mkdir -p "$HOME/.openMSX/share/machines"
+  mkdir -p "$HOME/.openMSX/share/machines" "$HOME/.openMSX/share/extensions"
   ln -sf "$ROOT"/msx/harness/machines/*.xml "$HOME/.openMSX/share/machines/"
+  ln -sf "$ROOT"/msx/harness/extensions/*.xml "$HOME/.openMSX/share/extensions/"
   exec openmsx "${ARGS[@]}"
 fi
 # Fallback: the image on the host display. Needs the GPU passed in for
@@ -43,4 +44,4 @@ xhost +local: >/dev/null 2>&1 || true
 exec docker run --rm -it -e DISPLAY="${DISPLAY:-:0}" -e HOME=/tmp -e SDL_AUDIODRIVER=dummy \
   --device /dev/dri -v /tmp/.X11-unix:/tmp/.X11-unix -v "$ROOT:$ROOT:ro" \
   -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" \
-  sh -c 'mkdir -p /tmp/.openMSX/share && ln -sfn "$0" /tmp/.openMSX/share/systemroms && ln -sfn "$1" /tmp/.openMSX/share/machines; shift; exec openmsx "$@"' "$ROOT/msx/roms" "$ROOT/msx/harness/machines" "${ARGS[@]}"
+  sh -c 'mkdir -p /tmp/.openMSX/share && ln -sfn "$0" /tmp/.openMSX/share/systemroms && ln -sfn "$1" /tmp/.openMSX/share/machines && ln -sfn "$2" /tmp/.openMSX/share/extensions; shift 2; exec openmsx "$@"' "$ROOT/msx/roms" "$ROOT/msx/harness/machines" "$ROOT/msx/harness/extensions" "${ARGS[@]}"

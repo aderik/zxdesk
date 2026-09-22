@@ -92,7 +92,8 @@ def ensure_roms():
     home = os.environ.get("HOME", "/tmp")
     share = os.path.join(home, ".openMSX", "share")
     os.makedirs(share, exist_ok=True)
-    for name, src in (("systemroms", ROMS), ("machines", os.path.join(ROOT, "harness", "machines"))):
+    for name, src in (("systemroms", ROMS), ("machines", os.path.join(ROOT, "harness", "machines")),
+                      ("extensions", os.path.join(ROOT, "harness", "extensions"))):
         link = os.path.join(share, name)
         if os.path.isdir(src) and not os.path.exists(link):
             os.symlink(src, link)

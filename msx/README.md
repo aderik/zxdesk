@@ -187,7 +187,15 @@ openMSX matches ROMs by sha1) and name the machine. Two configs in
     MSX_MACHINE=Roms_MSX2 msx/run.sh
 
 Both pass every subject; on the V9938 register 1 reads back without
-the TMS9918's 4K/16K bit, which the assertion masks. `msx/test.sh`
+the TMS9918's 4K/16K bit, which the assertion masks.
+
+The DISK.ROM of the same set (Disk BASIC 2.2, a dump openMSX has no
+config for) works as a WD2793 in the Philips connection style:
+`msx/harness/extensions/Roms_Disk.xml`, `-ext Roms_Disk`. Booted on
+Roms_MSX1 without the cartridge it reaches Disk BASIC's date prompt
+and leaves HIMEM at $DF93: the disk ROM's work area takes $DF93-$F380,
+5 KB that the heap can no longer have. That is the MSX-DOS step's
+starting point. `msx/test.sh`
 links the ROM directory and the configs in as openMSX's user share
 inside the image; `run.sh` does the same for the host's openMSX. Any
 other machine from `/usr/share/openmsx/machines/` works the same way
