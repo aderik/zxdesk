@@ -129,6 +129,22 @@ as the oracle):
 | close-heap | the heap holds the about window's buffer (90 bytes, owner $11) and nothing else |
 | win-keys | SHIFT+RIGHT moves the selection to the 2nd, shown inverted; ENTER makes it today (0, 0, 2) |
 
+Applications (phase 4 so far: `note.inc`, `clock.inc`):
+
+| subject | what is checked |
+|---|---|
+| note-type | FILE > NEW, then H, I, ENTER, X, backspace: the document reads `HI` on row 0, cursor at (0, 1), the window shows the seven rows and the inverted cursor |
+| note-file | HI, FILE > SAVE, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `HI` again |
+| clock-face | VIEW > CLOCK, SHIFT+UP, 3100 frames: 13:01:01 on the 50 Hz machine, 13:00:51 on the 60 Hz one, the face as composed |
+| clock-rate | the ROM's second counting run in Python for an hour of true PAL (180,572) or NTSC (215,722) interrupts: 3599 s and 3600 s |
+| clock-count | the seconds the ROM counted since the set equal the Python model for the same number of interrupts |
+
+The clock's rate comes from bit 7 of the BIOS's $002B: 50 interrupts a
+second and every so often 51 (50.16 Hz), or 59 and every so often 60
+(59.92 Hz), the ZX hundredths accumulator with MSX numbers. SPACE is
+the button as well as a key: a press that lands on something is a
+click and its key is dropped, a press on nothing types.
+
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
 ## Frame budget, measured
@@ -158,7 +174,7 @@ zero dropped frames on both machines, so this is a guarded number.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$58D9, 6361 bytes, 26407 free; RAM $C000-$C8E3, 2275 bytes, heap 10013 to $F000, 896 reserve
+    msxdesk.rom: code $4000-$5F06, 7942 bytes, 24826 free; RAM $C000-$CA17, 2583 bytes, heap 9705 to $F000, 896 reserve
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and

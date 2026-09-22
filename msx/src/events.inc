@@ -143,6 +143,14 @@ HdlBtnDown:
                 rrca
                 and     $1F
                 ld      c,a
+                ; SPACE is the button as well as a key. A press that lands on
+                ; something is a click, and the key it also posted, and its
+                ; repeats while it is held, are dropped in HdlKey; a press on
+                ; nothing leaves the key alone, so a notepad can type spaces
+                ; with the pointer parked on the desktop. The ZX did both at
+                ; once, which put a space in the document on every click.
+                ld      a,1
+                ld      (SpaceEaten),a
                 ld      a,(MenuOpen)
                 or      a
                 jr      z,HbdNoMenu
@@ -180,7 +188,10 @@ HbdNoMenu:
                 call    WndHitTest
                 pop     bc
                 cp      CTL_NONE
-                ret     z
+                jr      nz,HbdWindow
+                ld      (SpaceEaten),a          ; nothing under it: a key
+                ret
+HbdWindow:
                 ld      (LastHit),a
                 push    af
                 ld      a,(WndHit)
@@ -202,6 +213,7 @@ HdlBtnUp:
                 inc     (hl)
                 xor     a
                 ld      (Dragging),a
+                ld      (SpaceEaten),a
                 ret
 HdlKey:
                 ld      hl,EvCounts+3
@@ -211,6 +223,13 @@ HdlKey:
                 ld      a,(MenuOpen)            ; an open menu owns the keyboard
                 or      a
                 ret     nz
+                ld      a,b
+                cp      ' '
+                jr      nz,HkNotSpace
+                ld      a,(SpaceEaten)          ; the button, not a key
+                or      a
+                ret     nz
+HkNotSpace:
                 ; The key goes to the front window's application, through
                 ; its descriptor, and the window is recomposed afterwards.
                 ; With no window it is echoed on the status row instead,

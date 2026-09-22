@@ -110,6 +110,7 @@ _ram            defl    _ram+size
                 var     PrintInv, 1     ; nonzero: PrintStr uses the inverted bank
                 var     EvQueue, EVSLOTS*4
                 var     LastHit, 1      ; what the last press landed on
+                var     SpaceEaten, 1   ; SPACE is being a button, not a key
                 ; the name table's shadow: everything paints here and
                 ; NtFlush copies the dirty rows out after the interrupt
                 var     ShadowNT, SCRCOLS*SCRROWS
@@ -202,6 +203,40 @@ _ram            defl    _ram+size
                 var     CalCol, 1
                 var     CalRem, 1
                 var     CalRow, 24
+                ; the notepad's per instance state, one record
+                var     NoteState, 0
+                var     NoteBuf, NOTESIZE
+                var     NoteName, NOTENAMEMAX+1
+                var     NoteCX, 1
+                var     NoteCY, 1
+                var     NoteTop, 1
+                var     NoteEdited, 1
+                var     NoteDirty, 1
+                var     NoteModified, 1
+NOTESTSZ        equ     _ram-NoteState
+                var     NoteRowIx, 1
+                var     NoteRowDst, 1
+                var     NoteJoinAt, 1
+                var     NoteChar, 1
+                var     NoteLine, 2
+                var     NoteHandle, 1
+                var     NoteGot, 2
+                var     NoteResult, 1
+                ; the clock
+                var     ClkText, 8
+                var     ClkH, 1
+                var     ClkM, 1
+                var     ClkS, 1
+                var     ClkField, 1
+                var     ClkFrames, 1
+                var     ClkNeed, 1
+                var     ClkBase, 1
+                var     ClkFrac, 1
+                var     ClkFracAdd, 1
+                var     ClkDirty, 1
+                var     ClkLast, 2
+                var     ClkDelta, 2
+                var     ClkSetAt, 2     ; IrqCnt when the clock was last set
 IFDEF TEST
                 var     TestDone, 1
                 var     ThPtr, 6
@@ -292,6 +327,7 @@ Init:
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
+                ld      (SpaceEaten),a
                 ld      (MnLastMenu),a
                 dec     a
                 ld      (MenuPick),a
@@ -303,6 +339,8 @@ Init:
                 call    WndInit
                 call    PtrUpdate
                 call    SetupIrq
+                call    ClkInit         ; after the hook, so it starts from
+                                        ; the count as it is
 IFDEF TEST
                 call    TestRun
 ENDIF
@@ -324,7 +362,8 @@ MainLoop:
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
-                call    WinRedraw       ; a dragged window, recomposed once
+                call    ClkService      ; the minute may have rolled
+                call    WinRedraw       ; whatever changed, recomposed once
                 ld      hl,(Frames)
                 inc     hl
                 ld      (Frames),hl
@@ -1114,6 +1153,8 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "calendar.inc"
                 include "menus.inc"
                 include "windows.inc"
+                include "clock.inc"
+                include "note.inc"
                 include "test.inc"
 
 RomEnd:

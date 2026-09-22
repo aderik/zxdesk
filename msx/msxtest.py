@@ -551,6 +551,100 @@ def window_checks(syms, fails, vram0):
           f"selection {r.peek('CalSel')}, today {today}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
+# ---- notepad and clock
+NOTE_W, NOTE_H, CLK_W, CLK_H = 16, 3 + 6, 8, 3
+
+
+def note_win(x, y, rows, cx, cy, top=0):
+    lines = [(1 + i, 1, (rows[top + i] if top + i < len(rows) else b"").ljust(14), False) for i in range(7)]
+    lines.append((1 + cy - top, 1 + cx, bytes([rows[cy][cx] if cx < len(rows[cy]) else 0x20]), True))
+    return (x, y, NOTE_W, NOTE_H, b"NOTEPAD", lines)
+
+
+def clock_win(x, y, h, m, field=0):
+    text = f" {h:02d}:{m:02d}".encode()
+    lines = [(1, 1, text, False), (1, 2 + field * 3, text[1 + field * 3:3 + field * 3], True)]
+    return (x, y, CLK_W, CLK_H, b"CLOCK", lines)
+
+
+def clock_model(frames, hz50):
+    """The ROM's second counting in Python: base frames a second plus a
+    hundredths accumulator, from noon."""
+    base, add = (50, 16) if hz50 else (59, 92)
+    need, frac, count, secs = base, 0, 0, 0
+    for _ in range(frames):
+        count += 1
+        if count == need:
+            count = 0
+            frac += add
+            need = base + 1 if frac >= 100 else base
+            frac %= 100
+            secs += 1
+    return secs
+
+
+def app_checks(syms, fails, vram0):
+    print("notepad and clock:")
+    nt0 = vram0[NT:NT + COLS * ROWS]
+
+    def press_at(x, y, hold=5):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 8 0x01"), (hold, "key_up 8 0x01")]
+
+    def tap(row, mask, shift=False):
+        down = f"key_down {row} {mask:#x}" + ("; key_down 6 0x01" if shift else "")
+        up = f"key_up {row} {mask:#x}" + ("; key_up 6 0x01" if shift else "")
+        return [(3, down), (3, up)]
+
+    file_new = press_at(88, 3) + press_at(96, 11)       # FILE, NEW on row 1
+    file_open = press_at(88, 3) + press_at(96, 19)      # FILE, OPEN on row 2
+    file_save = press_at(88, 3) + press_at(96, 27)      # FILE, SAVE on row 3
+    view_clock = press_at(140, 3) + press_at(148, 11)   # VIEW, CLOCK on row 1
+    H, I, X, ENTER, BS = (3, 0x20), (3, 0x40), (5, 0x20), (7, 0x40), (7, 0x20)
+
+    # type HI, ENTER, X, then backspace over the X
+    r = Run(syms, file_new + tap(*H) + tap(*I) + tap(*ENTER) + tap(*X) + tap(*BS) + [(10, "")], "note-type")
+    buf = r.bytes("NoteBuf", 256)
+    rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
+    want = compose(nt0, [note_win(8, 6, rows, 0, 1)])
+    check(fails, "note-type", rows[0] == b"HI".ljust(14) and rows[1] == b" " * 14
+          and (r.peek("NoteCX"), r.peek("NoteCY")) == (0, 1) and r.nt() == want,
+          f"rows {rows[0]!r} {rows[1]!r}, cursor ({r.peek('NoteCX')}, {r.peek('NoteCY')}), "
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # save, type more, open: the file comes back over the document
+    r = Run(syms, file_new + tap(*H) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + [(10, "")], "note-file")
+    buf = r.bytes("NoteBuf", 256)
+    rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
+    ramdir = r.bytes("RamDir", 16)
+    want = compose(nt0, [note_win(8, 6, rows, 0, 0)])
+    check(fails, "note-file", rows[0] == b"HI".ljust(14) and r.peek("NoteResult") == 0
+          and ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[11:13], "little") == 256 and ramdir[13] == 1
+          and r.nt() == want,
+          f"row 0 {rows[0]!r} after save/type/open, result {r.peek('NoteResult')}, "
+          f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[11:13], 'little')} bytes")
+
+    # the clock: opened, hours bumped, then run for 3100 frames
+    r = Run(syms, view_clock + tap(8, 0x20, shift=True) + [(3100, "")], "clock")
+    hz50 = bool(r.bios[0x2B] & 0x80)
+    hms = (r.peek("ClkH"), r.peek("ClkM"), r.peek("ClkS"))
+    want = compose(nt0, [clock_win(18, 3, hms[0], hms[1])])
+    check(fails, "clock-face", hms[0] == 13 and r.nt() == want,
+          f"{hms[0]:02d}:{hms[1]:02d}:{hms[2]:02d} on a {'50' if hz50 else '60'} Hz machine, "
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    # drift of the arithmetic against the true rate, an hour of it
+    true_hz = 3579545 / (313 * 228) if hz50 else 3579545 / (262 * 228)
+    frames_hour = round(true_hz * 3600)
+    model_secs = clock_model(frames_hour, hz50)
+    check(fails, "clock-rate", abs(model_secs - 3600) <= 1,
+          f"an hour of {'PAL' if hz50 else 'NTSC'} interrupts ({frames_hour}) counts {model_secs} s")
+    # and the ROM agrees with the model over the run: seconds since the set
+    since_set = r.peek("IrqCnt", 2) - r.peek("ClkSetAt", 2)
+    check(fails, "clock-count", hms[1] * 60 + hms[2] == clock_model(since_set, hz50),
+          f"{since_set} interrupts since the set, {hms[1] * 60 + hms[2]} s counted, model {clock_model(since_set, hz50)}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -560,6 +654,7 @@ def main():
     key_checks(syms, fails)
     menu_checks(syms, fails, vram0)
     window_checks(syms, fails, vram0)
+    app_checks(syms, fails, vram0)
     test_build_checks(tsyms, fails)
     if fails:
         print("FAILED:", ", ".join(fails))

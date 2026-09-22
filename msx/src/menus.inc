@@ -311,7 +311,15 @@ MnaNext:
 
 MnActions:
                 defb    1,0
-                defw    AboutOpen               ; ZX DESK, ABOUT
+                defw    AboutOpen               ; MSX DESK, ABOUT
+                defb    2,0
+                defw    NoteMenuNew             ; FILE, NEW
+                defb    2,1
+                defw    NoteMenuOpen            ; FILE, OPEN
+                defb    2,2
+                defw    NoteMenuSave            ; FILE, SAVE
+                defb    3,0
+                defw    ClockOpen               ; VIEW, CLOCK
                 defb    3,1
                 defw    WndOpenCal              ; VIEW, CALENDAR
                 defb    4,1

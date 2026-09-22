@@ -32,6 +32,8 @@ APPSIZE         equ     23
 
 APP_CAL         equ     0
 APP_ABOUT       equ     1
+APP_NOTE        equ     2
+APP_CLOCK       equ     3
 
 AppTable:
 AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
@@ -44,6 +46,21 @@ AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
 AppAbout:       defw    0, 0, 0, WdAbout
                 defw    0, TxtAboutTitle
                 defb    8, 12, ABOUTW, ABOUTH
+                defw    0
+                defw    0, 0
+                defb    0
+                ; The notepad: a document per window, painted whole.
+AppNote:        defw    NOTESTSZ, NoteState, NoteInit, NoteDraw
+                defw    NoteKey, TxtWinTitle
+                defb    8, 6, NOTEW, NOTEH
+                defw    0
+                defw    0, 0
+                defb    APPF_FULL
+                ; The clock keeps nothing per window: the time is the
+                ; machine's, so two clock windows are two views of it.
+AppClock:       defw    0, 0, 0, ClkDraw
+                defw    ClkKey, TxtClockTitle
+                defb    18, 3, CLKW, CLKH
                 defw    0
                 defw    0, 0
                 defb    0
