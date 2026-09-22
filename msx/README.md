@@ -191,11 +191,53 @@ the TMS9918's 4K/16K bit, which the assertion masks.
 
 The DISK.ROM of the same set (Disk BASIC 2.2, a dump openMSX has no
 config for) works as a WD2793 in the Philips connection style:
-`msx/harness/extensions/Roms_Disk.xml`, `-ext Roms_Disk`. Booted on
-Roms_MSX1 without the cartridge it reaches Disk BASIC's date prompt
-and leaves HIMEM at $DF93: the disk ROM's work area takes $DF93-$F380,
-5 KB that the heap can no longer have. That is the MSX-DOS step's
-starting point. `msx/test.sh`
+`msx/harness/extensions/Roms_Disk.xml`.
+
+    MSX_MACHINE=Roms_MSX1 MSX_EXT=Roms_Disk msx/test.sh
+
+## The disk backend
+
+`disk.inc` is a storage backend on MSX-DOS 1's BDOS ($F37D): open,
+create, delete, close, random block read and write with a record size
+of one byte, search first/next for the directory. Names are eight
+upper case characters, no extension. `StInit` selects it when the BDOS
+jump is there and the RAM backend otherwise, so the notepad's SAVE
+lands on a real MSX-DOS file that a PC can read.
+
+Getting there took three measurements:
+
+- A disk ROM initialises in two halves. Its INIT, which runs first
+  because the extension sits in slot 1 and the cartridge in slot 2,
+  takes a driver work area (HIMEM $F195) and hooks H.RUNC with an
+  inter-slot call; the DOS kernel, the BDOS jump and the rest of the
+  work area only arrive when BASIC's cold start calls that hook, and
+  that handler does not return, it carries on into BASIC. So with a
+  disk ROM present the cartridge's INIT hooks H.MAIN, the top of
+  BASIC's main loop, returns to the BIOS, and the desktop starts from
+  there with HIMEM at $DE77 and 4,213 bytes of heap. Without one
+  (C-BIOS, a bare machine) INIT starts the desktop directly.
+- BASIC calls hooks with page 1 on its own ROM, so the hook must be an
+  inter-slot call (RST $30, the cartridge's slot id from the slot
+  register, EXPTBL and SLTTBL): a plain JP was measured to land in
+  BASIC at the same address.
+- The disk ROM loads sector 0 of the disk to $C000 and calls offset
+  $1E. The harness builds its own 720K FAT12 image (`make_disk_image`),
+  and with zeros there the ROM ran them as code and asked "Drive
+  name?"; a RET says there is no DOS to boot. The date prompt on a
+  machine with no clock is answered by a return planted in the
+  keyboard buffer at INIT.
+
+The stack and the heap's end come from HIMEM at run time, STACKRES
+($380) apart, not from an equate. The TEST build's records leave
+1,494 bytes of heap under a disk ROM, so its heap subject allocates
+512, 300 and 128 bytes.
+
+Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
+the image with the document's bytes; `store-disk` finds SETTINGS (64
+bytes of the test pattern), NOTE1, NOTE3 and NOTE4 after NOTE2 was
+deleted; `store-dir` expects the fifth file to be created rather than
+refused. All five configurations pass: C-BIOS EU and JP, Roms_MSX1,
+Roms_MSX1 with Roms_Disk, Roms_MSX2. `msx/test.sh`
 links the ROM directory and the configs in as openMSX's user share
 inside the image; `run.sh` does the same for the host's openMSX. Any
 other machine from `/usr/share/openmsx/machines/` works the same way
@@ -206,11 +248,12 @@ when the machine starts.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$5F06, 7942 bytes, 24826 free; RAM $C000-$CA17, 2583 bytes, heap 9705 to $F000, 896 reserve
+    msxdesk.rom: code $4000-$60F4, 8436 bytes, 24332 free; RAM $C000-$CA82, 2690 bytes, heap 9598 to $F000 without a disk ROM, 4497 with one
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
-the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and
-$F000-$F380 is the stack's, under the BIOS work area. The RAM storage
+the heap takes everything from `RamEnd` to `HeapEnd`, which is HIMEM
+minus $380 for the stack, read at Init: $F000 on a bare machine, $DAF7
+behind this disk ROM. The RAM storage
 backend's four 256 byte files and directory are 1,088 of the 2,076,
 the name table shadow 768.
 

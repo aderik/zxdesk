@@ -101,8 +101,11 @@ StRegistry:
                 defb    STCAP_WRITE|STCAP_RANDOM|STCAP_DIR
                 defw    RamOpen, RamClose, RamRead, RamWrite, RamDirEnt
                 defw    RamDelete
-                ; Tape through the BIOS and disk through MSX-DOS are
-                ; phase 4 rows.
+                defb    ST_DISK
+                defb    STCAP_WRITE|STCAP_PERSIST|STCAP_RANDOM|STCAP_DIR
+                defw    DskOpen, DskClose, DskRead, DskWrite, DskDirEnt
+                defw    DskDelete
+                ; Tape through the BIOS is a later row.
                 defb    $FF
 
 ; A backend that cannot enumerate says so rather than being absent
@@ -161,6 +164,9 @@ StCaps:         ld      a,(StCapability)
 ; anything opens a file.
 StInit:
                 call    RamInit
+                call    DskPresent              ; a disk ROM planted the BDOS
+                ld      a,ST_DISK               ; jump: everything persists
+                jp      z,StSelect              ; on the disk
                 ld      a,ST_RAM
                 jp      StSelect
 

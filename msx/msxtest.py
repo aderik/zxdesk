@@ -26,11 +26,13 @@ TROM = os.path.join(BUILD, "msxtest.rom")   # the TEST=1 build: the subjects run
 TSYM = os.path.join(BUILD, "msxtest.sym")
 OUT = os.path.join(BUILD, "out")
 MACHINE = os.environ.get("MSX_MACHINE", "C-BIOS_MSX1_EU")
+EXT = os.environ.get("MSX_EXT", "")        # e.g. Roms_Disk: a disk interface in slot 1
+DISK = os.path.join(BUILD, "disk.dsk")       # the 720K image the disk backend writes
 
 ROMBASE = 0x4000
 WORK = 0xC000
-RAMTOP = 0xF380         # the BIOS work area starts here; the stack sits below it
-STACK = 0x0380          # what is left for the stack: $F000-$F380
+RAMTOP = 0xF380         # HIMEM on a bare machine; a disk ROM lowers it
+STACK = 0x0380          # STACKRES: the stack, under HIMEM; the heap ends below it
 NT, SAT, PGT = 0x1800, 0x1B00, 0x0000
 COLS, ROWS = 32, 24
 ACCEL = (1, 2, 3, 5, 7)
@@ -70,13 +72,13 @@ def build():
     syms = assemble(ROM, SYM)
     tsyms = assemble(TROM, TSYM, ["TEST=1"])
     for name, sy in (("msxdesk.rom", syms), ("msxtest.rom", tsyms)):
-        rom_end, ram_end, heap_end = sy["RomEnd"], sy["RamEnd"], sy["HEAPEND"]
+        rom_end, ram_end = sy["RomEnd"], sy["RamEnd"]
+        heap_end = RAMTOP - STACK               # on a bare machine; a disk ROM takes more
         print(f"{name}: code ${ROMBASE:04X}-${rom_end:04X}, {rom_end - ROMBASE} bytes, "
               f"{0xC000 - rom_end} free; RAM ${WORK:04X}-${ram_end:04X}, {ram_end - WORK} bytes, "
-              f"heap {heap_end - ram_end} to ${heap_end:04X}, {RAMTOP - heap_end} reserve")
-        if ram_end > heap_end or heap_end > RAMTOP - STACK:
-            sys.exit(f"BUILD FAILED: RAM ends at ${ram_end:04X}, heap at ${heap_end:04X}, "
-                     f"the stack reserve starts at ${RAMTOP - STACK:04X}")
+              f"heap {heap_end - ram_end} to ${heap_end:04X} without a disk ROM, {0xDF93 - STACK - ram_end} with one")
+        if ram_end > 0xDF93 - STACK:
+            sys.exit(f"BUILD FAILED: RAM ends at ${ram_end:04X}, past a disk machine's heap start")
     return syms, tsyms
 
 
@@ -115,6 +117,60 @@ def ensure_display():
     sys.exit("Xvfb did not come up")
 
 
+# ---- a 720K MSX-DOS floppy image, built and read here rather than
+# through openMSX's diskmanipulator, so the oracle owns the format
+SECTOR, ROOT_ENTRIES, FAT_SECTORS = 512, 112, 3
+ROOT_SECTOR = 1 + 2 * FAT_SECTORS           # boot, two FATs
+DATA_SECTOR = ROOT_SECTOR + ROOT_ENTRIES * 32 // SECTOR
+
+
+def make_disk_image(path):
+    """Blank, formatted: a BPB for 720K (2 sides, 80 tracks, 9 sectors,
+    2 sectors a cluster, media $F9), two FATs, an empty root directory."""
+    img = bytearray(1440 * SECTOR)
+    boot = bytearray(SECTOR)
+    boot[0:3] = b"\xEB\xFE\x90"
+    boot[3:11] = b"MSXDESK "
+    import struct
+    struct.pack_into("<HBHBHHBHHHHI", boot, 11, SECTOR, 2, 1, 2, ROOT_ENTRIES, 1440, 0xF9, FAT_SECTORS, 9, 2, 0, 0)
+    # The disk ROM loads sector 0 to $C000 and calls offset $1E; a RET
+    # there says there is no DOS to boot and Disk BASIC carries on.
+    # Without it the zeros ran as code and the ROM asked "Drive name?".
+    boot[0x1E] = 0xC9
+    boot[510:512] = b"\x55\xAA"
+    img[0:SECTOR] = boot
+    for f in range(2):
+        img[(1 + f * FAT_SECTORS) * SECTOR:(1 + f * FAT_SECTORS) * SECTOR + 3] = b"\xF9\xFF\xFF"
+    with open(path, "wb") as fh:
+        fh.write(img)
+
+
+def read_disk_image(path):
+    """The root directory as {name: bytes}, following FAT12 chains."""
+    img = open(path, "rb").read()
+    fat = img[SECTOR:SECTOR + FAT_SECTORS * SECTOR]
+
+    def next_cluster(n):
+        i = n * 3 // 2
+        v = fat[i] | (fat[i + 1] << 8)
+        return (v >> 4) if n & 1 else (v & 0xFFF)
+
+    files = {}
+    for e in range(ROOT_ENTRIES):
+        ent = img[ROOT_SECTOR * SECTOR + e * 32:ROOT_SECTOR * SECTOR + e * 32 + 32]
+        if ent[0] in (0x00, 0xE5) or ent[11] & 0x18:
+            continue
+        name = ent[0:8].rstrip(b" ").decode()
+        size = int.from_bytes(ent[28:32], "little")
+        cluster, data = int.from_bytes(ent[26:28], "little"), b""
+        while 2 <= cluster < 0xFF0 and len(data) < size:
+            s = DATA_SECTOR + (cluster - 2) * 2
+            data += img[s * SECTOR:(s + 2) * SECTOR]
+            cluster = next_cluster(cluster)
+        files[name] = data[:size]
+    return files
+
+
 class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
@@ -137,8 +193,14 @@ class Run:
         env = dict(os.environ, MSXTEST_OUT=out, MSXTEST_STEPS=steps_path,
                    MSXTEST_FRAMES=str(syms["Frames"]),
                    SDL_AUDIODRIVER="dummy", HOME=os.environ.get("HOME", "/tmp"))
-        cmd = ["openmsx", "-machine", MACHINE, "-cart", rom, "-romtype", "page12",
+        # The cartridge goes in slot 2 so a disk interface extension takes
+        # slot 1 and the BIOS runs its init first: it must lower HIMEM and
+        # plant the BDOS jump before this ROM's Init reads them.
+        cmd = ["openmsx", "-machine", MACHINE, "-cartb", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
+        if EXT:
+            make_disk_image(DISK)
+            cmd += ["-ext", EXT, "-diska", DISK]
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=180)
         logp = os.path.join(out, "log.txt")
         self.log = open(logp).read() if os.path.exists(logp) else ""
@@ -232,7 +294,13 @@ def boot_checks(syms, fails):
           "font $1F and inverted bank $F1 in all three thirds")
     import re
     sp = int(re.search(r"sp (\d+)", r.log).group(1))
-    check(fails, "stack", 0xF000 < sp <= 0xF380, f"SP ${sp:04X} at the dump, reserve $F000-$F380")
+    himem = int.from_bytes(r.ram[0xFC4A - WORK:0xFC4C - WORK], "little")
+    heap_end = r.peek("HeapEnd", 2)
+    check(fails, "stack", himem - STACK < sp <= himem and heap_end == himem - STACK and heap_end > syms["RamEnd"],
+          f"HIMEM ${himem:04X}, SP ${sp:04X} at the dump, heap ends ${heap_end:04X}, "
+          f"{heap_end - syms['RamEnd']} bytes of heap")
+    check(fails, "backend", r.peek("StBackend") == (5 if EXT else 1),
+          f"storage backend {r.peek('StBackend')}: {'disk (5)' if EXT else 'RAM (1)'}, BDOS entry ${r.ram[0xF37D - WORK]:02X}")
     shape = rom[syms["PtrShape"] - ROMBASE:syms["PtrShape"] - ROMBASE + 32]
     check(fails, "sprite-shape", r.vram[0x3800:0x3820] == shape, "32 bytes at $3800")
     # bit 7 of R1 is the TMS9918's 4K/16K select; a V9938 has no such
@@ -332,21 +400,22 @@ def test_build_checks(tsyms, fails):
 
     # heap: three blocks split off exactly, a free returns the block
     # untouched, freeing by owner coalesces everything into one piece
-    base, end = tsyms["HeapBase"], tsyms["HEAPEND"]
+    base, end = tsyms["HeapBase"], r.peek("HeapEnd", 2)
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    check(fails, "heap-split", ptrs == [base + 4, base + 4 + 1152 + 4, base + 4 + 1152 + 4 + 676 + 4],
+    A, B, C = 512, 300, 128
+    check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
     # $12 and coalesces its neighbours into one piece. The walk happens
     # after TestApp, which took three bytes for the calendar's state.
     total = end - base - 4
-    check(fails, "heap-stat", stats[0][0] == total - 1152 - 676 - 300 - 12 and stats[1][0] == stats[0][0] + 676
-          and stats[2] == (total - 1156, total - 1156),
+    check(fails, "heap-stat", stats[0][0] == total - A - B - C - 12 and stats[1][0] == stats[0][0] + B
+          and stats[2] == (total - A - 4, total - A - 4),
           f"free/biggest after alloc {stats[0]}, after free {stats[1]}, after free by owner {stats[2]}; heap {total}")
-    check(fails, "heap-coalesce", len(blocks) == 3 and blocks[0][1:] == (1152, 1, 0x10) and blocks[1][1:] == (3, 1, 0x10)
-          and blocks[2] == (base + 1156 + 7, total - 1156 - 7, 0, 0),
+    check(fails, "heap-coalesce", len(blocks) == 3 and blocks[0][1:] == (A, 1, 0x10) and blocks[1][1:] == (3, 1, 0x10)
+          and blocks[2] == (base + A + 4 + 7, total - A - 4 - 7, 0, 0),
           f"{len(blocks)} blocks: {blocks[:3]}")
 
     # calendar: 1,200 months against Python's calendar
@@ -375,9 +444,20 @@ def test_build_checks(tsyms, fails):
                                         ("TsDirN", 1), ("TsFull", 1), ("TsDel", 1), ("TsDirAfter", 1))}
     check(fails, "store-rw", st["TsWrote"] == 64 and st["TsRead"] == 64 and st["TsBad"] == 0 and st["TsErrCode"] == 0,
           f"wrote {st['TsWrote']}, read {st['TsRead']}, {st['TsBad']} wrong, err {st['TsErrCode']}")
-    check(fails, "store-dir", st["TsDirN"] == 4 and st["TsFull"] == 8 and st["TsDel"] == 0 and st["TsDirAfter"] == 1,
-          f"{st['TsDirN']} files, fifth open err {st['TsFull']} (STERR_FULL 8), delete {st['TsDel']}, "
-          f"fourth entry after delete {'gone' if st['TsDirAfter'] else 'present'}")
+    # four files in RAM and the fifth refused; on a disk the fifth is
+    # created too, so after the delete a fourth entry is still there
+    disk = r.peek("StBackend") == 5
+    want_dir = (4, 0, 0, 0) if disk else (4, 8, 0, 1)
+    got_dir = (st["TsDirN"], st["TsFull"], st["TsDel"], st["TsDirAfter"])
+    check(fails, "store-dir", got_dir == want_dir,
+          f"{'disk' if disk else 'RAM'}: {st['TsDirN']} files, fifth open err {st['TsFull']}, delete {st['TsDel']}, "
+          f"fourth entry after delete {'gone' if st['TsDirAfter'] else 'present'}; expected {want_dir}")
+    if disk:
+        files = read_disk_image(DISK)
+        names = sorted(files)
+        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and len(files["SETTINGS"]) == 64
+              and files["SETTINGS"] == bytes((1 + 7 * i) & 0xFF for i in range(64)),
+              f"on the image: {[(n, len(files[n])) for n in names]}")
 
     # app model: the calendar's state saved and loaded back
     check(fails, "app-desc", r.peek("TaDesc", 2) == tsyms["AppCal"], f"AppAt -> ${r.peek('TaDesc', 2):04X}")
@@ -557,7 +637,7 @@ def window_checks(syms, fails, vram0):
     # the close box of the front window
     r = Run(syms, open_cal + open_about + drag + press_at(50, 42) + [(10, "")], "win-close")
     want = compose(nt0, [about_win(10, 13)])
-    used = [b for b in heap_walk(r, syms["HeapBase"], syms["HEAPEND"]) if b[2]]
+    used = [b for b in heap_walk(r, syms["HeapBase"], r.peek("HeapEnd", 2)) if b[2]]
     check(fails, "win-close", r.peek("WndCount") == 1 and r.nt() == want,
           f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
     check(fails, "close-heap", [b[3] for b in used] == [0x11] and used[0][1] == ABOUT_W * ABOUT_H,
@@ -641,11 +721,15 @@ def app_checks(syms, fails, vram0):
     rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
     ramdir = r.bytes("RamDir", 16)
     want = compose(nt0, [note_win(8, 6, rows, 0, 0)])
-    check(fails, "note-file", rows[0] == b"HI".ljust(14) and r.peek("NoteResult") == 0
-          and ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[11:13], "little") == 256 and ramdir[13] == 1
-          and r.nt() == want,
-          f"row 0 {rows[0]!r} after save/type/open, result {r.peek('NoteResult')}, "
-          f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[11:13], 'little')} bytes")
+    if EXT:
+        files = read_disk_image(DISK)
+        stored = "NOTE" in files and len(files["NOTE"]) == 256 and files["NOTE"][:16] == buf[:16]
+        where = f"disk file NOTE {len(files.get('NOTE', b''))} bytes, {list(files)}"
+    else:
+        stored = ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[11:13], "little") == 256 and ramdir[13] == 1
+        where = f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[11:13], 'little')} bytes"
+    check(fails, "note-file", rows[0] == b"HI".ljust(14) and r.peek("NoteResult") == 0 and stored and r.nt() == want,
+          f"row 0 {rows[0]!r} after save/type/open, result {r.peek('NoteResult')}, {where}")
 
     # the clock: opened, hours bumped, then run for 3100 frames
     r = Run(syms, view_clock + tap(8, 0x20, shift=True) + [(3100, "")], "clock")

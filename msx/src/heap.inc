@@ -35,11 +35,11 @@
 ; ============================================================
 HEAPHDR         equ     4
 HEAPSPLIT       equ     HEAPHDR+16      ; not worth splitting off less
-; HeapBase and HEAPEND are set in msxdesk.asm: the heap is whatever
-; work RAM is left after the variables, up to the stack's reserve
-; under the BIOS area. Nothing here ever reaches $10000, so the
-; wrap the ZX version stopped a page short for cannot happen.
-HEAPSIZE        equ     HEAPEND-HeapBase
+; HeapBase is set in msxdesk.asm; the end is HeapEnd, a variable,
+; because a disk ROM lowers HIMEM by five kilobytes and the heap
+; stops STACKRES under whatever HIMEM is. Nothing here ever reaches
+; $10000, so the wrap the ZX version stopped a page short for cannot
+; happen.
 
 HEAPOWN_NONE    equ     0               ; owned by nothing in particular
 HEAPOWN_WIN     equ     $10             ; plus the window index
@@ -49,8 +49,12 @@ HEAPOWN_WIN     equ     $10             ; plus the window index
 ;  One free block covering everything.
 ; ------------------------------------------------------------
 HeapInit:
+                ld      hl,(HeapEnd)
+                ld      de,HeapBase+HEAPHDR
+                or      a
+                sbc     hl,de
+                ex      de,hl                   ; DE = the one block's payload
                 ld      hl,HeapBase
-                ld      de,HEAPSIZE-HEAPHDR
                 ld      (hl),e
                 inc     hl
                 ld      (hl),d
@@ -70,7 +74,7 @@ HeapAlloc:
                 ld      (HpWant),bc
                 ld      hl,HeapBase
 HpaLoop:
-                ld      de,HEAPEND              ; walked off the end?
+                ld      de,(HeapEnd)              ; walked off the end?
                 push    hl
                 or      a
                 sbc     hl,de
@@ -220,7 +224,7 @@ HeapFreeOwner:
                 ld      (HpOwner),a
                 ld      hl,HeapBase
 HpfLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -264,7 +268,7 @@ HpfNext:
 HeapCoalesce:
                 ld      hl,HeapBase
 HpcLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -285,7 +289,7 @@ HpcLoop:
                 ld      bc,HEAPHDR
                 add     hl,bc
                 add     hl,de                   ; HL = the next header
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -341,7 +345,7 @@ HeapStat:
                 ld      (HpBiggest),hl
                 ld      hl,HeapBase
 HpsLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de

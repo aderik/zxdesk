@@ -19,7 +19,7 @@ if [[ "${1:-}" == "--shell" ]]; then
   exec docker run --rm -it -v "$ROOT:/work" -w /work/msx -e HOME=/tmp -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" bash
 fi
 tar -C "$ROOT" --exclude=./msx/build --exclude=./.git -cf - . \
-  | docker run --rm -i -e "MSX_MACHINE=${MSX_MACHINE:-C-BIOS_MSX1_EU}" "$IMAGE" sh -c \
+  | docker run --rm -i -e "MSX_MACHINE=${MSX_MACHINE:-C-BIOS_MSX1_EU}" -e "MSX_EXT=${MSX_EXT:-}" "$IMAGE" sh -c \
       'mkdir -p /work && cd /work && tar xf - && cd msx && python3 msxtest.py "$@" >&2; rc=$?; tar -cf - build; exit $rc' \
       -- "$@" \
   | tar -C "$ROOT/msx" -xf -

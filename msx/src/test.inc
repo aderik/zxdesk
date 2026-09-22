@@ -23,15 +23,17 @@ TestRun:
 ; allocations, after the free, after the free by owner.
 TestHeap:
                 call    HeapInit
-                ld      bc,1152
+                ; Sizes that fit the smallest heap the build sees: the TEST
+                ; build's records leave 1,494 bytes under a disk ROM's HIMEM.
+                ld      bc,512
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,676
+                ld      bc,300
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,300
+                ld      bc,128
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl
@@ -44,7 +46,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,675
+                ld      bc,299
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree

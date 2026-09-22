@@ -20,6 +20,12 @@ CHGMOD          equ     $005F           ; A = screen mode
 RG1SAV          equ     $F3E0           ; BIOS shadow of VDP register 1
 CGTABL          equ     $0004           ; word: the BIOS font, 256 glyphs of 8 bytes
 HTIMI           equ     $FD9F           ; five byte hook, called each VDP interrupt
+HRUNC           equ     $FECB           ; the hook BASIC's cold start calls; the disk ROM's second half hangs on it
+HMAIN           equ     $FF0C           ; the hook at the top of BASIC's main loop, after every init is done
+PUTPNT          equ     $F3F8           ; the keyboard buffer's write pointer
+EXPTBL          equ     $FCC1           ; per primary slot: bit 7 set if expanded
+SLTTBL          equ     $FCC5           ; per primary slot: its secondary slot register
+PSLOT           equ     $A8             ; the primary slot register
 
 ; ---- I/O
 VDPDATA         equ     $98
@@ -57,7 +63,7 @@ C_TEXT          equ     $1F             ; black on white: the glyphs, every thir
 C_INVERSE       equ     $F1             ; white on black: the inverted bank
 C_LATTICE       equ     $EF             ; grey on white
 C_POINTER       equ     $01             ; black
-STACKTOP        equ     $F380           ; the BIOS work area starts here
+STACKRES        equ     $380            ; the stack, under HIMEM; the heap ends below it
 
 ; ---- Glyph banks. The font sits at $20-$7F as itself and again at
 ; $A0-$FF with the colours swapped, so inverted text is a code with
@@ -185,6 +191,17 @@ _ram            defl    _ram+size
                 var     WndCapDirty, 1  ; and per slot whose title row is
                 var     SpSave, 2       ; while the stack fills the desktop
                 var     WdFull, 1
+                var     HeapEnd, 2      ; HIMEM minus STACKRES, at Init
+                ; the disk backend
+                var     DskFcb, FCBSIZE
+                var     DskEnt, 40      ; the DTA for a search
+                var     DskEntName, 9
+                var     DskName, 12
+                var     DskMode, 1
+                var     DskHandle, 1
+                var     DskPos, 2
+                var     DskCnt, 2
+                var     DskDirN, 1
                 var     CalPair, 3
                 ; calendar: the three state bytes are contiguous, so are
                 ; today's
@@ -260,9 +277,8 @@ IFDEF TEST
                 var     ThitRes, 5
 ENDIF
 RamEnd          equ     _ram
-; The heap takes everything from here to the stack's reserve.
+; The heap takes everything from here to HeapEnd, set at Init.
 HeapBase        equ     RamEnd
-HEAPEND         equ     $F000
 
                 org     $4000
                 defb    "AB"
@@ -273,9 +289,84 @@ HEAPEND         equ     $F000
                 defs    6,0
 
 Init:
-                ; The BIOS called us on its own stack, wherever that was;
-                ; the budget assumes $F000-$F380, so say so.
-                ld      sp,STACKTOP
+                ; A disk ROM initialises in two halves: its INIT, which ran
+                ; before this one because it sits in a lower slot, takes a
+                ; driver work area and hooks H.RUNC (measured: RST $30,
+                ; slot, address, RET); the DOS kernel, the BDOS jump and
+                ; the five kilobytes under HIMEM only arrive when BASIC's
+                ; cold start calls that hook, and that handler does not
+                ; return, it carries on into BASIC (measured: chaining it
+                ; ended at the Ok prompt). So if H.RUNC is hooked, this
+                ; INIT hooks H.MAIN, the top of BASIC's main loop, which
+                ; comes after every init there is, returns to the BIOS,
+                ; and the desktop starts from there. BASIC calls the hook
+                ; with page 1 on its own ROM, so the hook is an inter-slot
+                ; call, RST $30 with this cartridge's slot id: a plain JP
+                ; was measured to land in BASIC at the same address.
+                ld      a,(HRUNC)
+                cp      $C9                     ; a RET: nobody is waiting
+                jr      z,Start
+                ; The disk ROM asks for the date on a machine with no clock
+                ; and waits for a key; a return in the keyboard buffer is
+                ; what a person would give it.
+                ld      hl,(PUTPNT)
+                ld      (hl),13
+                inc     hl
+                ld      (PUTPNT),hl
+                call    GetSlot1
+                ld      (HMAIN+1),a
+                ld      a,$F7                   ; RST $30: CALLF
+                ld      (HMAIN),a
+                ld      hl,Start
+                ld      (HMAIN+2),hl
+                ld      a,$C9
+                ld      (HMAIN+4),a
+                ret
+
+; The slot id of whatever is in page 1 now, which at INIT is this
+; cartridge: primary slot from the slot register, and the secondary
+; slot from SLTTBL if that primary slot is expanded.
+GetSlot1:
+                in      a,(PSLOT)
+                rrca
+                rrca
+                and     3
+                ld      c,a
+                ld      b,0
+                ld      hl,EXPTBL
+                add     hl,bc
+                ld      a,(hl)
+                and     $80
+                jr      nz,GsExpanded
+                ld      a,c                     ; not expanded: the id is the
+                ret                             ; primary slot
+GsExpanded:
+                or      c
+                ld      c,a
+                ld      hl,SLTTBL
+                ld      a,c
+                and     3
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      a,(hl)
+                rrca
+                rrca
+                and     $0C
+                or      c
+                ret
+
+Start:
+                ; The BIOS called us on its own stack, wherever that was.
+                ; HIMEM is $F380 on a bare machine and lower by a disk
+                ; ROM's work area, so the stack and the heap's end come
+                ; from it rather than from an equate.
+                ld      hl,(HIMEM)
+                ld      sp,hl
+                ld      de,STACKRES
+                or      a
+                sbc     hl,de
+                ld      (HeapEnd),hl
                 ld      a,2
                 call    CHGMOD
                 ld      b,$0F           ; white border, as the ZX had
@@ -1148,6 +1239,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "kbd.inc"
                 include "heap.inc"
                 include "storage.inc"
+                include "disk.inc"
                 include "hittest.inc"
                 include "app.inc"
                 include "calendar.inc"

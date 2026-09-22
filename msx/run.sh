@@ -3,6 +3,7 @@
 #   msx/run.sh                 C-BIOS_MSX1_EU, mouse in port A
 #   MSX_MACHINE=C-BIOS_MSX1_JP msx/run.sh
 #   MSX_MACHINE=Roms_MSX1 msx/run.sh    the real BIOS in msx/roms/ (Roms_MSX2 too)
+#   MSX_MACHINE=Roms_MSX1 MSX_EXT=Roms_Disk MSX_DISK=msx/build/disk.dsk msx/run.sh
 #
 # Uses the host's openmsx when installed (Fedora: dnf install openmsx
 # cbios), otherwise the toolchain image with the X socket passed in
@@ -19,7 +20,12 @@ docker run --rm -v "$ROOT:/work" -w /work/msx -u "$(id -u):$(id -g)" "$IMAGE" \
   pasmo -I src --bin src/msxdesk.asm build/msxdesk.rom build/msxdesk.sym 2>&1 | grep -v "WARNING: Var\|3 pass" || true
 [[ -s "$ROOT/msx/build/msxdesk.rom" ]] || { echo "no ROM built" >&2; exit 1; }
 
-ARGS=(-machine "$MACHINE" -cart "$ROOT/msx/build/msxdesk.rom" -romtype page12 -command "plug joyporta mouse")
+ARGS=(-machine "$MACHINE" -cartb "$ROOT/msx/build/msxdesk.rom" -romtype page12 -command "plug joyporta mouse")
+# MSX_EXT=Roms_Disk puts the disk interface in slot 1, ahead of the
+# cartridge in slot 2, so its init runs first; MSX_DISK=file.dsk mounts an
+# image (the harness's msx/build/disk.dsk is a blank 720K one).
+[[ -n "${MSX_EXT:-}" ]] && ARGS+=(-ext "$MSX_EXT")
+[[ -n "${MSX_DISK:-}" ]] && ARGS+=(-diska "$MSX_DISK")
 if command -v openmsx >/dev/null; then
   # Fedora's cbios package is not linked into openMSX's system ROMs;
   # the user share dir is searched too, so link them there once.
