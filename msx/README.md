@@ -6,6 +6,9 @@ is ported from and stays untouched. Plan and phases: `msx/PLAN.md`.
     msx/test.sh             build the toolchain image once, assemble, run every subject, assert
     msx/test.sh --shell     a shell inside the image
     REBUILD=1 msx/test.sh   rebuild the image after a Dockerfile change
+    msx/run.sh              build and run it in a visible openMSX: the host's
+                            (dnf install openmsx cbios) or the image on the
+                            host display with the GPU passed in
 
 Everything runs in `msx/docker`: Debian trixie with openMSX 20.0,
 C-BIOS 0.29a, pasmo 0.5.5 built from source, Xvfb and xdotool. Nothing
