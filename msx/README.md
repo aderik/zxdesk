@@ -175,17 +175,24 @@ zero dropped frames on both machines, so this is a guarded number.
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
 that wants a real machine run on real BIOS ROMs, which are not ours to
 distribute. Put them in `msx/roms/` (gitignored, any file names:
-openMSX matches ROMs by sha1) and name the machine:
+openMSX matches ROMs by sha1) and name the machine. Two configs in
+`msx/harness/machines/` are built on the dumps of a common ROM set:
 
-    MSX_MACHINE=Philips_VG_8020 msx/test.sh
-    MSX_MACHINE=Philips_VG_8020 msx/run.sh
+| machine | ROMs | what it is |
+|---|---|---|
+| `Roms_MSX1` | MSX.ROM (sha1 409e82ad...) | a 50 Hz 64K MSX1 on the generic BIOS, the VG 8020 config with the ROM swapped |
+| `Roms_MSX2` | MSX2.ROM, MSX2EXT.ROM (the NMS 8245/8250/8255 dumps) | a Philips NMS 8250 without its drive: V9938, 128K mapper, RTC |
 
-`msx/test.sh` links that directory in as openMSX's system ROM dir
-inside the image; `run.sh` does the same for the host's openMSX. Which
-ROMs a machine wants, and their sha1s, is in
-`/usr/share/openmsx/machines/<machine>.xml`; a missing one is reported
-by name and sha1 when the machine starts. Any 50 Hz MSX1 with 64K
-will do: Philips VG-8020, VG-8010, Sony HB-75P, Toshiba HX-10.
+    MSX_MACHINE=Roms_MSX1 msx/test.sh
+    MSX_MACHINE=Roms_MSX2 msx/run.sh
+
+Both pass every subject; on the V9938 register 1 reads back without
+the TMS9918's 4K/16K bit, which the assertion masks. `msx/test.sh`
+links the ROM directory and the configs in as openMSX's user share
+inside the image; `run.sh` does the same for the host's openMSX. Any
+other machine from `/usr/share/openmsx/machines/` works the same way
+once its ROMs are present; a missing one is reported by name and sha1
+when the machine starts.
 
 ## Memory budget
 

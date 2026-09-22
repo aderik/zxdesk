@@ -87,14 +87,15 @@ def ensure_roms():
     """Real BIOS ROMs, if any, from msx/roms (gitignored: not ours to
     distribute) into the place openMSX looks: it matches them by sha1,
     the file names do not matter. C-BIOS has no cassette, so the tape
-    backend needs a real machine, e.g. MSX_MACHINE=Philips_VG_8020."""
-    if not os.path.isdir(ROMS):
-        return
+    backend needs a real machine: the configs in harness/machines
+    (Roms_MSX1, Roms_MSX2) are built on the dumps in that directory."""
     home = os.environ.get("HOME", "/tmp")
-    link = os.path.join(home, ".openMSX", "share", "systemroms")
-    os.makedirs(os.path.dirname(link), exist_ok=True)
-    if not os.path.exists(link):
-        os.symlink(ROMS, link)
+    share = os.path.join(home, ".openMSX", "share")
+    os.makedirs(share, exist_ok=True)
+    for name, src in (("systemroms", ROMS), ("machines", os.path.join(ROOT, "harness", "machines"))):
+        link = os.path.join(share, name)
+        if os.path.isdir(src) and not os.path.exists(link):
+            os.symlink(src, link)
 
 
 def ensure_display():
@@ -233,7 +234,9 @@ def boot_checks(syms, fails):
     check(fails, "stack", 0xF000 < sp <= 0xF380, f"SP ${sp:04X} at the dump, reserve $F000-$F380")
     shape = rom[syms["PtrShape"] - ROMBASE:syms["PtrShape"] - ROMBASE + 32]
     check(fails, "sprite-shape", r.vram[0x3800:0x3820] == shape, "32 bytes at $3800")
-    check(fails, "vdp-regs", r.vdp[1] == 0xE2 and r.vdp[7] == 0x0F,
+    # bit 7 of R1 is the TMS9918's 4K/16K select; a V9938 has no such
+    # bit and reads it back clear
+    check(fails, "vdp-regs", (r.vdp[1] & 0x7F) == 0x62 and r.vdp[7] == 0x0F,
           f"R1 ${r.vdp[1]:02X} (16x16 sprites), R7 ${r.vdp[7]:02X} (white border)")
     check(fails, "sprite-attr", r.sat(0) == (89, 120, 0, 1) and r.sat(1)[0] == 0xD0,
           f"sprite 0 {r.sat(0)}, sprite 1 y {r.sat(1)[0]}")
