@@ -170,6 +170,23 @@ The flush of the resulting rows lands in the next frame: OUTI, NOP,
 JP NZ at 30 cycles a cell, 16 rows about 5.6 ms. `drag-frames` asserts
 zero dropped frames on both machines, so this is a guarded number.
 
+## Real BIOS ROMs
+
+C-BIOS has no cassette and no BASIC, so the tape backend and anything
+that wants a real machine run on real BIOS ROMs, which are not ours to
+distribute. Put them in `msx/roms/` (gitignored, any file names:
+openMSX matches ROMs by sha1) and name the machine:
+
+    MSX_MACHINE=Philips_VG_8020 msx/test.sh
+    MSX_MACHINE=Philips_VG_8020 msx/run.sh
+
+`msx/test.sh` links that directory in as openMSX's system ROM dir
+inside the image; `run.sh` does the same for the host's openMSX. Which
+ROMs a machine wants, and their sha1s, is in
+`/usr/share/openmsx/machines/<machine>.xml`; a missing one is reported
+by name and sha1 when the machine starts. Any 50 Hz MSX1 with 64K
+will do: Philips VG-8020, VG-8010, Sony HB-75P, Toshiba HX-10.
+
 ## Memory budget
 
 The build prints it and fails past the line:

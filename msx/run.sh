@@ -2,6 +2,7 @@
 # ZX Desk for MSX: build the ROM and run it in a visible openMSX.
 #   msx/run.sh                 C-BIOS_MSX1_EU, mouse in port A
 #   MSX_MACHINE=C-BIOS_MSX1_JP msx/run.sh
+#   MSX_MACHINE=Philips_VG_8020 msx/run.sh   a real machine, ROMs in msx/roms/
 #
 # Uses the host's openmsx when installed (Fedora: dnf install openmsx
 # cbios), otherwise the toolchain image with the X socket passed in
@@ -23,8 +24,13 @@ if command -v openmsx >/dev/null; then
   # Fedora's cbios package is not linked into openMSX's system ROMs;
   # the user share dir is searched too, so link them there once.
   USERROMS="$HOME/.openMSX/share/systemroms"
+  mkdir -p "$USERROMS"
   if [[ -d /usr/share/cbios && ! -e "$USERROMS/cbios_main_msx1_eu.rom" ]]; then
-    mkdir -p "$USERROMS" && ln -sf /usr/share/cbios/*.rom "$USERROMS/"
+    ln -sf /usr/share/cbios/*.rom "$USERROMS/"
+  fi
+  # real BIOS ROMs from msx/roms (gitignored), matched by sha1
+  if [[ -d "$ROOT/msx/roms" ]]; then
+    ln -sf "$ROOT"/msx/roms/* "$USERROMS/"
   fi
   exec openmsx "${ARGS[@]}"
 fi
@@ -33,4 +39,5 @@ fi
 xhost +local: >/dev/null 2>&1 || true
 exec docker run --rm -it -e DISPLAY="${DISPLAY:-:0}" -e HOME=/tmp -e SDL_AUDIODRIVER=dummy \
   --device /dev/dri -v /tmp/.X11-unix:/tmp/.X11-unix -v "$ROOT:$ROOT:ro" \
-  -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" openmsx "${ARGS[@]}"
+  -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" \
+  sh -c 'mkdir -p /tmp/.openMSX/share && ln -sfn "$0" /tmp/.openMSX/share/systemroms; exec openmsx "$@"' "$ROOT/msx/roms" "${ARGS[@]}"

@@ -80,9 +80,27 @@ def build():
     return syms, tsyms
 
 
+ROMS = os.path.join(ROOT, "roms")
+
+
+def ensure_roms():
+    """Real BIOS ROMs, if any, from msx/roms (gitignored: not ours to
+    distribute) into the place openMSX looks: it matches them by sha1,
+    the file names do not matter. C-BIOS has no cassette, so the tape
+    backend needs a real machine, e.g. MSX_MACHINE=Philips_VG_8020."""
+    if not os.path.isdir(ROMS):
+        return
+    home = os.environ.get("HOME", "/tmp")
+    link = os.path.join(home, ".openMSX", "share", "systemroms")
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    if not os.path.exists(link):
+        os.symlink(ROMS, link)
+
+
 def ensure_display():
     """Xvfb, if nothing answers on DISPLAY. openMSX's SDL init asserts
     under the dummy video driver, so a real X server it is."""
+    ensure_roms()
     disp = os.environ.setdefault("DISPLAY", ":99")
     if subprocess.run(["xdpyinfo", "-display", disp], capture_output=True).returncode == 0:
         return

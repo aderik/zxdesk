@@ -9,3 +9,6 @@ __pycache__/
 
 # private notes, not for the public repo
 /docs/
+
+# real MSX BIOS ROMs for the harness and run.sh, not ours to distribute
+/msx/roms/
