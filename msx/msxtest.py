@@ -22,13 +22,15 @@ SRC = os.path.join(ROOT, "src", "msxdesk.asm")
 BUILD = os.path.join(ROOT, "build")
 ROM = os.path.join(BUILD, "msxdesk.rom")
 SYM = os.path.join(BUILD, "msxdesk.sym")
+TROM = os.path.join(BUILD, "msxtest.rom")   # the TEST=1 build: the subjects run at boot
+TSYM = os.path.join(BUILD, "msxtest.sym")
 OUT = os.path.join(BUILD, "out")
 MACHINE = os.environ.get("MSX_MACHINE", "C-BIOS_MSX1_EU")
 
 ROMBASE = 0x4000
 WORK = 0xC000
 RAMTOP = 0xF380         # the BIOS work area starts here; the stack sits below it
-STACK = 0x0400          # what is left for the stack and the BIOS's own use
+STACK = 0x0380          # what is left for the stack: $F000-$F380
 NT, SAT, PGT = 0x1800, 0x1B00, 0x0000
 COLS, ROWS = 32, 24
 ACCEL = (1, 2, 3, 5, 7)
@@ -46,28 +48,36 @@ def load_symbols(path):
     return syms
 
 
-def build():
-    """Assemble, and refuse the build if the budgets are blown: a ROM past
-    $C000 or RAM into the stack does not fail loudly at run time."""
-    os.makedirs(BUILD, exist_ok=True)
-    r = subprocess.run(["pasmo", "-I", os.path.join(ROOT, "src"), "--bin", SRC, ROM, SYM],
-                       capture_output=True, text=True)
+def assemble(rom, sym, equ=()):
+    args = ["pasmo", "-I", os.path.join(ROOT, "src")]
+    for e in equ:
+        args += ["--equ", e]
+    r = subprocess.run(args + ["--bin", SRC, rom, sym], capture_output=True, text=True)
     for line in r.stderr.splitlines():
         if not line.startswith("WARNING: Var") and "3 pass" not in line:
             print(line)
     if r.returncode != 0:
         sys.exit("assembly failed")
-    syms = load_symbols(SYM)
-    size = os.path.getsize(ROM)
-    if size != 0x8000:
-        sys.exit(f"ROM is {size} bytes, expected 32768")
-    rom_end, ram_end = syms["RomEnd"], syms["RamEnd"]
-    print(f"msxdesk.rom: code ${ROMBASE:04X}-${rom_end:04X}, {rom_end - ROMBASE} bytes, "
-          f"{0xC000 - rom_end} free; RAM ${WORK:04X}-${ram_end:04X}, {ram_end - WORK} bytes, "
-          f"{RAMTOP - STACK - ram_end} free before the stack")
-    if ram_end > RAMTOP - STACK:
-        sys.exit(f"BUILD FAILED: RAM ends at ${ram_end:04X}, past ${RAMTOP - STACK:04X}")
-    return syms
+    if os.path.getsize(rom) != 0x8000:
+        sys.exit(f"{rom} is {os.path.getsize(rom)} bytes, expected 32768")
+    return load_symbols(sym)
+
+
+def build():
+    """Assemble both builds, and refuse if the budgets are blown: a ROM
+    past $C000 or RAM into the stack does not fail loudly at run time."""
+    os.makedirs(BUILD, exist_ok=True)
+    syms = assemble(ROM, SYM)
+    tsyms = assemble(TROM, TSYM, ["TEST=1"])
+    for name, sy in (("msxdesk.rom", syms), ("msxtest.rom", tsyms)):
+        rom_end, ram_end, heap_end = sy["RomEnd"], sy["RamEnd"], sy["HEAPEND"]
+        print(f"{name}: code ${ROMBASE:04X}-${rom_end:04X}, {rom_end - ROMBASE} bytes, "
+              f"{0xC000 - rom_end} free; RAM ${WORK:04X}-${ram_end:04X}, {ram_end - WORK} bytes, "
+              f"heap {heap_end - ram_end} to ${heap_end:04X}, {RAMTOP - heap_end} reserve")
+        if ram_end > heap_end or heap_end > RAMTOP - STACK:
+            sys.exit(f"BUILD FAILED: RAM ends at ${ram_end:04X}, heap at ${heap_end:04X}, "
+                     f"the stack reserve starts at ${RAMTOP - STACK:04X}")
+    return syms, tsyms
 
 
 def ensure_display():
@@ -89,7 +99,7 @@ class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
 
-    def __init__(self, syms, steps, name):
+    def __init__(self, syms, steps, name, rom=ROM):
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
@@ -107,7 +117,7 @@ class Run:
         env = dict(os.environ, MSXTEST_OUT=out, MSXTEST_STEPS=steps_path,
                    MSXTEST_FRAMES=str(syms["Frames"]),
                    SDL_AUDIODRIVER="dummy", HOME=os.environ.get("HOME", "/tmp"))
-        cmd = ["openmsx", "-machine", MACHINE, "-cart", ROM, "-romtype", "page12",
+        cmd = ["openmsx", "-machine", MACHINE, "-cart", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=180)
         logp = os.path.join(out, "log.txt")
@@ -124,6 +134,9 @@ class Run:
     def peek(self, name, n=1):
         a = self.syms[name] - WORK
         return int.from_bytes(self.ram[a:a + n], "little")
+
+    def peek16_at(self, addr):
+        return int.from_bytes(self.ram[addr - WORK:addr - WORK + 2], "little")
 
     def peeks(self, name):
         v = self.peek(name)
@@ -218,11 +231,13 @@ def mouse_checks(syms, fails, vram0):
              f"debug write memory {syms['EvCounts']} 0")
     r = Run(syms, [(10, "plug joyporta mouse"),
                    (10, "exec xdotool mousemove 300 200"), (10, reset),
-                   (10, "mouse_move 20 0"), (10, "mouse_move 0 -30"), (10, "")], "mouse")
+                   (10, "mouse_move 20 0"), (10, "mouse_move 0 -30"),
+                   (5, "key_down 8 0x01"), (5, "key_up 8 0x01"), (10, "")], "mouse")
     check(fails, "ptr-moved", r.ptr() == (130, 75), f"pointer {r.ptr()}, expected (130, 75)")
+    check(fails, "hit-desktop", r.peek("LastHit") == 5, f"press at (130,75) hit {r.peek('LastHit')}, CTL_DESKTOP is 5")
     check(fails, "sprite-follows", r.sat(0)[:2] == (74, 130), f"sprite 0 {r.sat(0)}")
     c = r.counts()
-    check(fails, "ev-ptrmove", c[0] == 2 and c[1:] == (0, 0, 0), f"events {c}, expected (2, 0, 0, 0)")
+    check(fails, "ev-ptrmove", c == (2, 1, 1, 1), f"events {c}, expected (2, 1, 1, 1): SPACE is a key as well as the button")
     check(fails, "nt-untouched", r.nt() == vram0[NT:NT + COLS * ROWS], "name table unchanged")
 
 
@@ -259,13 +274,91 @@ def key_checks(syms, fails):
 STATROW = 23
 
 
+def heap_walk(r, base, end):
+    out, p = [], base
+    while p < end:
+        size = r.peek16_at(p)
+        out.append((p, size, r.ram[p + 2 - WORK], r.ram[p + 3 - WORK]))
+        p += 4 + size
+    return out
+
+
+def test_build_checks(tsyms, fails):
+    """The correctness subjects run at boot in the TEST build and leave
+    records in RAM; this reads them back. The model is zxtest.py's
+    heap_checks, calendar_checks and BStoreTest."""
+    import datetime
+    print("test build:")
+    r = Run(tsyms, [(60, "")], "subjects", rom=TROM)
+    check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
+
+    # heap: three blocks split off exactly, a free returns the block
+    # untouched, freeing by owner coalesces everything into one piece
+    base, end = tsyms["HeapBase"], tsyms["HEAPEND"]
+    ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
+    stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
+    blocks = heap_walk(r, base, end)
+    check(fails, "heap-split", ptrs == [base + 4, base + 4 + 1152 + 4, base + 4 + 1152 + 4 + 676 + 4],
+          f"blocks at {[hex(p) for p in ptrs]}")
+    # The first block, owner $10, is never freed; the free by owner takes
+    # $12 and coalesces its neighbours into one piece. The walk happens
+    # after TestApp, which took three bytes for the calendar's state.
+    total = end - base - 4
+    check(fails, "heap-stat", stats[0][0] == total - 1152 - 676 - 300 - 12 and stats[1][0] == stats[0][0] + 676
+          and stats[2] == (total - 1156, total - 1156),
+          f"free/biggest after alloc {stats[0]}, after free {stats[1]}, after free by owner {stats[2]}; heap {total}")
+    check(fails, "heap-coalesce", len(blocks) == 3 and blocks[0][1:] == (1152, 1, 0x10) and blocks[1][1:] == (3, 1, 0x10)
+          and blocks[2] == (base + 1156 + 7, total - 1156 - 7, 0, 0),
+          f"{len(blocks)} blocks: {blocks[:3]}")
+
+    # calendar: 1,200 months against Python's calendar
+    months = r.ram[tsyms["TcMonths"] - WORK:tsyms["TcMonths"] - WORK + 2400]
+    wrong = []
+    for year in range(1980, 2080):
+        for month in range(12):
+            i = ((year - 1980) * 12 + month) * 2
+            first = datetime.date(year, month + 1, 1)
+            nxt = datetime.date(year + 1, 1, 1) if month == 11 else datetime.date(year, month + 2, 1)
+            if months[i] != first.weekday() or months[i + 1] != (nxt - first).days:
+                wrong.append((year, month + 1, months[i], first.weekday(), months[i + 1], (nxt - first).days))
+    check(fails, "cal-months", not wrong, f"1200 months, {len(wrong)} wrong {wrong[:3]}")
+    grid = r.ram[tsyms["TcGrid"] - WORK:tsyms["TcGrid"] - WORK + 9 + 6 * 21]
+    head = grid[:8]
+    weeks = [grid[9 + w * 21:9 + w * 21 + 20] for w in range(6)]
+    want = [b"                1  2", b" 3  4  5  6  7  8  9", b"10 11 12 13 14 15 16",
+            b"17 18 19 20 21 22 23", b"24 25 26 27 28 29 30", b"31                  "]
+    check(fails, "cal-grid", head == b"AUG 2026" and weeks == want, f"{head!r} {weeks[0]!r} .. {weeks[5]!r}")
+    sel = r.ram[tsyms["TcSel"] - WORK:tsyms["TcSel"] - WORK + 9]
+    check(fails, "cal-walk", tuple(sel) == (46, 6, 31, 46, 7, 1, 46, 8, 1),
+          f"back from 1 Aug {tuple(sel[:3])}, ENTER {tuple(sel[3:6])}, midnight on the 31st {tuple(sel[6:])}")
+
+    # storage: 64 bytes round trip, four files, a fifth refused, a delete
+    st = {k: r.peek(k, n) for k, n in (("TsWrote", 2), ("TsRead", 2), ("TsBad", 1), ("TsErrCode", 1),
+                                        ("TsDirN", 1), ("TsFull", 1), ("TsDel", 1), ("TsDirAfter", 1))}
+    check(fails, "store-rw", st["TsWrote"] == 64 and st["TsRead"] == 64 and st["TsBad"] == 0 and st["TsErrCode"] == 0,
+          f"wrote {st['TsWrote']}, read {st['TsRead']}, {st['TsBad']} wrong, err {st['TsErrCode']}")
+    check(fails, "store-dir", st["TsDirN"] == 4 and st["TsFull"] == 8 and st["TsDel"] == 0 and st["TsDirAfter"] == 1,
+          f"{st['TsDirN']} files, fifth open err {st['TsFull']} (STERR_FULL 8), delete {st['TsDel']}, "
+          f"fourth entry after delete {'gone' if st['TsDirAfter'] else 'present'}")
+
+    # app model: the calendar's state saved and loaded back
+    check(fails, "app-desc", r.peek("TaDesc", 2) == tsyms["AppCal"], f"AppAt -> ${r.peek('TaDesc', 2):04X}")
+    stt = r.ram[tsyms["TaState"] - WORK:tsyms["TaState"] - WORK + 6]
+    check(fails, "app-swap", tuple(stt) == (46, 7, 30, 46, 7, 30), f"after init {tuple(stt[:3])}, after load {tuple(stt[3:])}")
+
+    # hit testing on the cell grid
+    hits = tuple(r.ram[tsyms["ThitRes"] - WORK:tsyms["ThitRes"] - WORK + 5])
+    check(fails, "hit-table", hits == (4, 5, 0, 0, 6), f"bar, desktop, status, off edge, open drop: {hits}, expected (4, 5, 0, 0, 6)")
+
+
 def main():
-    syms = build()
+    syms, tsyms = build()
     ensure_display()
     fails = []
     vram0 = boot_checks(syms, fails)
     mouse_checks(syms, fails, vram0)
     key_checks(syms, fails)
+    test_build_checks(tsyms, fails)
     if fails:
         print("FAILED:", ", ".join(fails))
         return 1

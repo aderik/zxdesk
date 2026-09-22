@@ -84,16 +84,39 @@ Subjects, all asserted (phase 1):
 | keys | A, SHIFT+1, SPACE → 3 EV_KEY, one EV_BTNDOWN, one EV_BTNUP, status row echoes `A! ` |
 | repeat | C held 30 frames → 5 EV_KEY (1 + 1 at 20 + 3 more every 3), `CCCCC` on the status row |
 
+
+Phase 2, the portable layers, run as a TEST=1 build (`msxtest.rom`)
+whose subjects execute at boot and leave records in RAM, the way the
+ZX TEST build did, with openMSX in place of the Python Z80:
+
+| subject | what is checked |
+|---|---|
+| heap | three blocks split to size at the expected addresses; a scribbled payload freed returns exactly its bytes; free by owner coalesces into one piece (stats 6128 / 6804 / 7112 of 8268) |
+| calendar | all 1,200 months 1980-2079 agree with Python's calendar on weekday of the 1st and length; August 2026 grid rows; a step back from the 1st lands on 31 July; ENTER sets today; midnight on the 31st rolls the month |
+| storage | 64 bytes written, closed, reopened and read back identical through the RAM backend; four files listed; the fifth open fails with STERR_FULL; delete removes the entry |
+| app model | AppAt finds the calendar's descriptor; AppSave then AppLoad through a heap state block restores (46, 7, 30) |
+| hit test | bar, desktop, status band, off the edge and an open menu drop give (4, 5, 0, 0, 6) |
+
+In the normal build a SPACE press at (130, 75) records CTL_DESKTOP.
+
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
 ## Memory budget
 
 The build prints it and fails past the line:
 
-    code $4000-$4634, 1588 bytes, 31180 free; RAM $C000-$C06E, 110 bytes, 12050 free before the stack
+    msxdesk.rom: code $4000-$4DAE, 3502 bytes, 29266 free; RAM $C000-$C515, 1301 bytes, heap 10987 to $F000, 896 reserve
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
-`RamEnd` must stay under $F380 - $400 (BIOS work area, and a stack).
+the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and
+$F000-$F380 is the stack's, under the BIOS work area. The RAM storage
+backend's four 256 byte files and directory are 1,088 of the 1,301.
+
+The ZX storage layer dispatched through the operands of JP
+instructions it patched at run time; a ROM cannot be patched, so the
+six vectors are a table in RAM and each entry point jumps through IX
+(HL carries the name or the buffer). The hit test table is copied to
+RAM for the same reason.
 
 ## Screen model, phase 1
 

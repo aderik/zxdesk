@@ -94,7 +94,83 @@ _ram            defl    _ram+size
                 var     LastKey, 1
                 var     StatCol, 1
                 var     EvQueue, EVSLOTS*4
+                var     LastHit, 1      ; what the last press landed on
+                ; the heap
+                var     HpWant, 2
+                var     HpOwner, 1
+                var     HpTotal, 2
+                var     HpBiggest, 2
+                ; storage: the six vectors are contiguous, StSelect copies
+                ; a registry row over them
+                var     StBackend, 1
+                var     StCapability, 1
+                var     StVecOpen, 2
+                var     StVecClose, 2
+                var     StVecRead, 2
+                var     StVecWrite, 2
+                var     StVecDir, 2
+                var     StVecDelete, 2
+                var     RamName, RAMNAMESZ
+                var     RamMode, 1
+                var     RamHandle, 1
+                var     RamPos, 2
+                var     RamBuf, 2
+                var     RamCnt, 2
+                var     RamDir, RAMFILES*RAMENTSZ
+                var     RamHeap, RAMFILES*RAMCHUNK
+                ; menus, the part hit testing reads
+                var     MenuOpen, 1
+                var     MnX, 1
+                var     MnY, 1
+                var     MnW, 1
+                var     MnH, 1
+                var     CtlTable, 16    ; CTLTABSZ, which is defined later
+                ; the live window's application
+                var     WinApp, 2
+                var     WinStateP, 2
+                ; calendar: the three state bytes are contiguous, so are
+                ; today's
+                var     CalState, 0
+                var     CalYear, 1
+                var     CalMonth, 1
+                var     CalSel, 1
+                var     TodayY, 1
+                var     TodayM, 1
+                var     TodayD, 1
+                var     CalLeapY, 1
+                var     CalDow, 1
+                var     CalFirst, 1
+                var     CalLen, 1
+                var     CalIx, 1
+                var     CalCol, 1
+                var     CalRem, 1
+                var     CalRow, 24
+IFDEF TEST
+                var     TestDone, 1
+                var     ThPtr, 6
+                var     ThStat, 12
+                var     TcMonths, CALYEARS*12*2
+                var     TcGrid, 9+6*21
+                var     TcSel, 9
+                var     TsSrc, 64
+                var     TsDst, 64
+                var     TsHandle, 1
+                var     TsWrote, 2
+                var     TsRead, 2
+                var     TsBad, 1
+                var     TsErrCode, 1
+                var     TsDirN, 1
+                var     TsFull, 1
+                var     TsDel, 1
+                var     TsDirAfter, 1
+                var     TaDesc, 2
+                var     TaState, 6
+                var     ThitRes, 5
+ENDIF
 RamEnd          equ     _ram
+; The heap takes everything from here to the stack's reserve.
+HeapBase        equ     RamEnd
+HEAPEND         equ     $F000
 
                 org     $4000
                 defb    "AB"
@@ -143,8 +219,23 @@ Init:
                 ld      a,90
                 ld      (PtrY),a
                 call    EvInit
+                call    HeapInit
+                call    StInit
+                call    CtlInit
+                xor     a
+                ld      (LastHit),a
+                ld      (TodayY),a
+                ld      (TodayM),a
+                inc     a
+                ld      (TodayD),a
+                ld      hl,0
+                ld      (WinApp),hl
+                ld      (WinStateP),hl
                 call    PtrUpdate
                 call    SetupIrq
+IFDEF TEST
+                call    TestRun
+ENDIF
 
 ; ------------------------------------------------------------
 ;  The frame. HALT wakes on the VDP interrupt, which the BIOS
@@ -750,6 +841,12 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
 
                 include "events.inc"
                 include "kbd.inc"
+                include "heap.inc"
+                include "storage.inc"
+                include "hittest.inc"
+                include "app.inc"
+                include "calendar.inc"
+                include "test.inc"
 
 RomEnd:
                 defs    $C000-RomEnd,$FF

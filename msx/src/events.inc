@@ -127,6 +127,21 @@ HdlPtrMove:
 HdlBtnDown:
                 ld      hl,EvCounts+1
                 inc     (hl)
+                ; what was under the pointer, in cells
+                ld      a,(PtrX)
+                rrca
+                rrca
+                rrca
+                and     $1F
+                ld      b,a
+                ld      a,(PtrY)
+                rrca
+                rrca
+                rrca
+                and     $1F
+                ld      c,a
+                call    HitTest
+                ld      (LastHit),a
                 ret
 HdlBtnUp:
                 ld      hl,EvCounts+2
