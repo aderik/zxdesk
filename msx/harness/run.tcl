@@ -8,6 +8,7 @@
 # Environment:
 #   MSXTEST_OUT    directory for vram.bin, ram.bin, shot.png, log.txt
 #   MSXTEST_STEPS  Tcl file with a `steps` list of {frames command}
+#   MSXTEST_FRAMES address of the ROM's 16 bit frame counter
 #
 # openMSX swallows Tcl errors raised inside `after` callbacks and then
 # runs forever, so every callback is wrapped and the realtime guard
@@ -34,28 +35,56 @@ proc dump {} {
     set f [open $::out/ram.bin wb]
     puts -nonewline $f [debug read_block memory 0xC000 0x4000]
     close $f
+    set f [open $::out/bios.bin wb]
+    puts -nonewline $f [debug read_block memory 0 0x4000]
+    close $f
     binary scan [debug read_block memory 0x4000 8] H* at4000
     note "dumped at [machine_info time], pc [reg PC], 4000: $at4000, slots [debug read_block {slotted memory} 0 0]"
 }
 
+# With the throttle off the renderer skips frames and a screenshot is
+# black, so the throttle goes on for ten of the ROM's frames before the
+# capture. Inside a proc it has to be `set ::throttle`: a bare `set`
+# makes a local variable and leaves the emulator running flat out,
+# which cost an hour of black screenshots.
 proc finish {} {
     catch {dump} err
-    catch {screenshot $::out/shot.png} err
-    note "done"
-    close $::log
-    exit 0
+    set ::throttle on
+    wait_frames [expr {[frames] + 10}] {
+        catch {screenshot $::out/shot.png} err
+        note "shot: $err"
+        close $::log
+        exit 0
+    }
+}
+
+# The ROM's own frame counter, a word at MSXTEST_FRAMES. Steps are timed
+# on it rather than on emulated seconds: a key changed when the counter
+# reads T is seen by exactly the poll of iteration T+1, so a held key's
+# frame count is a number and not a window.
+proc frames {} {
+    binary scan [debug read_block memory $::env(MSXTEST_FRAMES) 2] s n
+    return [expr {$n & 0xFFFF}]
 }
 
 proc run_steps {steps} {
     if {[llength $steps] == 0} { finish; return }
     lassign [lindex $steps 0] frames cmd
     set rest [lrange $steps 1 end]
-    after time [expr {$frames / 50.0}] [list step_cb $cmd $rest]
+    wait_frames [expr {[frames] + $frames}] [list step_cb $cmd $rest]
+}
+
+proc wait_frames {target cb} {
+    if {[frames] >= $target} {
+        uplevel #0 $cb
+    } else {
+        after frame [list wait_frames $target $cb]
+    }
 }
 
 proc step_cb {cmd rest} {
     if {[catch {uplevel #0 $cmd} err]} { note "STEP ERROR in {$cmd}: $err"; exit 4 }
-    note "step: $cmd"
+    note "step at [frames]: $cmd"
     run_steps $rest
 }
 
