@@ -35,6 +35,9 @@ proc dump {} {
     set f [open $::out/ram.bin wb]
     puts -nonewline $f [debug read_block memory 0xC000 0x4000]
     close $f
+    set f [open $::out/vdp.bin wb]
+    puts -nonewline $f [debug read_block {VDP regs} 0 8]
+    close $f
     set f [open $::out/bios.bin wb]
     puts -nonewline $f [debug read_block memory 0 0x4000]
     close $f

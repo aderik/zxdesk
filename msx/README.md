@@ -78,7 +78,7 @@ Subjects, all asserted (phase 1):
 
 | subject | what is checked |
 |---|---|
-| boot | name table = the Python oracle (bar text, rule row, lattice, status band), crc32 b905ed57; the BIOS font (crc32 897a8dfc on C-BIOS) and the two tiles in all three thirds of the PGT; sprite shape at $3800 and attributes (89,120,0,1) + end marker; H.TIMI: interrupts == frames, 0 dropped; pointer idle, no events |
+| boot | VDP R1 $E2 (16x16 sprites; CHGMOD leaves 8x8 and the arrow lost its tail), R7 white border; name table = the Python oracle (bar text, rule row, lattice, status band), crc32 b905ed57; the BIOS font (crc32 897a8dfc on C-BIOS) and the two tiles in all three thirds of the PGT; sprite shape at $3800 and attributes (89,120,0,1) + end marker; H.TIMI: interrupts == frames, 0 dropped; pointer idle, no events |
 | mouse | host (+20, -30) → pointer (130, 75), sprite follows, exactly 2 EV_PTRMOVE and no button events |
 | cursor | RIGHT held 20 frames, DOWN 10 → (158, 103), the ramp recomputed in Python; 30 moves, no key events |
 | keys | A, SHIFT+1, SPACE → 3 EV_KEY, one EV_BTNDOWN, one EV_BTNUP, status row echoes `A! ` |
@@ -90,7 +90,7 @@ Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
 The build prints it and fails past the line:
 
-    code $4000-$4627, 1575 bytes, 31193 free; RAM $C000-$C06E, 110 bytes, 12050 free before the stack
+    code $4000-$4634, 1588 bytes, 31180 free; RAM $C000-$C06E, 110 bytes, 12050 free before the stack
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 `RamEnd` must stay under $F380 - $400 (BIOS work area, and a stack).

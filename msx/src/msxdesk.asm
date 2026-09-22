@@ -15,6 +15,7 @@
 
 ; ---- BIOS entry points (C-BIOS and the real one agree on these)
 CHGMOD          equ     $005F           ; A = screen mode
+RG1SAV          equ     $F3E0           ; BIOS shadow of VDP register 1
 CGTABL          equ     $0004           ; word: the BIOS font, 256 glyphs of 8 bytes
 HTIMI           equ     $FD9F           ; five byte hook, called each VDP interrupt
 
@@ -110,6 +111,12 @@ Init:
                 out     (VDPCTRL),a
                 ld      a,$87           ; register 7, backdrop
                 out     (VDPCTRL),a
+                ld      a,$E2           ; 16K, display on, interrupts, 16x16
+                out     (VDPCTRL),a     ; sprites: CHGMOD leaves them 8x8 and
+                ld      a,$81           ; the arrow lost its tail
+                out     (VDPCTRL),a
+                ld      a,$E2
+                ld      (RG1SAV),a      ; keep the BIOS's shadow honest
                 call    LoadFont
                 call    LoadTiles
                 call    LoadColours

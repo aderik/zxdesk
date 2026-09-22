@@ -93,7 +93,7 @@ class Run:
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
-        for f in ("vram.bin", "ram.bin", "bios.bin", "log.txt", "shot.png"):
+        for f in ("vram.bin", "ram.bin", "bios.bin", "vdp.bin", "log.txt", "shot.png"):
             try:
                 os.remove(os.path.join(out, f))
             except FileNotFoundError:
@@ -118,6 +118,7 @@ class Run:
         self.vram = open(os.path.join(out, "vram.bin"), "rb").read()
         self.ram = open(os.path.join(out, "ram.bin"), "rb").read()
         self.bios = open(os.path.join(out, "bios.bin"), "rb").read()
+        self.vdp = open(os.path.join(out, "vdp.bin"), "rb").read()
         assert len(self.vram) == 16384 and len(self.ram) == 16384
 
     def peek(self, name, n=1):
@@ -192,6 +193,8 @@ def boot_checks(syms, fails):
               f"glyphs 32-127 from BIOS ${cgtabl:04X}, crc32 {zlib.crc32(font):08x}")
     shape = rom[syms["PtrShape"] - ROMBASE:syms["PtrShape"] - ROMBASE + 32]
     check(fails, "sprite-shape", r.vram[0x3800:0x3820] == shape, "32 bytes at $3800")
+    check(fails, "vdp-regs", r.vdp[1] == 0xE2 and r.vdp[7] == 0x0F,
+          f"R1 ${r.vdp[1]:02X} (16x16 sprites), R7 ${r.vdp[7]:02X} (white border)")
     check(fails, "sprite-attr", r.sat(0) == (89, 120, 0, 1) and r.sat(1)[0] == 0xD0,
           f"sprite 0 {r.sat(0)}, sprite 1 y {r.sat(1)[0]}")
     frames, irqs, dropped = r.peek("Frames", 2), r.peek("IrqCnt", 2), r.peek("Dropped", 2)
