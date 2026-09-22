@@ -1,6 +1,7 @@
-# ZX Desk for MSX1
+# MSX Desk
 
-The MSX1 port lives under `msx/`. The ZX tree above it is the source it
+ZX Desk, Damian Cooper's desktop for the Spectrum, ported to the MSX1
+and renamed for the machine it runs on. The port lives under `msx/`. The ZX tree above it is the source it
 is ported from and stays untouched.
 
     msx/test.sh             build the toolchain image once, assemble, run every subject, assert
@@ -114,13 +115,50 @@ item, save-under out of the shadow):
 | menu-restore | after the pick the name table is byte for byte the boot one again |
 | menu-away | VIEW then a press on the desktop: no pick, closed, restored |
 
+Windows (`windows.inc`, phase 3: the ZX window model on the cell grid,
+buffers of W x H name table codes from the heap, a Python compositor
+as the oracle):
+
+| subject | what is checked |
+|---|---|
+| win-cal | VIEW > CALENDAR opens a calendar at (4, 4): the name table equals the compositor's desktop + frame + January 1980 from Python's `calendar`, crc32 656f02da |
+| win-two | MSX DESK > ABOUT in front of it: two windows, z order (1, 0), the front title inverted |
+| win-drag | a press on the calendar's title raises it; a mouse move of (+32, +16) with the button held drags it to (6, 5); z (0, 1) |
+| drag-frames | across the whole scenario (two opens, a raise, a drag) not one frame is dropped, on both machines |
+| win-close | the close box closes the front window; the name table is the about window alone |
+| close-heap | the heap holds the about window's buffer (90 bytes, owner $11) and nothing else |
+| win-keys | SHIFT+RIGHT moves the selection to the 2nd, shown inverted; ENTER makes it today (0, 0, 2) |
+
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
+
+## Frame budget, measured
+
+`WinRedraw` repaints by row range: every change says which rows it
+touched and which windows need recomposing (a fresh window, a key the
+application acted on, a focus change flips two title rows only), and
+one repaint per frame paints the desktop for those rows, recomposes the
+dirty buffers and blits every window's rows within the range, back to
+front. A drag recomposes nothing. Measured with breakpoints on the
+loop (`machine_info time` at wake and at the next HALT), the calendar
+open through the menu is the longest iteration:
+
+| version | open frame | note |
+|---|---|---|
+| full recompose, 22 rows | ~30 ms | dropped two frames per open |
+| row range, dirty slots | 19.3 ms | dropped one at 50 Hz |
+| + MarkRow table, grid by running day, cap-only focus | 17.3 ms | |
+| + PUSH desktop fill, rows marked once, incremental blit | 16.0 ms | |
+| + APPF_FULL, no blank under an app that paints it all | 14.9 ms | 0 dropped at 50 and 60 Hz |
+
+The flush of the resulting rows lands in the next frame: OUTI, NOP,
+JP NZ at 30 cycles a cell, 16 rows about 5.6 ms. `drag-frames` asserts
+zero dropped frames on both machines, so this is a guarded number.
 
 ## Memory budget
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$5084, 4228 bytes, 28540 free; RAM $C000-$C85F, 2143 bytes, heap 10145 to $F000, 896 reserve
+    msxdesk.rom: code $4000-$58D9, 6361 bytes, 26407 free; RAM $C000-$C8E3, 2275 bytes, heap 10013 to $F000, 896 reserve
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HEAPEND` ($F000), and
@@ -147,8 +185,8 @@ Screen 2's colour table is one colour byte per pattern row per third,
 so the font is loaded twice: at $20-$7F black on white and at $A0-$FF
 white on black, the same bytes with the colours swapped, in all three
 thirds. Inverted text is a code with bit 7 set, anywhere on the
-screen; the status band is inverted spaces. Codes $80-$9F are the
-desktop tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
+screen; the status band is inverted spaces and a front window's title
+row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
 
 The stack is set to $F380 in Init: the BIOS called the cartridge on
 its own stack, and C-BIOS and a real BIOS need not agree where that

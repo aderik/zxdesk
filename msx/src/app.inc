@@ -14,7 +14,7 @@ APP_STSZ        equ     0       ; word: bytes of per instance state
 APP_LIVE        equ     2       ; word: where the live copy of it sits
 APP_INIT        equ     4       ; word: called once, on a fresh instance
 APP_DRAW        equ     6       ; word: paint the interior
-APP_KEY         equ     8       ; word: A = the key. Zero drops it
+APP_KEY         equ     8       ; word: A = the key; returns A = 1 if it repainted
 APP_TITLE       equ     10      ; word
 APP_X           equ     12      ; where the first instance opens, in cells
 APP_Y           equ     13
@@ -23,16 +23,30 @@ APP_H           equ     15
 APP_CLOSE       equ     16      ; word: carry set means "not yet"
 APP_SCROLL      equ     18      ; word: the scroll model, null for no bar
 APP_SCROLLTO    equ     20      ; word: A = the unit to make first
-APPSIZE         equ     22
+; A byte of flags, new here. APPF_FULL says the draw vector writes
+; every interior cell, so WinDraw need not blank them first: the
+; calendar's blank was measured at 1.6 ms of a 16 ms window open.
+APP_FLAGS       equ     22
+APPF_FULL       equ     $01
+APPSIZE         equ     23
 
 APP_CAL         equ     0
+APP_ABOUT       equ     1
 
 AppTable:
-AppCal:         defw    CALSTSZ, CalState, CalInit, 0
+AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
                 defw    CalKey, TxtCalTitle
                 defb    4, 4, CALW, CALH
                 defw    0
                 defw    0, 0
+                defb    APPF_FULL
+                ; No state, no key vector: it drops what is typed at it.
+AppAbout:       defw    0, 0, 0, WdAbout
+                defw    0, TxtAboutTitle
+                defb    8, 12, ABOUTW, ABOUTH
+                defw    0
+                defw    0, 0
+                defb    0
 
 ; in:  A = an application index
 ; out: HL = its descriptor
@@ -70,6 +84,7 @@ AppCall:
                 jp      (hl)
 AcNone:
                 pop     af
+                xor     a                       ; a null vector changed nothing
                 ret
 
 ; The state of the window going out, written back to its own block,

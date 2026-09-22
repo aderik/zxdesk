@@ -9,7 +9,7 @@
 ;  window is phase 3's, when there is a window.
 ; ============================================================
 CALW            equ     23
-CALH            equ     10              ; cells: title, header, labels, six weeks, border
+CALH            equ     10              ; cells: title, header, labels, six weeks, bottom
 CALYEAR0        equ     1980
 CALYEARS        equ     100
 CALSTSZ         equ     3               ; the year, the month and the selected day
@@ -274,36 +274,58 @@ CalPrepare:
                 ld      (CalLen),a
                 ret
 
-; The grid row for week CalIx, into CalRow: seven cells of two digits
-; and a space, twenty characters, null terminated.
+; The grid row for week CalIx: seven cells of two digits and a space,
+; twenty characters, null terminated, into CalRow or, through
+; CalBuildWeekAt, wherever HL points. A running day number in E
+; rather than the cell arithmetic per cell: the grid was measured at
+; five milliseconds of a window open the other way.
 CalBuildWeek:
                 ld      hl,CalRow
-                xor     a
-                ld      (CalCol),a
-CalCellLoop:
+CalBuildWeekAt:
                 ld      a,(CalIx)
                 ld      b,a
                 add     a,a
                 add     a,a
                 add     a,a
                 sub     b                       ; times seven
-                ld      b,a
-                ld      a,(CalCol)
-                add     a,b
-                ld      b,a                     ; the cell's index in the grid
-                ld      a,(CalFirst)
-                ld      d,a
-                ld      a,b
-                sub     d
-                jr      c,CalBlank              ; before the first
                 inc     a
                 ld      b,a
-                ld      a,(CalLen)
-                cp      b
-                jr      c,CalBlank              ; past the last
-                ld      a,b
-                ld      c,1
-                call    CalPut2
+                ld      a,(CalFirst)
+                neg
+                add     a,b
+                ld      e,a                     ; the day in the first cell,
+                ld      a,(CalLen)              ; nought or below before the 1st
+                ld      d,a
+                ld      b,7
+CalCellLoop:
+                ld      a,e
+                or      a
+                jr      z,CalBlank
+                jp      m,CalBlank              ; before the first
+                cp      d
+                jr      z,CalDay
+                jr      nc,CalBlank             ; past the last
+CalDay:
+                push    hl                      ; two digits from the table:
+                push    bc                      ; a division loop a cell was
+                ld      l,a                     ; measured at 0.8 ms a week
+                ld      h,0
+                add     hl,hl
+                ld      bc,CalDayTab
+                add     hl,bc
+                ld      a,(hl)
+                ld      (CalPair),a
+                inc     hl
+                ld      a,(hl)                  ; through memory: B is the
+                ld      (CalPair+1),a           ; cell count and D and E are
+                pop     bc                      ; the month, so no register
+                pop     hl                      ; is free to carry it
+                ld      a,(CalPair)
+                ld      (hl),a
+                inc     hl
+                ld      a,(CalPair+1)
+                ld      (hl),a
+                inc     hl
                 jr      CalCellDone
 CalBlank:
                 ld      (hl),' '
@@ -313,13 +335,10 @@ CalBlank:
 CalCellDone:
                 ld      (hl),' '
                 inc     hl
-                ld      a,(CalCol)
-                inc     a
-                ld      (CalCol),a
-                cp      7
-                jr      c,CalCellLoop
-                dec     hl
-                ld      (hl),0
+                inc     e
+                djnz    CalCellLoop
+                dec     hl                      ; the trailing space is not
+                ld      (hl),0                  ; wanted
                 ret
 
 ; A = a value below 100, HL = where its two digits go, C = 1 to print
@@ -364,8 +383,10 @@ CalD7Done:
                 ret
 
 ; The key vector. Left and right walk the days, up and down the
-; weeks, ENTER makes the selected day today. Repainting is the
-; window's, in phase 3.
+; weeks, ENTER makes the selected day today. Returns A = 1 if the
+; window needs recomposing, 0 if the key meant nothing to it: SPACE
+; is the button as well as a key, and a full grid rebuild on every
+; press was measured to drop the frame a drag starts in.
 CalKey:
                 cp      KEY_LEFT
                 jr      nz,CkyNotL
@@ -390,18 +411,104 @@ CkyNotU:
                 ld      b,7
                 ld      c,1
 CkyMove:
-                jp      CalMoveB
+                call    CalMoveB
+                ld      a,1                     ; the grid changed
+                ret
 CkyNotD:
                 cp      KEY_ENTER
-                ret     nz
+                ld      a,0                     ; anything else meant nothing,
+                ret     nz                      ; and nothing is repainted
                 ld      a,(CalYear)
                 ld      (TodayY),a
                 ld      a,(CalMonth)
                 ld      (TodayM),a
                 ld      a,(CalSel)
                 ld      (TodayD),a
+                ld      a,1
                 ret
 
+; ------------------------------------------------------------
+;  CalDraw
+;  The draw vector: header, weekday letters and six week rows
+;  into the live window's buffer, the selected day on the
+;  inverted bank. Today gets no rule: there is no pixel row on
+;  the grid to put one on.
+; ------------------------------------------------------------
+CalDraw:
+                call    CalPrepare
+                xor     a
+                ld      (PrintInv),a
+                call    CalBuildHead
+                ld      hl,CalRow
+                ld      b,1
+                ld      c,1
+                call    WinPrint
+                ld      b,1                     ; APPF_FULL: the rest of the
+                ld      c,9                     ; header row and the cell
+                call    WinCell                 ; after the labels are ours
+                ld      b,CALW-2-8              ; to blank
+CdPad:
+                ld      (hl),' '
+                inc     hl
+                djnz    CdPad
+                ld      hl,CalDays
+                ld      b,2
+                ld      c,1
+                call    WinPrint
+                ld      b,2
+                ld      c,CALW-2
+                call    WinCell
+                ld      (hl),' '
+                xor     a
+                ld      (CalIx),a
+CdWeek:
+                ld      a,(CalIx)               ; each week straight into the
+                add     a,3                     ; buffer rather than through
+                ld      b,a                     ; CalRow and a copy
+                ld      c,1
+                call    WinCell
+                call    CalBuildWeekAt
+                ld      (hl),' '                ; over the terminator
+                ld      hl,CalIx
+                inc     (hl)
+                ld      a,(hl)
+                cp      6
+                jr      c,CdWeek
+                ; the selected day again, inverted
+                ld      a,(CalSel)
+                dec     a
+                ld      b,a
+                ld      a,(CalFirst)
+                add     a,b
+                call    CalDiv7                 ; A = week, CalRem = column
+                add     a,3
+                ld      b,a
+                ld      a,(CalRem)
+                ld      c,a
+                add     a,a
+                add     a,c
+                inc     a
+                ld      c,a
+                push    bc
+                ld      a,(CalSel)
+                ld      hl,CalPair
+                ld      c,1
+                call    CalPut2
+                ld      (hl),0
+                pop     bc
+                ld      hl,CalPair
+                ld      a,INVBANK
+                ld      (PrintInv),a
+                call    WinPrint
+                xor     a
+                ld      (PrintInv),a
+                ret
+
+; Days 0 to 31 as two characters, a leading nought shown as a space.
+CalDayTab:      defb    "   1 2 3 4 5 6 7 8 9"
+                defb    "10111213141516171819"
+                defb    "20212223242526272829"
+                defb    "3031"
 CalNames:       defb    "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC"
 CalDays:        defb    "MO TU WE TH FR SA SU",0
 TxtCalTitle:    defb    "CALENDAR",0

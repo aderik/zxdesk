@@ -168,7 +168,7 @@ def check(fails, name, ok, detail):
 def expected_nt():
     """The screen the ROM paints, built here from the same layout rules."""
     bar = bytearray(b" " * COLS)
-    bar[1:1 + 28] = b"ZX DESK   FILE   VIEW   HELP"
+    bar[1:1 + 28] = b"MSX DESK  FILE   VIEW   HELP"
     rows = [bytes(bar), bytes([0x81]) * COLS] + [bytes([0x80]) * COLS] * 21 + [bytes([0xA0]) * COLS]
     return b"".join(rows)
 
@@ -436,6 +436,121 @@ def menu_checks(syms, fails, vram0):
           f"crc32 {zlib.crc32(r.nt()):08x}")
 
 
+# ---- windows: a Python compositor as the oracle
+T_LEFT, T_RIGHT, T_BOTTOM, T_BL, T_BR, T_CLOSE = 0x82, 0x83, 0x84, 0x85, 0x86, 0x87
+CAL_W, CAL_H, ABOUT_W, ABOUT_H = 23, 10, 18, 5
+ABOUT_TEXT = [b"MSX DESK", b"AFTER ZX DESK BY", b"DAMIAN COOPER"]
+
+
+def window_buffer(w, h, title, front, lines):
+    """The frame as WinDraw composes it, then the application's rows:
+    a list of (row, col, bytes, inverted)."""
+    fill = 0xA0 if front else 0x20
+    buf = bytearray([T_CLOSE] + [fill] * (w - 1))
+    for i, ch in enumerate(title):
+        buf[1 + i] = ch | (0x80 if front else 0)
+    for _ in range(h - 2):
+        buf += bytes([T_LEFT]) + b" " * (w - 2) + bytes([T_RIGHT])
+    buf += bytes([T_BL]) + bytes([T_BOTTOM]) * (w - 2) + bytes([T_BR])
+    for row, col, text, inv in lines:
+        for i, ch in enumerate(text[:w - col]):
+            buf[row * w + col + i] = ch | (0x80 if inv else 0)
+    return bytes(buf)
+
+
+def calendar_lines(year, month, sel):
+    import calendar
+    lines = [(1, 1, f"{calendar.month_abbr[month].upper()} {year}".encode(), False),
+             (2, 1, b"MO TU WE TH FR SA SU", False)]
+    first, length = calendar.monthrange(year, month)
+    cells = [b"  "] * first + [f"{d:2d}".encode() for d in range(1, length + 1)]
+    cells += [b"  "] * (42 - len(cells))
+    for w in range(6):
+        lines.append((3 + w, 1, b" ".join(cells[w * 7:w * 7 + 7]), False))
+    idx = first + sel - 1
+    lines.append((3 + idx // 7, 1 + (idx % 7) * 3, f"{sel:2d}".encode(), True))
+    return lines
+
+
+def compose(nt0, windows):
+    """windows back to front: (x, y, w, h, title, lines); the last is front."""
+    nt = bytearray(nt0)
+    for i, (x, y, w, h, title, lines) in enumerate(windows):
+        buf = window_buffer(w, h, title, i == len(windows) - 1, lines)
+        for r in range(h):
+            nt[(y + r) * COLS + x:(y + r) * COLS + x + w] = buf[r * w:(r + 1) * w]
+    return bytes(nt)
+
+
+def cal_win(x, y, sel=1):
+    return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(1980, 1, sel))
+
+
+def about_win(x, y):
+    return (x, y, ABOUT_W, ABOUT_H, b"ABOUT", [(1 + i, 1, t, False) for i, t in enumerate(ABOUT_TEXT)])
+
+
+def window_checks(syms, fails, vram0):
+    print("windows:")
+    nt0 = vram0[NT:NT + COLS * ROWS]
+
+    def press_at(x, y, hold=5):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 8 0x01"), (hold, "key_up 8 0x01")]
+
+    open_cal = press_at(140, 3) + press_at(148, 19)     # VIEW, then CALENDAR on row 2
+    open_about = press_at(8, 3) + press_at(16, 11)      # MSX DESK, then ABOUT on row 1
+
+    def rec(r, slot):
+        base = syms["WndTab"] + slot * 15
+        return tuple(r.ram[base - WORK:base - WORK + 4])
+
+    r = Run(syms, open_cal + [(10, "")], "win-cal")
+    want = compose(nt0, [cal_win(4, 4)])
+    check(fails, "win-cal", r.peek("WndCount") == 1 and r.nt() == want,
+          f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    r = Run(syms, open_cal + open_about + [(10, "")], "win-two")
+    want = compose(nt0, [cal_win(4, 4), about_win(10, 13)])
+    z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + 2])
+    check(fails, "win-two", r.peek("WndCount") == 2 and z == (1, 0) and r.nt() == want,
+          f"{r.peek('WndCount')} windows, z {z}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # a press on the calendar's title raises it; dragged two cells right
+    # and one down with the mouse, button held through SPACE
+    drag = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
+            (5, f"debug write memory {syms['PtrX']} 50; debug write memory {syms['PtrY']} 35; "
+                f"debug write memory {syms['EvLastX']} 50; debug write memory {syms['EvLastY']} 35"),
+            (5, "key_down 8 0x01"), (5, "mouse_move 32 16"), (10, "key_up 8 0x01"), (10, "")]
+    r = Run(syms, open_cal + open_about + drag, "win-drag")
+    want = compose(nt0, [about_win(10, 13), cal_win(6, 5)])
+    z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + 2])
+    check(fails, "win-drag", z == (0, 1) and rec(r, 0)[:2] == (6, 5) and r.nt() == want,
+          f"z {z}, calendar at {rec(r, 0)[:2]}, expected (6, 5), crc32 {zlib.crc32(r.nt()):08x}, "
+          f"expected {zlib.crc32(want):08x}")
+    check(fails, "drag-frames", r.peek("Dropped", 2) == 0 and r.peek("Frames", 2) > 60,
+          f"{r.peek('Frames', 2)} frames, {r.peek('Dropped', 2)} dropped")
+
+    # the close box of the front window
+    r = Run(syms, open_cal + open_about + drag + press_at(50, 42) + [(10, "")], "win-close")
+    want = compose(nt0, [about_win(10, 13)])
+    used = [b for b in heap_walk(r, syms["HeapBase"], syms["HEAPEND"]) if b[2]]
+    check(fails, "win-close", r.peek("WndCount") == 1 and r.nt() == want,
+          f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    check(fails, "close-heap", [b[3] for b in used] == [0x11] and used[0][1] == ABOUT_W * ABOUT_H,
+          f"used blocks {[(b[1], hex(b[3])) for b in used]}: the about window's buffer only")
+
+    # SHIFT+RIGHT moves the selection, ENTER makes it today
+    keys = [(5, "key_down 6 0x01; key_down 8 0x80"), (3, "key_up 8 0x80; key_up 6 0x01"),
+            (5, "key_down 7 0x40"), (3, "key_up 7 0x40"), (10, "")]
+    r = Run(syms, open_cal + keys, "win-keys")
+    want = compose(nt0, [cal_win(4, 4, sel=2)])
+    today = tuple(r.ram[syms["TodayY"] - WORK:syms["TodayY"] - WORK + 3])
+    check(fails, "win-keys", r.peek("CalSel") == 2 and today == (0, 0, 2) and r.nt() == want,
+          f"selection {r.peek('CalSel')}, today {today}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -444,6 +559,7 @@ def main():
     mouse_checks(syms, fails, vram0)
     key_checks(syms, fails)
     menu_checks(syms, fails, vram0)
+    window_checks(syms, fails, vram0)
     test_build_checks(tsyms, fails)
     if fails:
         print("FAILED:", ", ".join(fails))

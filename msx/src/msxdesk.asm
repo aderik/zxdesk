@@ -1,5 +1,7 @@
 ; ============================================================
-;  ZX Desk for MSX1
+;  MSX Desk
+;  ZX Desk, Damian Cooper's desktop for the Spectrum, ported to
+;  the MSX1 and renamed for the machine it now runs on.
 ;  Phase 1: the skeleton. Screen 2 with a tile desktop and a
 ;  menu bar in the name table, a hardware sprite for the
 ;  pointer, the H.TIMI hook for the frame clock, and keyboard
@@ -78,6 +80,9 @@ _ram            defl    _ram+size
                 var     Frames, 2       ; main loop iterations, at $C008
                 var     IrqCnt, 2       ; interrupts taken, counted by H.TIMI
                 var     Dropped, 2      ; frames the loop was late for
+                var     DropLog, 32     ; the frame numbers of the first 16 late ones
+                var     DropN, 1
+                var     Recomposes, 2   ; how often WndRepaintAll ran
                 var     Buttons, 1      ; Kempston layout, active low: bit 1 left, bit 0 right
                 var     PtrX, 1
                 var     PtrY, 1
@@ -146,9 +151,40 @@ _ram            defl    _ram+size
                 var     MnLastMenu, 1
                 var     MnSave, MNSAVESZ
                 var     CtlTable, 16    ; CTLTABSZ, which is defined later
-                ; the live window's application
+                ; windows: the live record, the table, the z order
+                var     WinRec, 0
+                var     WinX, 1
+                var     WinY, 1
+                var     WinW, 1
+                var     WinH, 1
+                var     WinTitle, 2
+                var     WinBufP, 2
                 var     WinApp, 2
                 var     WinStateP, 2
+                var     WinOldX, 1
+                var     WinOldY, 1
+                var     WinMoved, 1
+                var     WndTab, 4*15    ; WNDMAX*WNDRECSZ, defined later
+                var     WndZ, 4
+                var     WndCount, 1
+                var     WndCur, 1
+                var     Dragging, 1
+                var     DragDX, 1
+                var     DragDY, 1
+                var     WndWantKind, 1
+                var     WndForce, 1
+                var     WhtCol, 1
+                var     WhtRow, 1
+                var     WndHit, 1
+                var     WdCapFill, 1
+                var     RepaintDue, 1
+                var     RowLo, 1        ; the pending repaint's rows
+                var     RowHi, 1
+                var     WndDirty, 1     ; a bit per slot whose buffer is stale
+                var     WndCapDirty, 1  ; and per slot whose title row is
+                var     SpSave, 2       ; while the stack fills the desktop
+                var     WdFull, 1
+                var     CalPair, 3
                 ; calendar: the three state bytes are contiguous, so are
                 ; today's
                 var     CalState, 0
@@ -233,6 +269,9 @@ Init:
                 ld      (Frames),hl
                 ld      (IrqCnt),hl
                 ld      (Dropped),hl
+                ld      (Recomposes),hl
+                xor     a
+                ld      (DropN),a
                 xor     a
                 ld      (HoldCnt),a
                 ld      (KbdLast),a
@@ -261,9 +300,7 @@ Init:
                 ld      (TodayM),a
                 inc     a
                 ld      (TodayD),a
-                ld      hl,0
-                ld      (WinApp),hl
-                ld      (WinStateP),hl
+                call    WndInit
                 call    PtrUpdate
                 call    SetupIrq
 IFDEF TEST
@@ -287,6 +324,7 @@ MainLoop:
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
+                call    WinRedraw       ; a dragged window, recomposed once
                 ld      hl,(Frames)
                 inc     hl
                 ld      (Frames),hl
@@ -325,6 +363,22 @@ FrameWatch:
                 ld      de,(Dropped)
                 add     hl,de
                 ld      (Dropped),hl
+                ld      a,(DropN)
+                cp      16
+                jr      nc,FwNoLog
+                inc     a
+                ld      (DropN),a
+                dec     a
+                add     a,a
+                ld      e,a
+                ld      d,0
+                ld      hl,DropLog
+                add     hl,de
+                ld      de,(Frames)
+                ld      (hl),e
+                inc     hl
+                ld      (hl),d
+FwNoLog:
                 ld      hl,(IrqCnt)     ; resync so a late frame counts once
                 dec     hl
                 ld      (Frames),hl
@@ -360,14 +414,27 @@ ReadInput:
                 ld      (Buttons),a
                 call    ReadMouse
 
-                ; cursor keys: row 8, bit 4 left, 5 up, 6 down, 7 right
+                ; cursor keys: row 8, bit 4 left, 5 up, 6 down, 7 right.
+                ; With SHIFT held they are the application's, as KEY_LEFT
+                ; and friends through the shift table, and the pointer
+                ; stays put.
                 ld      c,0
+                in      a,(PPIC)
+                and     $F0
+                or      6
+                out     (PPIC),a
+                in      a,(PPIB)
+                ld      d,a                     ; bit 0 = SHIFT, active low
                 in      a,(PPIC)
                 and     $F0
                 or      8
                 out     (PPIC),a
                 in      a,(PPIB)
                 ld      e,a
+                bit     0,d
+                jr      nz,RiK0
+                ld      e,$FF                   ; shifted: no pointer keys
+RiK0:
                 bit     4,e
                 jr      nz,RiK1
                 set     0,c
@@ -711,18 +778,17 @@ CellAddr:
                 add     hl,bc
                 ret
 
-; A = row: set its bit in DirtyRows.
+; A = row: set its bit in DirtyRows. A table for the bit: the shift
+; loop was measured at a tenth of a window open, thirty calls at
+; three hundred cycles.
 MarkRow:
                 ld      c,a
                 and     7
-                ld      b,a
-                ld      a,$01
-                jr      z,MrBit
-MrShift:
-                add     a,a
-                djnz    MrShift
-MrBit:
                 ld      e,a
+                ld      d,0
+                ld      hl,BitTab
+                add     hl,de
+                ld      e,(hl)
                 ld      a,c
                 rrca
                 rrca
@@ -738,6 +804,7 @@ MrNoCy:
                 or      e
                 ld      (hl),a
                 ret
+BitTab:         defb    $01,$02,$04,$08,$10,$20,$40,$80
 
 ; A = character, B = row, C = column.
 PutChar:
@@ -772,16 +839,19 @@ FillRow:
                 ld      c,0
                 call    CellAddr
                 pop     af
-                ld      b,SCRCOLS
-FrLoop:
-                ld      (hl),a
-                inc     hl
-                djnz    FrLoop
+                rept    SCRCOLS                 ; unrolled: 13 cycles a cell
+                ld      (hl),a                  ; against 26, and the desktop
+                inc     hl                      ; is 22 rows of these
+                endm
                 ret
 
 ; The dirty rows of the shadow to VRAM. Called right after the
 ; interrupt, so the first rows go out in the border; the rest are
-; still safe because 4+7+11+6+13 = 41 cycles separate the OUTs.
+; still safe because OUTI, NOP, JP NZ is 30 cycles between OUTs.
+; Measured: 22 rows at 47 cycles a cell, plus a recompose, plus a
+; second recompose from a key in the same frame, dropped 7 frames
+; of a 115 frame drag; at 30 with one recompose a frame it drops
+; none.
 NtFlush:
                 ld      a,(DirtyRows)
                 ld      hl,(DirtyRows+1)
@@ -830,12 +900,11 @@ NfBit:
                 call    SetWrt
                 pop     hl
                 ld      b,SCRCOLS
+                ld      c,VDPDATA
 NfOut:
-                ld      a,(hl)
-                out     (VDPDATA),a
-                inc     hl
-                nop
-                djnz    NfOut
+                outi                            ; 16, and the VDP wants 29
+                nop                             ; between OUTs during the
+                jp      nz,NfOut                ; display: 16+4+10 = 30
                 pop     hl
                 pop     bc
 NfNext:
@@ -878,19 +947,7 @@ InitScreen:
                 ld      b,MENUROW
                 ld      c,1
                 call    PrintStr
-                ld      a,T_RULE
-                ld      b,1
-                call    FillRow
-                ld      b,2
-IsLattice:
-                push    bc
-                ld      a,T_LATTICE
-                call    FillRow
-                pop     bc
-                inc     b
-                ld      a,b
-                cp      STATROW
-                jr      c,IsLattice
+                call    DrawDesktop
                 ld      a,' '+INVBANK           ; the status band is inverted
                 ld      b,STATROW               ; text on the inverted bank
                 jp      FillRow
@@ -997,22 +1054,37 @@ LoadSprite:
 
 ; ---- Data
 TxtMarker:      defb    "ZXMSX",0
-TxtMenu:        defb    "ZX DESK   FILE   VIEW   HELP",0
+TxtMenu:        defb    "MSX DESK  FILE   VIEW   HELP",0
 
 ; The measured default ramp: pixels per frame as the hold builds.
 AccelTab:       defb    1,2,3,5,7
 
 Tiles:
-                ; T_LATTICE: a halftone
+                ; $80 T_LATTICE: a halftone
                 defb    $AA,$55,$AA,$55,$AA,$55,$AA,$55
-                ; T_RULE: the same under a solid line
+                ; $81 T_RULE: the same under a solid line
                 defb    $FF,$55,$AA,$55,$AA,$55,$AA,$55
+                ; $82 T_LEFT, $83 T_RIGHT: a window's side edges
+                defb    $80,$80,$80,$80,$80,$80,$80,$80
+                defb    $01,$01,$01,$01,$01,$01,$01,$01
+                ; $84 T_BOTTOM, $85 T_BL, $86 T_BR
+                defb    $00,$00,$00,$00,$00,$00,$00,$FF
+                defb    $80,$80,$80,$80,$80,$80,$80,$FF
+                defb    $01,$01,$01,$01,$01,$01,$01,$FF
+                ; $87 T_CLOSE: the close box
+                defb    $FF,$81,$BD,$A5,$A5,$BD,$81,$FF
 TILESEND:
 TileColours:
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
                 defb    C_TEXT,C_LATTICE,C_LATTICE,C_LATTICE
                 defb    C_LATTICE,C_LATTICE,C_LATTICE,C_LATTICE
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
+                defb    C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT,C_TEXT
 
 ; The arrow, eleven rows, in the left half of a 16 by 16 sprite.
 PtrShape:
@@ -1041,6 +1113,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "app.inc"
                 include "calendar.inc"
                 include "menus.inc"
+                include "windows.inc"
                 include "test.inc"
 
 RomEnd:

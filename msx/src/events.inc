@@ -123,7 +123,10 @@ EvHandlers:
 HdlPtrMove:
                 ld      hl,EvCounts+0
                 inc     (hl)
-                ret
+                ld      a,(Dragging)
+                or      a
+                ret     z
+                jp      DdMove
 HdlBtnDown:
                 ld      hl,EvCounts+1
                 inc     (hl)
@@ -170,7 +173,25 @@ HbdNoMenu:
                 pop     bc
                 ld      (LastHit),a
                 cp      CTL_MENUBAR
-                ret     nz
+                jr      z,HbdBar
+                ; Windows are above the desktop and below the bar. A press
+                ; raises and focuses, because those are the same thing.
+                push    bc
+                call    WndHitTest
+                pop     bc
+                cp      CTL_NONE
+                ret     z
+                ld      (LastHit),a
+                push    af
+                ld      a,(WndHit)
+                call    WndFocusTo
+                pop     af
+                cp      CTL_CLOSEBOX
+                jp      z,WndClose
+                cp      CTL_TITLEBAR
+                ret     nz                      ; a press in the body does nothing yet
+                jp      WndGrab
+HbdBar:
                 call    MenuHitTitle
                 or      a
                 ret     z
@@ -179,13 +200,37 @@ HbdNoMenu:
 HdlBtnUp:
                 ld      hl,EvCounts+2
                 inc     (hl)
+                xor     a
+                ld      (Dragging),a
                 ret
 HdlKey:
                 ld      hl,EvCounts+3
                 inc     (hl)
                 ld      a,b
                 ld      (LastKey),a
-                ; Echo on the status row, wrapping at the right edge.
+                ld      a,(MenuOpen)            ; an open menu owns the keyboard
+                or      a
+                ret     nz
+                ; The key goes to the front window's application, through
+                ; its descriptor, and the window is recomposed afterwards.
+                ; With no window it is echoed on the status row instead,
+                ; which is the skeleton's habit and the harness's probe.
+                ld      a,(WndCount)
+                or      a
+                jr      z,HkEcho
+                push    bc
+                ld      a,(WndZ)
+                call    WndSelect
+                pop     bc
+                ld      a,b
+                ld      c,APP_KEY
+                call    AppCall
+                or      a
+                ret     z                       ; the key meant nothing to it
+                ld      a,(WndCur)              ; recomposed at the end of the
+                call    WndTouch                ; frame, with whatever else
+                jp      RowsAddLive             ; changed
+HkEcho:
                 ld      a,(StatCol)
                 ld      c,a
                 inc     a

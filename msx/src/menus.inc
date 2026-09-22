@@ -71,8 +71,13 @@ MhtNone:
                 xor     a
                 ret
 
-; Open menu A, one based.
+; Open menu A, one based. A repaint still pending from this frame
+; goes first, or it would paint over the drop and the save-under
+; would put back the wrong cells.
 MenuOpenDrop:
+                push    af
+                call    WinRedraw
+                pop     af
                 ld      (MenuOpen),a
                 dec     a
                 ld      hl,MenuDefs
@@ -186,29 +191,51 @@ SuRow:
                 jr      nz,SuRow
                 ret
 
-; And back again, marking the rows.
+; And back again, marking the rows. DE walks the shadow a row at a
+; time rather than through CellAddr for each.
 RestoreUnder:
-                ld      hl,MnSave
                 ld      a,(MnY)
+                ld      b,a
+                ld      a,(MnH)
+                ld      c,a
+                push    bc
+                call    RowsMark                ; MnY for MnH rows
+                pop     bc
+                call    ShadowRow
+                ld      a,(MnX)
+                ld      c,a
+                ld      b,0
+                add     hl,bc
+                ex      de,hl                   ; DE = the first cell
+                ld      hl,MnSave
+                ld      a,(MnH)
                 ld      b,a
 RuRow:
                 push    bc
-                push    hl
-                ld      a,(MnX)
-                ld      c,a
-                call    CellAddr                ; marks the row
-                ex      de,hl
-                pop     hl
                 ld      a,(MnW)
                 ld      c,a
                 ld      b,0
                 ldir
+                ld      a,(MnW)
+                neg
+                add     a,SCRCOLS
+                ld      c,a
+                ex      de,hl
+                add     hl,bc
+                ex      de,hl
+                pop     bc
+                djnz    RuRow
+                ret
+
+; B = first row, C = count: marked dirty.
+RowsMark:
+                ld      a,b
+                push    bc
+                call    MarkRow
                 pop     bc
                 inc     b
-                ld      a,(MnH)
-                add     a,MENUROW+1
-                cp      b
-                jr      nz,RuRow
+                dec     c
+                jr      nz,RowsMark
                 ret
 
 ; One row of spaces per item, the item's text one cell in.
@@ -283,4 +310,10 @@ MnaNext:
                 jr      MnaLoop
 
 MnActions:
+                defb    1,0
+                defw    AboutOpen               ; ZX DESK, ABOUT
+                defb    3,1
+                defw    WndOpenCal              ; VIEW, CALENDAR
+                defb    4,1
+                defw    AboutOpen               ; HELP, ABOUT
                 defb    $FF
