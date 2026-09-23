@@ -331,12 +331,12 @@ def mouse_checks(syms, fails, vram0):
     r = Run(syms, [(10, "plug joyporta mouse"),
                    (10, "exec xdotool mousemove 300 200"), (10, reset),
                    (10, "mouse_move 20 0"), (10, "mouse_move 0 -30"),
-                   (5, "key_down 8 0x01"), (5, "key_up 8 0x01"), (10, "")], "mouse")
+                   (5, "key_down 6 0x02"), (5, "key_up 6 0x02"), (10, "")], "mouse")
     check(fails, "ptr-moved", r.ptr() == (130, 75), f"pointer {r.ptr()}, expected (130, 75)")
     check(fails, "hit-desktop", r.peek("LastHit") == 5, f"press at (130,75) hit {r.peek('LastHit')}, CTL_DESKTOP is 5")
     check(fails, "sprite-follows", r.sat(0)[:2] == (74, 130), f"sprite 0 {r.sat(0)}")
     c = r.counts()
-    check(fails, "ev-ptrmove", c == (2, 1, 1, 1), f"events {c}, expected (2, 1, 1, 1): SPACE is a key as well as the button")
+    check(fails, "ev-ptrmove", c == (2, 1, 1, 0), f"events {c}, expected (2, 1, 1, 0): CTRL clicks without typing")
     check(fails, "nt-untouched", r.nt() == vram0[NT:NT + COLS * ROWS], "name table unchanged")
 
 
@@ -356,13 +356,13 @@ def key_checks(syms, fails):
     check(fails, "cursor-events", c[3] == 0 and c[0] == hx + hy, f"events {c}: {hx + hy} moves, no keys")
 
     # A (row 2 bit 6) tapped for 3 frames, SHIFT+1 (row 6 bit 0, row 0 bit 1)
-    # for 3 frames, SPACE (row 8 bit 0) as the button for 5 frames.
+    # for 3 frames, SPACE (row 8 bit 0) as text for 5 frames.
     r = Run(syms, [(5, "key_down 2 0x40"), (3, "key_up 2 0x40"),
                    (5, "key_down 6 0x01; key_down 0 0x02"), (3, "key_up 0 0x02; key_up 6 0x01"),
                    (5, "key_down 8 0x01"), (5, "key_up 8 0x01"), (5, "")], "keys")
     c = r.counts()
-    check(fails, "key-events", c[3] == 3 and c[1] == 1 and c[2] == 1,
-          f"events {c}: 3 keys, one press, one release")
+    check(fails, "key-events", c[3] == 3 and c[1] == 0 and c[2] == 0,
+          f"events {c}: 3 keys, no button events")
     status = r.nt()[STATROW * COLS:STATROW * COLS + 4]
     check(fails, "status-echo", status == bytes(c | 0x80 for c in b"A!  "), f"status row {status!r}, inverted bank")
     check(fails, "last-key", r.peek("LastKey") == ord(" "), f"last key {r.peek('LastKey')}")
@@ -499,7 +499,7 @@ def menu_checks(syms, fails, vram0):
     def press_at(x, y):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
                     f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
-                (5, "key_down 8 0x01"), (5, "key_up 8 0x01")]
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
 
     def expected_open(menu):
         col, width, dropw, items = defs[menu - 1]
@@ -599,7 +599,7 @@ def window_checks(syms, fails, vram0):
     def press_at(x, y, hold=5):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
                     f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
-                (5, "key_down 8 0x01"), (hold, "key_up 8 0x01")]
+                (5, "key_down 6 0x02"), (hold, "key_up 6 0x02")]
 
     open_cal = press_at(140, 3) + press_at(148, 19)     # VIEW, then CALENDAR on row 2
     open_about = press_at(8, 3) + press_at(16, 11)      # MSX DESK, then ABOUT on row 1
@@ -620,11 +620,11 @@ def window_checks(syms, fails, vram0):
           f"{r.peek('WndCount')} windows, z {z}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     # a press on the calendar's title raises it; dragged two cells right
-    # and one down with the mouse, button held through SPACE
+    # and one down with the mouse, button held through CTRL
     drag = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
             (5, f"debug write memory {syms['PtrX']} 50; debug write memory {syms['PtrY']} 35; "
                 f"debug write memory {syms['EvLastX']} 50; debug write memory {syms['EvLastY']} 35"),
-            (5, "key_down 8 0x01"), (5, "mouse_move 32 16"), (10, "key_up 8 0x01"), (10, "")]
+            (5, "key_down 6 0x02"), (5, "mouse_move 32 16"), (10, "key_up 6 0x02"), (10, "")]
     r = Run(syms, open_cal + open_about + drag, "win-drag")
     want = compose(nt0, [about_win(10, 13), cal_win(6, 5)])
     z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + 2])
@@ -692,7 +692,7 @@ def app_checks(syms, fails, vram0):
     def press_at(x, y, hold=5):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
                     f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
-                (5, "key_down 8 0x01"), (hold, "key_up 8 0x01")]
+                (5, "key_down 6 0x02"), (hold, "key_up 6 0x02")]
 
     def tap(row, mask, shift=False):
         down = f"key_down {row} {mask:#x}" + ("; key_down 6 0x01" if shift else "")
@@ -715,8 +715,29 @@ def app_checks(syms, fails, vram0):
           f"rows {rows[0]!r} {rows[1]!r}, cursor ({r.peek('NoteCX')}, {r.peek('NoteCY')}), "
           f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
+    # SPACE must type into the focused note even with the pointer over its body.
+    park = (f"debug write memory {syms['PtrX']} 100; debug write memory {syms['PtrY']} 70; "
+            f"debug write memory {syms['EvLastX']} 100; debug write memory {syms['EvLastY']} 70")
+    r = Run(syms, file_new + [(5, park)] + tap(*H) + tap(8, 0x01) + tap(*I) + [(10, "")], "note-space")
+    rows = [b"H I"] + [b""] * 15
+    want = compose(nt0, [note_win(8, 6, rows, 3, 0)])
+    check(fails, "note-space", r.bytes("NoteBuf", 14) == b"H I".ljust(14)
+          and (r.peek("NoteCX"), r.peek("NoteCY")) == (3, 0) and r.nt() == want,
+          f"row {r.bytes('NoteBuf', 14)!r}, cursor {r.peek('NoteCX')}, "
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # Holding SPACE repeats text without grabbing or closing the window.
+    r = Run(syms, file_new + [(5, park)] + tap(*H)
+            + [(3, "key_down 8 0x01"), (30, "key_up 8 0x01")]
+            + tap(*I) + [(10, "")], "note-space-repeat")
+    want = compose(nt0, [note_win(8, 6, [b"H     I"] + [b""] * 15, 7, 0)])
+    check(fails, "note-space-repeat", r.bytes("NoteBuf", 14) == b"H     I".ljust(14)
+          and r.peek("NoteCX") == 7 and r.counts()[1:3] == (2, 2) and r.nt() == want,
+          f"row {r.bytes('NoteBuf', 14)!r}, events {r.counts()}, "
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
     # save, type more, open: the file comes back over the document
-    r = Run(syms, file_new + tap(*H) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + [(10, "")], "note-file")
+    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + [(10, "")], "note-file")
     buf = r.bytes("NoteBuf", 256)
     rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
     ramdir = r.bytes("RamDir", 16)
@@ -728,7 +749,7 @@ def app_checks(syms, fails, vram0):
     else:
         stored = ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[11:13], "little") == 256 and ramdir[13] == 1
         where = f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[11:13], 'little')} bytes"
-    check(fails, "note-file", rows[0] == b"HI".ljust(14) and r.peek("NoteResult") == 0 and stored and r.nt() == want,
+    check(fails, "note-file", rows[0] == b"H I".ljust(14) and r.peek("NoteResult") == 0 and stored and r.nt() == want,
           f"row 0 {rows[0]!r} after save/type/open, result {r.peek('NoteResult')}, {where}")
 
     # the clock: opened, hours bumped, then run for 3100 frames

@@ -116,7 +116,6 @@ _ram            defl    _ram+size
                 var     PrintInv, 1     ; nonzero: PrintStr uses the inverted bank
                 var     EvQueue, EVSLOTS*4
                 var     LastHit, 1      ; what the last press landed on
-                var     SpaceEaten, 1   ; SPACE is being a button, not a key
                 ; the name table's shadow: everything paints here and
                 ; NtFlush copies the dirty rows out after the interrupt
                 var     ShadowNT, SCRCOLS*SCRROWS
@@ -418,7 +417,6 @@ Start:
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
-                ld      (SpaceEaten),a
                 ld      (MnLastMenu),a
                 dec     a
                 ld      (MenuPick),a
@@ -535,7 +533,7 @@ PtrUpdate:
 
 ; ------------------------------------------------------------
 ;  Input. The mouse in joystick port A first, then the cursor
-;  keys with the ZX version's acceleration ramp, then SPACE as
+;  keys with the ZX version's acceleration ramp, then CTRL as
 ;  the left button. The Kempston button layout is kept so
 ;  EvPoll did not have to change.
 ; ------------------------------------------------------------
@@ -665,9 +663,13 @@ RiNoDown:
                 call    ApplyDelta
                 ld      (PtrY),a
 RiBtn:
-                ; SPACE acts as the left button. Row 8 is still selected.
+                ; CTRL is the keyboard left button; SPACE is text only.
+                in      a,(PPIC)
+                and     $F0
+                or      6
+                out     (PPIC),a
                 in      a,(PPIB)
-                bit     0,a
+                bit     1,a
                 ret     nz
                 ld      a,(Buttons)
                 res     1,a

@@ -86,7 +86,7 @@ Subjects, all asserted (phase 1):
 | boot | VDP R1 $E2 (16x16 sprites; CHGMOD leaves 8x8 and the arrow lost its tail), R7 white border; name table = the Python oracle (bar text, rule row, lattice, status band), crc32 b905ed57; the BIOS font (crc32 897a8dfc on C-BIOS) and the two tiles in all three thirds of the PGT; sprite shape at $3800 and attributes (89,120,0,1) + end marker; H.TIMI: interrupts == frames, 0 dropped; pointer idle, no events |
 | mouse | host (+20, -30) → pointer (130, 75), sprite follows, exactly 2 EV_PTRMOVE and no button events |
 | cursor | RIGHT held 20 frames, DOWN 10 → (158, 103), the ramp recomputed in Python; 30 moves, no key events |
-| keys | A, SHIFT+1, SPACE → 3 EV_KEY, one EV_BTNDOWN, one EV_BTNUP, status row echoes `A! ` |
+| keys | A, SHIFT+1, SPACE → 3 EV_KEY, no button events, status row echoes `A! ` |
 | repeat | C held 30 frames → 5 EV_KEY (1 + 1 at 20 + 3 more every 3), `CCCCC` on the status row |
 
 
@@ -102,7 +102,7 @@ ZX TEST build did, with openMSX in place of the Python Z80:
 | app model | AppAt finds the calendar's descriptor; AppSave then AppLoad through a heap state block restores (46, 7, 30) |
 | hit test | bar, desktop, status band, off the edge and an open menu drop give (4, 5, 0, 0, 6) |
 
-In the normal build a SPACE press at (130, 75) records CTL_DESKTOP.
+In the normal build a CTRL press at (130, 75) records CTL_DESKTOP.
 
 Menus (`menus.inc`, the ZX pull downs on the cell grid, one row per
 item, save-under out of the shadow):
@@ -134,16 +134,17 @@ Applications (phase 4 so far: `note.inc`, `clock.inc`):
 | subject | what is checked |
 |---|---|
 | note-type | FILE > NEW, then H, I, ENTER, X, backspace: the document reads `HI` on row 0, cursor at (0, 1), the window shows the seven rows and the inverted cursor |
-| note-file | HI, FILE > SAVE, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `HI` again |
+| note-file | H SPACE I, FILE > SAVE, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `H I` again |
+| note-space | H SPACE I with the pointer over the note body gives `H I`, cursor 3, name-table crc32 85d6c290 on C-BIOS; holding SPACE repeats text without button events |
 | clock-face | VIEW > CLOCK, SHIFT+UP, 3100 frames: 13:01:01 on the 50 Hz machine, 13:00:51 on the 60 Hz one, the face as composed |
 | clock-rate | the ROM's second counting run in Python for an hour of true PAL (180,572) or NTSC (215,722) interrupts: 3599 s and 3600 s |
 | clock-count | the seconds the ROM counted since the set equal the Python model for the same number of interrupts |
 
 The clock's rate comes from bit 7 of the BIOS's $002B: 50 interrupts a
 second and every so often 51 (50.16 Hz), or 59 and every so often 60
-(59.92 Hz), the ZX hundredths accumulator with MSX numbers. SPACE is
-the button as well as a key: a press that lands on something is a
-click and its key is dropped, a press on nothing types.
+(59.92 Hz), the ZX hundredths accumulator with MSX numbers. SPACE types
+a space in notepad, including while the pointer is over a window. CTRL is the keyboard equivalent of the left mouse button; cursor
+keys move the pointer, and SHIFT+cursor keys go to the application.
 
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 

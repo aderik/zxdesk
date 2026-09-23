@@ -16,8 +16,8 @@
 ;  is reported at a time, as before: a text field has no use for
 ;  chords. The cursor keys move the pointer in ReadInput and are
 ;  nought here, so a key never does two things at once. SHIFT is
-;  the one modifier decoded; CTRL and GRAPH wait for the
-;  shortcuts of phase 2.
+;  the one modifier decoded; CTRL clicks the pointer in ReadInput.
+;  GRAPH is not mapped.
 ; ============================================================
 KEY_LEFT        equ     1
 KEY_RIGHT       equ     2

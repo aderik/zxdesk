@@ -8,7 +8,7 @@
 # Uses the host's openmsx when installed (Fedora: dnf install openmsx
 # cbios), otherwise the toolchain image with the X socket passed in
 # (works under Wayland through XWayland). Cursor keys move the pointer,
-# SPACE is the button, the host mouse is the MSX mouse once the window
+# CTRL is the button, the host mouse is the MSX mouse once the window
 # has focus; F12 opens the openMSX console.
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

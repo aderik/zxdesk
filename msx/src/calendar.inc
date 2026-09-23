@@ -384,9 +384,8 @@ CalD7Done:
 
 ; The key vector. Left and right walk the days, up and down the
 ; weeks, ENTER makes the selected day today. Returns A = 1 if the
-; window needs recomposing, 0 if the key meant nothing to it: SPACE
-; is the button as well as a key, and a full grid rebuild on every
-; press was measured to drop the frame a drag starts in.
+; window needs recomposing, 0 if the key meant nothing to it.
+; Unhandled keys do not require a full grid rebuild.
 CalKey:
                 cp      KEY_LEFT
                 jr      nz,CkyNotL
