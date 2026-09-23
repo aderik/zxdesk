@@ -8,7 +8,8 @@
 # than bind mounted, so this also works from inside a container that only
 # has the docker socket (the LogicForce worker): a bind mount there would
 # name a path the daemon cannot see. Test output goes to stderr because
-# stdout carries the tar stream.
+# stdout carries the tar stream. -h follows symlinks, so msx/roms may be
+# a link to wherever the BIOS ROMs live on the machine running this.
 set -eo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE=zxdesk-msx
@@ -18,7 +19,7 @@ fi
 if [[ "${1:-}" == "--shell" ]]; then
   exec docker run --rm -it -v "$ROOT:/work" -w /work/msx -e HOME=/tmp -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" bash
 fi
-tar -C "$ROOT" --exclude=./msx/build --exclude=./.git -cf - . \
+tar -h -C "$ROOT" --exclude=./msx/build --exclude=./.git -cf - . \
   | docker run --rm -i -e "MSX_MACHINE=${MSX_MACHINE:-C-BIOS_MSX1_EU}" -e "MSX_EXT=${MSX_EXT:-}" "$IMAGE" sh -c \
       'mkdir -p /work && cd /work && tar xf - && cd msx && python3 msxtest.py "$@" >&2; rc=$?; tar -cf - build; exit $rc' \
       -- "$@" \
