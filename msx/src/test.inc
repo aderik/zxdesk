@@ -13,6 +13,7 @@ TestRun:
                 call    TestStorage
                 call    TestApp
                 call    TestHit
+                call    TestDiskNames
                 ld      a,1
                 ld      (TestDone),a
                 ret
@@ -24,7 +25,7 @@ TestRun:
 TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
-                ; build's records leave 1,494 bytes under a disk ROM's HIMEM.
+                ; build's records leave 998 usable bytes under a disk ROM's HIMEM.
                 ld      bc,512
                 ld      a,$10
                 call    HeapAlloc
@@ -328,4 +329,38 @@ ThitOne:
                 ld      (hl),a
                 inc     hl
                 ret
+; FCB parsing does not require a disk ROM. Use idle Commander scratch
+; for the result records, avoiding permanent test-only work RAM.
+TestDiskNames:
+                ld      hl,TdnNames
+                ld      de,CmdBuf
+                ld      b,10
+TdnLoop:
+                push    bc
+                push    de
+                push    hl
+                call    DskFcbName
+                pop     hl
+                pop     de
+                ld      a,0
+                adc     a,0
+                ld      (de),a
+                inc     de
+                push    hl
+                ld      hl,DskFcb+FCB_NAME
+                ld      bc,11
+                ldir
+                pop     hl
+TdnSkip:
+                ld      a,(hl)
+                inc     hl
+                or      a
+                jr      nz,TdnSkip
+                pop     bc
+                djnz    TdnLoop
+                ret
+TdnNames:       defb    "note",0,"note.txt",0,"abcdefgh.xyz",0
+                defb    "ABCDEFGHI",0,".TXT",0,"A.BAKX",0,"A.B.C",0
+                defb    "A?",0,"A/B",0,0
+
 ENDIF

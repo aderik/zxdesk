@@ -6,8 +6,7 @@
 ;  FCB in RAM: open, create, delete, close, random block read and
 ;  write with a record size of one byte so a read is a byte
 ;  count, and search first/next for the directory. Names are
-;  eight characters, upper case, no extension: what fits the
-;  storage layer's names and MSX-DOS both.
+;  normalised as uppercase 8.3 names, including the extension.
 ;
 ;  The BDOS pages the disk ROM into page 1 for the duration of a
 ;  call and pages this cartridge back before returning, so the
@@ -39,46 +38,103 @@ DskPresent:
                 cp      $C3
                 ret
 
-; HL = a name: into the FCB, eight characters space padded, the rest
-; of the FCB cleared. Carry set if the name is empty.
-DskFcbName:
-                push    hl
+; Clear the FCB, with a space-padded 8+3 name field.
+DskFcbClear:
                 ld      hl,DskFcb
                 ld      de,DskFcb+1
                 ld      bc,FCBSIZE-1
                 ld      (hl),0
                 ldir
+                ld      hl,DskFcb+FCB_NAME
+                ld      b,11
+DfcPad:
+                ld      (hl),' '
+                inc     hl
+                djnz    DfcPad
+                ret
+
+; HL = NAME.EXT, up to 8+3 characters. Never truncate to another
+; file's name and never accept wildcard/path characters for mutations.
+DskFcbName:
+                push    hl
+                call    DskFcbClear
                 pop     hl
                 ld      de,DskFcb+FCB_NAME
-                ld      b,11
-DfnLoop:
+                ld      b,8
+                ld      c,0
+DfnBase:
                 ld      a,(hl)
                 or      a
-                jr      z,DfnPad
-                cp      'a'
-                jr      c,DfnUp
-                cp      'z'+1
-                jr      nc,DfnUp
-                sub     $20
-DfnUp:
-                ld      (de),a
+                jr      z,DfnEnd
+                cp      '.'
+                jr      z,DfnDot
+                call    DfnChar
+                ret     c
                 inc     hl
-                inc     de
-                djnz    DfnLoop
+                jr      DfnBase
+DfnDot:
+                ld      a,c
                 or      a
-                ret
-DfnPad:
-                ld      a,b
-                cp      11
+                jr      z,DfnBad
+                inc     hl
+                ld      de,DskFcb+FCB_NAME+8
+                ld      b,3
+                ld      c,0
+DfnExt:
+                ld      a,(hl)
+                or      a
+                jr      z,DfnEnd
+                call    DfnChar
+                ret     c
+                inc     hl
+                jr      DfnExt
+DfnEnd:
+                ld      a,c
+                or      a
+                ret     nz
+DfnBad:
+                ld      a,STERR_NAME
                 scf
-                ret     z                       ; nothing at all
-                ld      a,' '
-DfnFill:
+                ret
+DfnChar:
+                cp      'a'
+                jr      c,DfnUpper
+                cp      'z'+1
+                jr      nc,DfnUpper
+                sub     $20
+DfnUpper:
+                cp      '!'
+                jr      c,DfnBad
+                cp      127
+                jr      nc,DfnBad
+                push    hl
+                ld      hl,TxtDskInvalid
+DfnCheck:
+                cp      (hl)
+                jr      z,DfnInvalid
+                inc     hl
+                push    af
+                ld      a,(hl)
+                or      a
+                jr      z,DfnValid
+                pop     af
+                jr      DfnCheck
+DfnValid:
+                pop     af
+                pop     hl
+                inc     b
+                dec     b
+                jr      z,DfnBad
                 ld      (de),a
                 inc     de
-                djnz    DfnFill
+                dec     b
+                inc     c
                 or      a
                 ret
+DfnInvalid:
+                pop     hl
+                jr      DfnBad
+TxtDskInvalid:  defb    34,"*+,./:;<=>?",91,92,93,"|",0
 
 ; A record is one byte, and the random record is DskPos.
 DskFcbSetup:
@@ -107,7 +163,7 @@ DskOpen:
                 ld      (DskMode),a
                 push    hl
                 ld      de,DskName              ; kept: the FCB is rebuilt
-                ld      bc,11                   ; after a delete
+                ld      bc,13                   ; after a delete
                 ldir
                 pop     hl
                 call    DskFcbName
@@ -159,6 +215,8 @@ DskClose:
                 ld      c,BD_CLOSE
                 call    BDOS
                 or      a
+                ret     z
+                scf
                 ret
 
 ; A = handle, HL = buffer, BC = count. Returns BC = bytes read.
@@ -203,8 +261,13 @@ DwFail:
 ; next n times; the entry lands at the DTA, which is DskEnt here.
 DskDirEnt:
                 ld      (DskDirN),a
-                ld      hl,TxtDskAll
-                call    DskFcbName
+                call    DskFcbClear
+                ld      hl,DskFcb+FCB_NAME
+                ld      b,11
+DdeWild:
+                ld      (hl),'?'
+                inc     hl
+                djnz    DdeWild
                 ld      hl,DskEnt
                 call    DskSetDta
                 ld      de,DskFcb
@@ -213,11 +276,15 @@ DskDirEnt:
                 or      a
                 jr      nz,DdeNone
 DdeNext:
+                ld      a,(DskEnt+12)          ; FAT attribute: no volume labels or folders
+                and     $18
+                jr      nz,DdeAdvance
                 ld      a,(DskDirN)
                 or      a
                 jr      z,DdeFound
                 dec     a
                 ld      (DskDirN),a
+DdeAdvance:
                 ld      de,DskFcb
                 ld      c,BD_SNEXT
                 call    BDOS
@@ -228,25 +295,42 @@ DdeNone:
                 scf
                 ret
 DdeFound:
-                ; the name, trailing spaces dropped, null terminated
                 ld      hl,DskEnt+DIR_NAME
                 ld      de,DskEntName
                 ld      b,8
-DdeCopy:
+                call    DdePart
+                ld      hl,DskEnt+DIR_NAME+8
                 ld      a,(hl)
                 cp      ' '
                 jr      z,DdeEnd
+                ld      a,'.'
                 ld      (de),a
-                inc     hl
                 inc     de
-                djnz    DdeCopy
+                ld      b,3
+                call    DdePart
 DdeEnd:
                 xor     a
                 ld      (de),a
+                ld      hl,(DskEnt+DIR_SIZE+2)
+                ld      a,h
+                or      l
+                ld      hl,$FFFF                ; saturate sizes beyond the 16-bit API
+                jr      nz,DdeSize
                 ld      hl,(DskEnt+DIR_SIZE)
-                ex      de,hl                   ; DE = the size, low word
+DdeSize:
+                ex      de,hl
                 ld      hl,DskEntName
                 or      a
+                ret
+
+DdePart:
+                ld      a,(hl)
+                cp      ' '
+                ret     z
+                ld      (de),a
+                inc     hl
+                inc     de
+                djnz    DdePart
                 ret
 
 ; HL = a name. Carry set if it could not be removed.
@@ -261,5 +345,3 @@ DskDelete:
                 ld      a,STERR_NOTFOUND
                 scf
                 ret
-
-TxtDskAll:      defb    "???????????",0

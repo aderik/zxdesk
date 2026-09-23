@@ -19,7 +19,7 @@ MenuDefs:
                 defw    MnItems1
                 defb    10,6,8,6
                 defw    MnItems2
-                defb    17,6,10,5
+                defb    17,6,10,6
                 defw    MnItems3
                 defb    24,6,8,2
                 defw    MnItems4
@@ -38,6 +38,7 @@ MnItems3:       defb    "CLOCK",0
                 defb    "CASCADE",0
                 defb    "TILE",0
                 defb    "DESKTOP",0
+                defb    "COMMANDER",0
 MnItems4:       defb    "KEYS",0
                 defb    "ABOUT",0
 
@@ -322,6 +323,8 @@ MnActions:
                 defw    ClockOpen               ; VIEW, CLOCK
                 defb    3,1
                 defw    WndOpenCal              ; VIEW, CALENDAR
+                defb    3,5
+                defw    CommanderOpen
                 defb    4,1
                 defw    AboutOpen               ; HELP, ABOUT
                 defb    $FF

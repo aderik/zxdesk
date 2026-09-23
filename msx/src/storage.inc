@@ -11,19 +11,10 @@
 ;    StWrite  A = handle, HL = buffer, BC = count -> BC = written
 ;    StIdent                        -> A = backend id
 ;
-;  Names are up to eight characters, null terminated. Modes match
-;  esxDOS so the eventual backend needs no translation.
-;
-;  The backend is selected explicitly, not probed. RST $08 on a
-;  machine with no DivMMC runs the ROM's error restart and takes
-;  the program with it, so there is no safe way to ask.
-;
-;  Dispatch is the jump itself. Each entry point is a hand laid
-;  JP whose operand is the vector, so a call costs ten T states
-;  and clobbers nothing. The obvious LD HL,(vec) / JP (HL) cannot
-;  be used here: HL carries the name on open and the buffer on
-;  read and write, so loading the vector into it would destroy
-;  the argument before the backend ever saw it.
+;  Names are null-terminated NAME.EXT strings, up to 12 characters.
+;  The disk backend validates 8.3 syntax. Modes match esxDOS.
+;  StInit chooses disk when BDOS is present and RAM otherwise.
+;  Six RAM vectors dispatch via IX, preserving HL for buffers/names.
 ; ============================================================
 ; These are esxDOS's own, which is why they were written down here
 ; before any backend used them. The mode byte splits into access bits
@@ -79,8 +70,8 @@ StIdent:        ld      a,(StBackend)
 ; A = backend id. Anything unknown leaves the safe one selected.
 ; ------------------------------------------------------------
 ;  Backend registry
-;  A backend is a nine byte row: id, capabilities, and the four
-;  entry points. Adding one is a row plus its four routines, and
+;  A backend is a fourteen byte row: id, capabilities, and six
+;  entry points. Adding one is a row plus its routines, and
 ;  nothing above this layer changes. That is the whole point of
 ;  building the mechanism before the backends that need it.
 ;
@@ -178,8 +169,8 @@ StInit:
 ;  need somewhere to live within a session. It is volatile and
 ;  makes no pretence otherwise.
 ;
-;  A directory entry is twelve bytes:
-;    name  9   up to eight characters and a terminator
+;  A directory entry is sixteen bytes:
+;    name  13  up to twelve characters and a terminator
 ;    size  2   bytes currently held
 ;    used  1   nonzero if the slot is taken
 ;
@@ -190,10 +181,8 @@ StInit:
 ;  One file open at a time, which is all anything above needs, so
 ;  the position is a single variable rather than per handle.
 ; ============================================================
-; A name field wide enough for a tape name, which is ten characters,
-; and an entry size that is a power of two so RamEntry is four shifts
-; rather than a multiply by twelve.
-RAMNAMESZ       equ     11              ; ten characters and a terminator
+; A complete 8.3 name plus terminator; the entry still fits sixteen bytes.
+RAMNAMESZ       equ     13              ; NAME.EXT (8.3) and a terminator
 RAMENTSZ        equ     16
 RAMFILES        equ     4
 RAMCHUNK        equ     256
@@ -234,9 +223,9 @@ RiLoop:
                 ret
 
 ; HL = name. Copies it into RamName, zero padded to RAMNAMESZ, so
-; every later comparison is a fixed nine byte compare and a caller
+; every later comparison is a fixed thirteen byte compare and a caller
 ; may pass a short name without padding it first. Carry set if the
-; name runs past ten characters with no terminator.
+; name runs past twelve characters with no terminator.
 RamNorm:
                 ld      de,RamName
                 ld      b,RAMNAMESZ
@@ -300,7 +289,7 @@ RfNo:
 
 ; A = the nth used entry, counting from nought. Returns HL = its
 ; name, which is already a null terminated string because RamNorm
-; refuses a name longer than eight characters and pads to nine, and
+; refuses a name longer than twelve characters and pads to thirteen, and
 ; DE = its length. Carry set if there is no nth file.
 RamDirEnt:
                 ld      c,a                     ; files still to skip

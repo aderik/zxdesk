@@ -17,7 +17,7 @@ NOTEROWS        equ     16
 NOTELASTROW     equ     NOTEROWS-1
 NOTESTRIDE      equ     16
 NOTESIZE        equ     NOTEROWS*NOTESTRIDE     ; 256, one RAMCHUNK
-NOTENAMEMAX     equ     10
+NOTENAMEMAX     equ     12
 NOTEW           equ     NOTECOLS+2
 NOTEH           equ     9               ; seven lines showing
 NOTEREFLOW      equ     2
@@ -124,6 +124,8 @@ NdRow:
                 ret
 
 NoteInit:
+                call    StIdent
+                ld      (NoteBackend),a
                 ld      hl,TxtNoteName
                 call    NoteSetName
 NoteNew:
@@ -501,10 +503,13 @@ NkNone:
 ;  The document as a file: one write and one read of NOTESIZE
 ;  through the storage layer, whichever backend is selected.
 ; ------------------------------------------------------------
-NoteSave:
-                ld      hl,NoteName
 NoteSaveAs:
                 call    NoteSetName
+NoteSave:
+                call    NoteSelectBackend
+                call    NoteSaveFile
+                jp      NoteRestoreBackend
+NoteSaveFile:
                 ld      hl,NoteName
                 ld      b,FA_OVERWRITE
                 call    StOpen
@@ -529,10 +534,13 @@ NsShort:
                 scf
                 ret
 
-NoteLoad:
-                ld      hl,NoteName
 NoteLoadAs:
                 call    NoteSetName
+NoteLoad:
+                call    NoteSelectBackend
+                call    NoteLoadFile
+                jp      NoteRestoreBackend
+NoteLoadFile:
                 ld      hl,NoteName
                 ld      b,FA_READ
                 call    StOpen
@@ -562,6 +570,18 @@ NoteLoadAs:
 NlFail:
                 call    NoteNew
                 scf
+                ret
+
+NoteSelectBackend:
+                call    StIdent
+                ld      (NotePrevBackend),a
+                ld      a,(NoteBackend)
+                jp      StSelect
+NoteRestoreBackend:
+                push    af
+                ld      a,(NotePrevBackend)
+                call    StSelect
+                pop     af
                 ret
 
 ; HL = a name, into NoteName, truncated to NOTENAMEMAX.
@@ -638,7 +658,7 @@ NmsOk:
                 ret
 
 ; OPEN reads the front notepad's file back over the document. The
-; commander, which is what the ZX opened here, comes later.
+; Commander is available separately from VIEW > COMMANDER.
 NoteMenuOpen:
                 call    NoteIsFront
                 ret     nz

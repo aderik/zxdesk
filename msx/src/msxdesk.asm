@@ -194,8 +194,8 @@ _ram            defl    _ram+size
                 ; the disk backend
                 var     DskFcb, FCBSIZE
                 var     DskEnt, 40      ; the DTA for a search
-                var     DskEntName, 9
-                var     DskName, 12
+                var     DskEntName, 13
+                var     DskName, 13
                 var     DskMode, 1
                 var     DskHandle, 1
                 var     DskPos, 2
@@ -229,6 +229,7 @@ _ram            defl    _ram+size
                 var     NoteEdited, 1
                 var     NoteDirty, 1
                 var     NoteModified, 1
+                var     NoteBackend, 1
 NOTESTSZ        equ     _ram-NoteState
                 var     NoteRowIx, 1
                 var     NoteRowDst, 1
@@ -238,6 +239,36 @@ NOTESTSZ        equ     _ram-NoteState
                 var     NoteHandle, 1
                 var     NoteGot, 2
                 var     NoteResult, 1
+                var     NotePrevBackend, 1
+                ; Commander: cached visible names belong to each instance.
+                var     CmdState, 0
+                var     CmdBk0, 1
+                var     CmdBk1, 1
+                var     CmdSel0, 1
+                var     CmdSel1, 1
+                var     CmdTop0, 1
+                var     CmdTop1, 1
+                var     CmdActive, 1
+                var     CmdStatus, 1
+                var     CmdPending, 1
+                var     CmdDeleteName, 13
+                var     CmdCache0, CMDCACHE
+                var     CmdCache1, CMDCACHE
+CMDSTSZ         equ     _ram-CmdState
+                var     CmdPane, 1
+                var     CmdCacheP, 2
+                var     CmdIndex, 1
+                var     CmdLeft, 1
+                var     CmdCol, 1
+                var     CmdRow, 1
+                var     CmdKeyCh, 1
+                var     CmdWasK, 1
+                var     CmdSize, 2
+                var     CmdGot, 2
+                var     CmdHandle, 1
+                var     CmdSrcBk, 1
+                var     CmdWork, 13
+                var     CmdBuf, 256
                 ; the clock
                 var     ClkText, 8
                 var     ClkH, 1
@@ -1249,6 +1280,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "windows.inc"
                 include "clock.inc"
                 include "note.inc"
+                include "commander.inc"
                 include "test.inc"
 
 RomEnd:

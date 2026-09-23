@@ -6,9 +6,7 @@
 ;  State is swapped into a live copy rather than indirected
 ;  through, one LDIR each way.
 ;
-;  Only the calendar is registered yet; the others arrive with
-;  their windows. The record layout is the ZX one so the later
-;  ports drop in.
+;  The record layout follows the ZX version; rendering uses cells.
 ; ============================================================
 APP_STSZ        equ     0       ; word: bytes of per instance state
 APP_LIVE        equ     2       ; word: where the live copy of it sits
@@ -34,6 +32,7 @@ APP_CAL         equ     0
 APP_ABOUT       equ     1
 APP_NOTE        equ     2
 APP_CLOCK       equ     3
+APP_CMD         equ     4
 
 AppTable:
 AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
@@ -63,6 +62,12 @@ AppClock:       defw    0, 0, 0, ClkDraw
                 defb    18, 3, CLKW, CLKH
                 defw    0
                 defw    0, 0
+                defb    0
+
+AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
+                defw    CmdKey, TxtCmdTitle
+                defb    1, 3, CMDW, CMDH
+                defw    0, 0, 0
                 defb    0
 
 ; in:  A = an application index

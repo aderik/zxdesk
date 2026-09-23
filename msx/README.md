@@ -96,7 +96,7 @@ ZX TEST build did, with openMSX in place of the Python Z80:
 
 | subject | what is checked |
 |---|---|
-| heap | three blocks split to size at the expected addresses; a scribbled payload freed returns exactly its bytes; free by owner coalesces into one piece (stats 6128 / 6804 / 7112 of 8268) |
+| heap | three blocks split to size at the expected addresses; a scribbled payload freed returns exactly its bytes; free by owner coalesces into one piece (expected addresses and statistics are calculated from the runtime heap bounds) |
 | calendar | all 1,200 months 1980-2079 agree with Python's calendar on weekday of the 1st and length; August 2026 grid rows; a step back from the 1st lands on 31 July; ENTER sets today; midnight on the 31st rolls the month |
 | storage | 64 bytes written, closed, reopened and read back identical through the RAM backend; four files listed; the fifth open fails with STERR_FULL; delete removes the entry |
 | app model | AppAt finds the calendar's descriptor; AppSave then AppLoad through a heap state block restores (46, 7, 30) |
@@ -147,6 +147,46 @@ a space in notepad, including while the pointer is over a window. CTRL is the ke
 keys move the pointer, and SHIFT+cursor keys go to the application.
 
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
+
+## Commander
+
+Open **VIEW > COMMANDER**. The two panes show DISK and RAM when a disk
+interface is present; on C-BIOS both panes show the same RAM store.
+The active pane and selected name are inverted.
+
+- **TAB** or **SHIFT+LEFT/RIGHT**: choose a pane.
+- **SHIFT+UP/DOWN**: select a file; the six-row listing scrolls.
+- **ENTER**: open a 256-byte MSX Desk document in a new notepad.
+- **C**: copy to the other device, up to 256 bytes. Existing targets are
+  refused, not overwritten. RAM holds four files.
+- **D**, then **Y**: delete the selected file. **N** or **ESC** cancels.
+- **R**: refresh both listings and reset the selection.
+
+Names use **8.3**, including the dot in the displayed name: `NOTES.TXT`
+and `NOTES.BAK` are distinct. The disk parser uppercases names and
+rejects overlong names, wildcards and paths instead of truncating them.
+Folders and volume labels are excluded: this version browses the root
+of drive A, without subdirectory navigation. Opening expects MSX Desk's
+fixed 256-byte document layout, even when a file has a `.TXT` extension.
+
+The notepad remembers the device it was opened from. Saving a document
+opened from RAM writes back to RAM, even when the desktop defaults to disk.
+Commander restores the global storage selection after each operation.
+Directory pages are cached per window; repainting performs no disk I/O.
+Before an operation, Commander resolves the displayed filename again so
+a stale index cannot select a different file after another window deletes one.
+Listings can be refreshed with R after changes made in another window.
+Disk operations are synchronous; their latency is not covered by the
+zero-dropped-frame assertion for the existing calendar drag scenario.
+
+The harness seeds real FAT12 images and asserts the name table against
+its Python compositor. It checks empty/populated panes, selection,
+scrolling, separate window state, window-limit errors, close/heap recovery,
+copying in both directions, full RAM/disk stores, close-error injection,
+cleanup of failed new copies, no overwrite, delete/cancel,
+notepad device ownership and file bytes after save. 257-byte and 64KB
+copies are refused; full 8.3 names survive listing/copy/open/save. The
+TEST ROM also exercises valid and invalid FCB names without a disk ROM.
 
 ## Frame budget, measured
 
@@ -200,8 +240,7 @@ config for) works as a WD2793 in the Philips connection style:
 
 `disk.inc` is a storage backend on MSX-DOS 1's BDOS ($F37D): open,
 create, delete, close, random block read and write with a record size
-of one byte, search first/next for the directory. Names are eight
-upper case characters, no extension. `StInit` selects it when the BDOS
+of one byte, search first/next for the directory. Names use uppercase 8.3 syntax. `StInit` selects it when the BDOS
 jump is there and the RAM backend otherwise, so the notepad's SAVE
 lands on a real MSX-DOS file that a PC can read.
 
@@ -215,7 +254,7 @@ Getting there took three measurements:
   that handler does not return, it carries on into BASIC. So with a
   disk ROM present the cartridge's INIT hooks H.MAIN, the top of
   BASIC's main loop, returns to the BIOS, and the desktop starts from
-  there with HIMEM at $DE77 and 4,213 bytes of heap. Without one
+  there with HIMEM at $DE77 and 3,717 bytes of heap. Without one
   (C-BIOS, a bare machine) INIT starts the desktop directly.
 - BASIC calls hooks with page 1 on its own ROM, so the hook must be an
   inter-slot call (RST $30, the cartridge's slot id from the slot
@@ -230,7 +269,7 @@ Getting there took three measurements:
 
 The stack and the heap's end come from HIMEM at run time, STACKRES
 ($380) apart, not from an equate. The TEST build's records leave
-1,494 bytes of heap under a disk ROM, so its heap subject allocates
+998 usable bytes of heap under a disk ROM, so its heap subject allocates
 512, 300 and 128 bytes.
 
 Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
@@ -249,14 +288,16 @@ when the machine starts.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$60F4, 8436 bytes, 24332 free; RAM $C000-$CA82, 2690 bytes, heap 9598 to $F000 without a disk ROM, 4497 with one
+    msxdesk.rom: code $4000-$66C4, 9924 bytes, 22844 free; RAM $C000-$CC72, 3186 bytes, heap 9102 to $F000 without a disk ROM, 3717 with one
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HeapEnd`, which is HIMEM
 minus $380 for the stack, read at Init: $F000 on a bare machine, $DAF7
 behind this disk ROM. The RAM storage
-backend's four 256 byte files and directory are 1,088 of the 2,076,
-the name table shadow 768.
+backend's four 256 byte files and directory occupy 1,088 bytes;
+the name table shadow occupies 768. Commander adds a 360-byte window
+buffer and 202-byte state per instance, plus two four-byte heap headers
+(570 bytes total). Its 256-byte transfer buffer is shared static RAM.
 
 The ZX storage layer dispatched through the operands of JP
 instructions it patched at run time; a ROM cannot be patched, so the
@@ -280,6 +321,6 @@ thirds. Inverted text is a code with bit 7 set, anywhere on the
 screen; the status band is inverted spaces and a front window's title
 row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
 
-The stack is set to $F380 in Init: the BIOS called the cartridge on
+The stack is set from HIMEM at startup ($F380 without a disk ROM): the BIOS called the cartridge on
 its own stack, and C-BIOS and a real BIOS need not agree where that
 was. VDP register writes go through `WrtVdp`, under DI like `SetWrt`.

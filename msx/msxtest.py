@@ -76,8 +76,8 @@ def build():
         heap_end = RAMTOP - STACK               # on a bare machine; a disk ROM takes more
         print(f"{name}: code ${ROMBASE:04X}-${rom_end:04X}, {rom_end - ROMBASE} bytes, "
               f"{0xC000 - rom_end} free; RAM ${WORK:04X}-${ram_end:04X}, {ram_end - WORK} bytes, "
-              f"heap {heap_end - ram_end} to ${heap_end:04X} without a disk ROM, {0xDF93 - STACK - ram_end} with one")
-        if ram_end > 0xDF93 - STACK:
+              f"heap {heap_end - ram_end} to ${heap_end:04X} without a disk ROM, {0xDE77 - STACK - ram_end} with one")
+        if ram_end > 0xDE77 - STACK:
             sys.exit(f"BUILD FAILED: RAM ends at ${ram_end:04X}, past a disk machine's heap start")
     return syms, tsyms
 
@@ -124,7 +124,7 @@ ROOT_SECTOR = 1 + 2 * FAT_SECTORS           # boot, two FATs
 DATA_SECTOR = ROOT_SECTOR + ROOT_ENTRIES * 32 // SECTOR
 
 
-def make_disk_image(path):
+def make_disk_image(path, files=None):
     """Blank, formatted: a BPB for 720K (2 sides, 80 tracks, 9 sectors,
     2 sectors a cluster, media $F9), two FATs, an empty root directory."""
     img = bytearray(1440 * SECTOR)
@@ -141,6 +141,29 @@ def make_disk_image(path):
     img[0:SECTOR] = boot
     for f in range(2):
         img[(1 + f * FAT_SECTORS) * SECTOR:(1 + f * FAT_SECTORS) * SECTOR + 3] = b"\xF9\xFF\xFF"
+    # Seed real FAT12 files for UI tests; the emulator still does every operation.
+    cluster = 2
+    for index, (filename, data) in enumerate((files or {}).items()):
+        assert index < ROOT_ENTRIES
+        stem, _, ext = filename.partition(".")
+        assert 0 < len(stem) <= 8 and len(ext) <= 3
+        entry = ROOT_SECTOR * SECTOR + index * 32
+        img[entry:entry + 11] = stem.encode().ljust(8) + ext.encode().ljust(3)
+        img[entry + 11] = 0x20
+        struct.pack_into("<HI", img, entry + 26, cluster if data else 0, len(data))
+        chunks = (len(data) + 1023) // 1024
+        for part in range(chunks):
+            n = cluster + part
+            value = n + 1 if part + 1 < chunks else 0xFFF
+            for fat_index in range(2):
+                pos = (1 + fat_index * FAT_SECTORS) * SECTOR + n * 3 // 2
+                old = int.from_bytes(img[pos:pos + 2], "little")
+                value16 = (old & 0x000F) | (value << 4) if n & 1 else (old & 0xF000) | value
+                img[pos:pos + 2] = value16.to_bytes(2, "little")
+            pos = (DATA_SECTOR + (n - 2) * 2) * SECTOR
+            payload = data[part * 1024:(part + 1) * 1024]
+            img[pos:pos + len(payload)] = payload
+        cluster += chunks
     with open(path, "wb") as fh:
         fh.write(img)
 
@@ -161,6 +184,9 @@ def read_disk_image(path):
         if ent[0] in (0x00, 0xE5) or ent[11] & 0x18:
             continue
         name = ent[0:8].rstrip(b" ").decode()
+        ext = ent[8:11].rstrip(b" ").decode()
+        if ext:
+            name += "." + ext
         size = int.from_bytes(ent[28:32], "little")
         cluster, data = int.from_bytes(ent[26:28], "little"), b""
         while 2 <= cluster < 0xFF0 and len(data) < size:
@@ -175,7 +201,7 @@ class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
 
-    def __init__(self, syms, steps, name, rom=ROM):
+    def __init__(self, syms, steps, name, rom=ROM, files=None):
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
@@ -199,7 +225,7 @@ class Run:
         cmd = ["openmsx", "-machine", MACHINE, "-cartb", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
         if EXT:
-            make_disk_image(DISK)
+            make_disk_image(DISK, files)
             cmd += ["-ext", EXT, "-diska", DISK]
         r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=180)
         logp = os.path.join(out, "log.txt")
@@ -397,6 +423,12 @@ def test_build_checks(tsyms, fails):
     print("test build:")
     r = Run(tsyms, [(60, "")], "subjects", rom=TROM)
     check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
+    parsed = r.bytes("CmdBuf", 120)
+    expected_fcb = (b"NOTE       ", b"NOTE    TXT", b"ABCDEFGHXYZ")
+    check(fails, "disk-83-names", all(parsed[i * 12] == 0 and parsed[i * 12 + 1:i * 12 + 12] == expected
+          for i, expected in enumerate(expected_fcb)) and all(parsed[i * 12] == 1 for i in range(3, 10)),
+          "3 valid 8.3 names uppercased/padded; 7 empty, overlong, wildcard or path names rejected")
+
 
     # heap: three blocks split off exactly, a free returns the block
     # untouched, freeing by owner coalesces everything into one piece
@@ -747,8 +779,8 @@ def app_checks(syms, fails, vram0):
         stored = "NOTE" in files and len(files["NOTE"]) == 256 and files["NOTE"][:16] == buf[:16]
         where = f"disk file NOTE {len(files.get('NOTE', b''))} bytes, {list(files)}"
     else:
-        stored = ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[11:13], "little") == 256 and ramdir[13] == 1
-        where = f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[11:13], 'little')} bytes"
+        stored = ramdir[:5] == b"NOTE\0" and int.from_bytes(ramdir[13:15], "little") == 256 and ramdir[15] == 1
+        where = f"RAM file {ramdir[:5]!r} {int.from_bytes(ramdir[13:15], 'little')} bytes"
     check(fails, "note-file", rows[0] == b"H I".ljust(14) and r.peek("NoteResult") == 0 and stored and r.nt() == want,
           f"row 0 {rows[0]!r} after save/type/open, result {r.peek('NoteResult')}, {where}")
 
@@ -772,6 +804,168 @@ def app_checks(syms, fails, vram0):
           f"{since_set} interrupts since the set, {hms[1] * 60 + hms[2]} s counted, model {clock_model(since_set, hz50)}")
 
 
+def commander_checks(syms, fails, vram0):
+    print("commander:")
+    nt0 = vram0[NT:NT + COLS * ROWS]
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+    def tap(row, mask, shift=False):
+        return [(5, f"key_down {row} {mask}" + ("; key_down 6 1" if shift else "")),
+                (3, f"key_up {row} {mask}" + ("; key_up 6 1" if shift else ""))]
+    open_cmd = press(140, 3) + press(148, 51)
+    enter, down, tab = tap(7, 64), tap(8, 64, True), tap(7, 8)
+    copy, delete, yes, no = tap(3, 1), tap(3, 2), tap(5, 64), tap(4, 8)
+    def doc(name):
+        return name.encode().ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+    fixtures = {name: doc(name) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
+    def seed_ram(files):
+        directory, data = bytearray(64), bytearray(1024)
+        for i, (name, content) in enumerate(files.items()):
+            assert i < 4 and len(content) <= 256
+            directory[i * 16:i * 16 + len(name)] = name.encode()
+            directory[i * 16 + 13:i * 16 + 15] = len(content).to_bytes(2, "little")
+            directory[i * 16 + 15] = 1
+            data[i * 256:i * 256 + len(content)] = content
+        return [(5, f"debug write_block memory {syms['RamDir']} [binary format H* {directory.hex()}]; "
+                    f"debug write_block memory {syms['RamHeap']} [binary format H* {data.hex()}]")]
+    def run(steps, name, files=fixtures, ram=None):
+        if ram is None:
+            ram = {} if EXT else files
+        return Run(syms, seed_ram(ram) + open_cmd + steps + [(15, "")], name,
+                   files=files if EXT else None)
+    def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, front=True):
+        lines = [(1, 1, b"DISK" if EXT else b"RAM", active == 0),
+                 (1, 16, b"RAM", active == 1), (8, 1, status, False),
+                 (9, 1, b"TAB PANE SHIFT+ARROWS R LIST", False),
+                 (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
+        for pane, names in enumerate((left, right)):
+            start = top if pane == active else 0
+            names = names[start:start + 6]
+            for i, name in enumerate(names or ["(EMPTY)"]):
+                lines.append((2 + i, 1 if pane == 0 else 16, name.encode(),
+                              pane == active and i + start == selection))
+        return (1, 3, 30, 12, b"COMMANDER", lines)
+    def screen(r, name, windows):
+        want = compose(nt0, windows)
+        check(fails, name, r.nt() == want,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    def backend(r):
+        return r.peek("StBackend") == (5 if EXT else 1)
+    left = list(fixtures)
+    right = [] if EXT else left
+    r = run([], "cmd-list")
+    check(fails, "cmd-open", r.peek("WndCount") == 1 and backend(r),
+          f"windows {r.peek('WndCount')}, backend {r.peek('StBackend')}")
+    screen(r, "cmd-list", [cmdwin(left, right)])
+    r = run([], "cmd-empty", files={})
+    screen(r, "cmd-empty", [cmdwin([], [])])
+    r = run(down, "cmd-select")
+    screen(r, "cmd-select", [cmdwin(left, right, selection=1)])
+    r = run(tab, "cmd-pane")
+    screen(r, "cmd-pane", [cmdwin(left, right, active=1)])
+    r = run(delete, "cmd-confirm")
+    screen(r, "cmd-confirm", [cmdwin(left, right, status=b"DELETE SELECTED FILE? Y/N")])
+    r = run(delete + no, "cmd-cancel")
+    screen(r, "cmd-cancel", [cmdwin(left, right)])
+    r = run(delete + yes, "cmd-delete")
+    remaining = left[1:]
+    screen(r, "cmd-delete", [cmdwin(remaining, [] if EXT else remaining, status=b"DELETED")])
+    if EXT:
+        check(fails, "cmd-delete-file", read_disk_image(DISK) == {k: v for k, v in fixtures.items() if k != "ALPHA"},
+              "ALPHA removed; all other disk payloads unchanged")
+    r = run(down + enter, "cmd-open-note")
+    check(fails, "cmd-open-note", r.peek("WndCount") == 2 and r.bytes("NoteBuf", 256) == fixtures["BETA"]
+          and r.bytes("NoteName", 5) == b"BETA\0" and backend(r),
+          f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 5)!r}, backend {r.peek('StBackend')}")
+    rows = [b"BETA"] + [b""] * 15
+    screen(r, "cmd-note-screen", [cmdwin(left, right, selection=1), note_win(10, 7, rows, 0, 0)])
+    r = run(down + open_cmd + press(20, 35), "cmd-instance")
+    # The second window closes; the first keeps its own selection/cache.
+    check(fails, "cmd-instance", r.peek("WndCount") == 1 and r.peek("CmdSel0") == 1,
+          f"windows {r.peek('WndCount')}, restored selection {r.peek('CmdSel0')}")
+    r = run(open_cmd + delete + yes + press(20, 35) + delete + yes, "cmd-stale-list")
+    if EXT:
+        intact = read_disk_image(DISK) == {k: v for k, v in fixtures.items() if k != "ALPHA"}
+    else:
+        intact = r.bytes("RamDir", 64)[15::16] == bytes([0, 1, 1, 1])
+    check(fails, "cmd-stale-list", r.peek("CmdStatus") == 6 and intact,
+          f"status {r.peek('CmdStatus')}; stale ALPHA must not delete BETA")
+    r = run(open_cmd * 3 + enter, "cmd-window-full")
+    check(fails, "cmd-window-full", r.peek("WndCount") == 4 and r.peek("CmdStatus") == 7 and backend(r),
+          f"windows {r.peek('WndCount')}, status {r.peek('CmdStatus')}, no existing window replaced")
+    r = run(press(12, 27), "cmd-close")
+    used = [b for b in heap_walk(r, syms["HeapBase"], r.peek("HeapEnd", 2)) if b[2]]
+    check(fails, "cmd-close-heap", r.peek("WndCount") == 0 and not used,
+          f"windows {r.peek('WndCount')}, allocated blocks {len(used)}")
+    if not EXT:
+        r = run(copy, "cmd-same-device")
+        screen(r, "cmd-same-device", [cmdwin(left, right, status=b"SAME DEVICE")])
+        return
+    r = run(copy, "cmd-copy")
+    screen(r, "cmd-copy", [cmdwin(left, ["ALPHA"], status=b"COPIED")])
+    check(fails, "cmd-copy-bytes", r.bytes("RamHeap", 256) == fixtures["ALPHA"] and backend(r)
+          and read_disk_image(DISK) == fixtures, "256 bytes copied to RAM, source disk intact, backend restored")
+    other = doc("KEEP ME")
+    r = run(copy, "cmd-no-overwrite", ram={"ALPHA": other})
+    check(fails, "cmd-no-overwrite", r.peek("CmdStatus") == 3 and r.bytes("RamHeap", 256) == other,
+          f"status {r.peek('CmdStatus')}, existing RAM file preserved")
+    r = run(copy, "cmd-full", ram={f"RAM{i}": other for i in range(4)})
+    check(fails, "cmd-full", r.peek("CmdStatus") == 5 and r.bytes("RamHeap", 1024) == other * 4,
+          f"status {r.peek('CmdStatus')}, full RAM store unchanged")
+    # A document opened from RAM retains that backend when saved from its new window.
+    save = press(88, 3) + press(96, 27)
+    r = run(copy + tab + enter + tap(5, 32) + save, "cmd-note-backend")
+    check(fails, "cmd-note-backend", r.peek("NoteBackend") == 1 and backend(r)
+          and r.bytes("RamHeap", 6) == b"XALPHA" and read_disk_image(DISK) == fixtures,
+          "RAM note edited and saved to RAM; disk source and global backend unchanged")
+    r = run(tab + copy, "cmd-copy-to-disk", files={}, ram={"ALPHA": fixtures["ALPHA"]})
+    check(fails, "cmd-copy-to-disk", read_disk_image(DISK) == {"ALPHA": fixtures["ALPHA"]} and backend(r),
+          "256 bytes copied from RAM to FAT12 disk")
+    # Free directory entries, no free clusters: creation succeeds, writing fails.
+    full_disk = {"FILLER": b"F" * (((1440 - DATA_SECTOR) // 2) * 1024)}
+    r = run(tab + copy + copy, "cmd-disk-full", files=full_disk, ram={"ALPHA": fixtures["ALPHA"]})
+    check(fails, "cmd-disk-full", r.peek("CmdStatus") == 5 and read_disk_image(DISK) == full_disk
+          and r.bytes("RamHeap", 256) == fixtures["ALPHA"],
+          "failed copy cleaned up; retry reports storage error, not target exists; RAM source intact")
+    # Fault injection at BDOS CLOSE for the newly created target only. Return
+    # the real BDOS error convention (A=FF, carry clear), not StClose's API.
+    scratch = syms["RamHeap"] + 768
+    fault = (f"debug write_block memory {scratch} [binary format H* 3effb7c9]; "
+             f"debug set_bp 0xF37D {{[reg C] == 16 && [debug read memory {syms['DskMode']}] == 14}} "
+             f"{{reg PC {scratch}}}")
+    r = run([(5, fault)] + tab + copy, "cmd-close-error", files={}, ram={"ALPHA": fixtures["ALPHA"]})
+    check(fails, "cmd-close-error", r.peek("CmdStatus") == 5 and read_disk_image(DISK) == {}
+          and r.bytes("RamHeap", 256) == fixtures["ALPHA"],
+          "BDOS close failure reported; failed target removed and RAM source intact")
+    many = {f"FILE{i}": doc(f"FILE{i}") for i in range(8)}
+    r = run(down * 6, "cmd-scroll", files=many)
+    screen(r, "cmd-scroll", [cmdwin(list(many), [], selection=6, top=1)])
+    for size in (257, 65536):
+        content = b"Z" * size
+        r = run(copy, f"cmd-large-{size}", files={"BIG": content})
+        check(fails, f"cmd-large-{size}", r.peek("CmdStatus") == 4 and r.bytes("RamDir", 64) == bytes(64)
+              and read_disk_image(DISK) == {"BIG": content}, "oversize copy refused without modifying either device")
+    r = run([], "cmd-extensions", files={"ALPHA.TXT": other, "ALPHA": fixtures["ALPHA"]})
+    screen(r, "cmd-extensions", [cmdwin(["ALPHA.TXT", "ALPHA"], [])])
+    r = run(down + delete + yes, "cmd-delete-extension-safe", files={"ALPHA.TXT": other, "ALPHA": fixtures["ALPHA"]})
+    check(fails, "cmd-extension-safe", read_disk_image(DISK) == {"ALPHA.TXT": other},
+          "deleting ALPHA preserves ALPHA.TXT byte for byte")
+    names83 = {"NOTES.TXT": doc("TEXT"), "NOTES.BAK": doc("BACKUP"), "ABCDEFGH.XYZ": doc("MAX NAME")}
+    r = run(copy + tab + enter + tap(5, 32) + save, "cmd-83-roundtrip", files=names83)
+    check(fails, "cmd-83-roundtrip", r.bytes("NoteName", 10) == b"NOTES.TXT\0"
+          and r.bytes("RamHeap", 5) == b"XTEXT" and read_disk_image(DISK) == names83,
+          "NOTES.TXT copied, opened and saved to RAM; NOTES.BAK and source unchanged")
+    r = run(down * 2 + copy, "cmd-83-max", files=names83)
+    check(fails, "cmd-83-max", r.bytes("RamDir", 13) == b"ABCDEFGH.XYZ\0"
+          and r.bytes("RamHeap", 256) == names83["ABCDEFGH.XYZ"], "full 8.3 name and bytes preserved")
+    r = run(enter, "cmd-invalid-note", files={"SHORT": b"short"})
+    check(fails, "cmd-invalid-note", r.peek("WndCount") == 1 and r.peek("CmdStatus") == 10,
+          "non-document refused without opening a notepad")
+
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -782,6 +976,7 @@ def main():
     menu_checks(syms, fails, vram0)
     window_checks(syms, fails, vram0)
     app_checks(syms, fails, vram0)
+    commander_checks(syms, fails, vram0)
     test_build_checks(tsyms, fails)
     if fails:
         print("FAILED:", ", ".join(fails))
