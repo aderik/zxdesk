@@ -148,6 +148,24 @@ keys move the pointer, and SHIFT+cursor keys go to the application.
 
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
+## Arranging windows
+
+**VIEW > CASCADE** places windows back to front starting at cell (1, 2),
+stepping two columns and one row, clamped to the desktop. Sizes and z order
+are preserved. **VIEW > TILE** divides rows 1–22 into a whole desktop,
+left/right halves, a full-height left cell plus two right cells, or four
+quarters, for one through four windows. Cells are assigned front to back.
+Application text is clipped to the resized interior; each window keeps its
+own state. If a replacement buffer cannot be allocated, that window keeps
+its previous buffer and geometry.
+
+`msx/test.sh --arrange` checks zero through four windows, CASCADE then TILE,
+repeated arrangements, allocator failure, compositor bytes and complete
+heap recovery after closing. It also runs the window and notepad/clock
+regressions. Arrangement scratch adds **3 bytes** of static RAM. A tile
+temporarily holds one replacement buffer before freeing the old one (up to
+704 payload bytes plus a four-byte heap header).
+
 ## Settings
 
 **MSX DESK > SETTINGS** displays the pointer ramp (0 slow, 1 normal,
@@ -313,7 +331,7 @@ when the machine starts.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$6895, 10389 bytes, 22379 free; RAM $C000-$CC7E, 3198 bytes, heap 9090 to $F000 without a disk ROM, 3705 with one
+    msxdesk.rom: code $4000-$6A23, 10787 bytes, 21981 free; RAM $C000-$CC81, 3201 bytes, heap 9087 to $F000 without a disk ROM, 3702 with one
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HeapEnd`, which is HIMEM

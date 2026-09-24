@@ -88,6 +88,7 @@ NsSame:
 
 ; The draw vector: the visible rows, then the cursor inverted.
 NoteDraw:
+                call    NoteScroll
                 xor     a
                 ld      (PrintInv),a
                 call    NoteVisRows
@@ -98,10 +99,13 @@ NoteDraw:
 NdRow:
                 push    bc
                 ld      a,(NoteRowIx)
+                cp      NOTEROWS
+                jr      nc,NdNoRow
                 call    NoteRowAddr
                 ld      b,c
                 ld      c,1
                 call    WinPrint
+NdNoRow:
                 ld      hl,NoteRowIx
                 inc     (hl)
                 pop     bc
