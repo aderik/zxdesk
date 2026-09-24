@@ -13,6 +13,11 @@ DlgSave3:
                 ld      (DgAfter),bc
                 ld      a,3
                 jr      DgOpen
+; Two answers: cancel (0), delete (1), initially cancel.
+DlgDelete2:
+                ld      (DgAfter),bc
+                ld      a,2
+                jr      DgOpen
 ; HL, DE = message lines. An alert has one OK answer and no callback.
 DlgAlert:
                 ld      bc,0
@@ -81,6 +86,11 @@ DgFillCell:
                 call    DgText
                 ld      hl,DgAnswers
                 ld      a,(DgCount)
+                cp      2
+                jr      nz,DgNotDelete
+                ld      hl,DgDelete
+                jr      DgLabels
+DgNotDelete:
                 cp      1
                 jr      nz,DgLabels
                 ld      hl,DgOk
@@ -208,4 +218,5 @@ DgNoCallback:
                 pop     af
                 ret
 DgAnswers:      defb    "CANCEL",0,"DISCARD",0,"SAVE",0
+DgDelete:       defb    "CANCEL",0,"DELETE",0
 DgOk:           defb    "OK",0

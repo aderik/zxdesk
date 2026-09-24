@@ -229,6 +229,39 @@ The settings window uses 100 heap bytes plus a four-byte allocation header.
 
 ## Commander
 
+**FILE > OPEN** opens a single-pane file picker on the active storage
+backend. It lists names and five-digit byte lengths from `StDir`.
+**SHIFT+UP/DOWN** selects a file; **ENTER** closes the picker and loads it
+into the foremost notepad, creating one if none is open. **DELETE** opens
+a modal CANCEL/DELETE confirmation, initially on CANCEL; TAB or
+SHIFT+arrows changes the answer, ENTER chooses it, and ESC cancels.
+**R** refreshes the directory. Tape has no directory and retains its
+sequential FILE > OPEN load operation.
+
+`msx/test.sh --browse` checks the single pane against the Python compositor,
+selection, empty and variable-length listings, loading into the foremost
+of two notepads, creating a notepad, a storage-open error, confirmation,
+cancellation, deletion and heap recovery. On disk, `read_disk_image`
+checks that deletion removes only the selected file and preserves every
+other payload. `--apps` runs the notepad/clock subjects, including the
+updated save/edit/picker/ENTER round trip; `--commander` includes both
+picker and existing two-pane subjects.
+
+The picker reuses Commander's buffer and cache. Static RAM grows by
+**7 bytes** (one mode byte and six decimal-formatting bytes); each
+Commander state grows by **1 byte**, to 203. A Commander window now uses
+**571 heap bytes** including its two allocation headers. The modal
+confirmation reuses the existing save-under and adds no heap allocation.
+The normal build uses **12,557 ROM bytes** and **3,525 static RAM bytes**,
+leaving **8,763 heap bytes** without a disk ROM and **3,378** with it.
+The TEST build uses 13,724 ROM bytes, 6,240 static RAM bytes and leaves
+663 heap bytes on the disk machine.
+
+Measured picker name-table CRC32: RAM listing **6151d015**, disk listing
+**c49b1ad1**; after confirmed deletion **47497a3a** (RAM) and **e283b0fe**
+(disk). Loading BETA into the foremost notepad gives document CRC32
+**5a0ad6a7** and composed screen CRC32 **c1fdf0cf** on both backends.
+
 Open **VIEW > COMMANDER**. The two panes show DISK and RAM when a disk
 interface is present; on C-BIOS both panes show the same RAM store.
 The active pane and selected name are inverted.
@@ -422,8 +455,8 @@ minus $380 for the stack, read at Init: $F000 on a bare machine, $DAF7
 behind this disk ROM. The RAM storage
 backend's four 256 byte files and directory occupy 1,088 bytes;
 the name table shadow occupies 768. Commander adds a 360-byte window
-buffer and 202-byte state per instance, plus two four-byte heap headers
-(570 bytes total). Its 256-byte transfer buffer is shared static RAM.
+buffer and 203-byte state per instance, plus two four-byte heap headers
+(571 bytes total). Its 256-byte transfer buffer is shared static RAM.
 
 The ZX storage layer dispatched through the operands of JP
 instructions it patched at run time; a ROM cannot be patched, so the

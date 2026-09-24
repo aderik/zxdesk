@@ -10,6 +10,13 @@ CMDCACHE        equ     CMDROWS*CMDENT
 CommanderOpen:
                 ld      a,APP_CMD
                 jp      WndOpen
+; FILE > OPEN uses the active backend in one pane. VIEW retains transfers.
+CmdBrowseOpen:
+                call    CommanderOpen
+                ret     c
+                ld      a,1
+                ld      (CmdBrowse),a
+                ret
 CmdInit:
                 ld      hl,CmdState
                 ld      de,CmdState+1
@@ -54,9 +61,13 @@ CmdRefresh:
                 xor     a
                 ld      (CmdPane),a
                 call    CmdReadPane
+                ld      a,(CmdBrowse)
+                or      a
+                jr      nz,CrfDone
                 ld      a,1
                 ld      (CmdPane),a
                 call    CmdReadPane
+CrfDone:
                 pop     af
                 jp      StSelect
 CmdReadPane:
@@ -112,6 +123,9 @@ CmdDraw:
                 xor     a
                 ld      (CmdPane),a
                 call    CmdDrawPane
+                ld      a,(CmdBrowse)
+                or      a
+                jr      nz,CdBrowseHelp
                 ld      a,1
                 ld      (CmdPane),a
                 call    CmdDrawPane
@@ -123,6 +137,17 @@ CmdDraw:
                 ld      hl,TxtCmdHelp2
                 ld      bc,$0A01
                 call    WinPrint
+                jr      CdStatus
+CdBrowseHelp:
+                xor     a
+                ld      (PrintInv),a
+                ld      hl,TxtBrowseHelp
+                ld      bc,$0901
+                call    WinPrint
+                ld      hl,TxtBrowseHelp2
+                ld      bc,$0A01
+                call    WinPrint
+CdStatus:
                 ld      a,(CmdStatus)
                 add     a,a
                 ld      e,a
@@ -181,6 +206,9 @@ CdpText:
                 ld      a,(CmdRow)
                 ld      b,a
                 call    WinPrint
+                ld      a,(CmdBrowse)
+                or      a
+                call    nz,CmdDrawSize
                 ld      hl,(CmdCacheP)
                 ld      de,CMDENT
                 add     hl,de
@@ -193,6 +221,47 @@ CdpText:
                 cp      2+CMDROWS
                 jr      c,CdpRow
                 ret
+; Five decimal digits, including zero, from the StDir cached length.
+CmdDrawSize:
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                ret     z
+                ld      de,13
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ex      de,hl
+                ld      ix,CmdNumber
+                ld      de,10000
+                call    CdsDigit
+                ld      de,1000
+                call    CdsDigit
+                ld      de,100
+                call    CdsDigit
+                ld      de,10
+                call    CdsDigit
+                ld      de,1
+                call    CdsDigit
+                ld      (ix+0),0
+                ld      hl,CmdNumber
+                ld      a,(CmdRow)
+                ld      b,a
+                ld      c,22
+                jp      WinPrint
+CdsDigit:
+                ld      a,'0'-1
+CdsSub:
+                inc     a
+                or      a
+                sbc     hl,de
+                jr      nc,CdsSub
+                add     hl,de
+                ld      (ix+0),a
+                inc     ix
+                ret
+
 CmdUseCol:
                 ld      a,(CmdPane)
                 or      a
@@ -228,6 +297,20 @@ CmdKey:
                 jp      z,CmdUp
                 cp      KEY_DOWN
                 jp      z,CmdDown
+                cp      KEY_DELETE
+                jp      z,CmdAskDialog
+                ld      b,a
+                ld      a,(CmdBrowse)
+                or      a
+                ld      a,b
+                jr      z,CkTransfer
+                cp      KEY_ENTER
+                jp      z,CmdOpen
+                cp      'R'
+                jp      z,CmdReload
+                xor     a
+                ret
+CkTransfer:
                 cp      KEY_LEFT
                 jr      z,CmdLeftPane
                 cp      KEY_RIGHT
@@ -365,6 +448,32 @@ CpkFound:
                 ld      (CmdSize),de
                 or      a
                 ret
+; Modal deletion captures the name before painting can touch scratch.
+CmdAskDialog:
+                call    CmdPicked
+                jp      c,CmdEmpty
+                ld      hl,CmdWork
+                ld      de,CmdDeleteName
+                ld      bc,13
+                ldir
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      hl,CmdDeleteName
+                ld      de,TxtBrowseDelete
+                ld      bc,CmdDeleteAnswer
+                call    DlgDelete2
+                xor     a
+                ret
+CmdDeleteAnswer:
+                or      a
+                ret     z
+                ld      a,(CmdActive)
+                ld      (CmdPane),a
+                call    CmdDelete
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
+
 CmdAskDelete:
                 call    CmdPicked
                 jp      c,CmdEmpty
@@ -493,20 +602,55 @@ CmdOpen:
                 ld      de,NOTESIZE
                 or      a
                 sbc     hl,de
-                jr      nz,CmdBadNote
+                jp      nz,CmdBadNote
                 call    StIdent
                 ld      (CmdSrcBk),a
+                ld      a,(CmdBrowse)
+                or      a
+                jr      z,CopNew
+                ; The picker closes, then find the foremost notepad by z order.
+                call    WndClose
+                ld      a,(WndCount)
+                or      a
+                jr      z,CopNew
+                ld      b,a
+                ld      hl,WndZ
+CopFind:
+                push    bc
+                push    hl
+                ld      a,(hl)
+                call    WndSelect
+                call    NoteIsFront
+                pop     hl
+                pop     bc
+                jr      z,CopExisting
+                inc     hl
+                djnz    CopFind
+CopNew:
                 ld      a,APP_NOTE
                 call    WndOpen
                 ld      a,7
                 jp      c,CmdResult
+                jr      CopLoad
+CopExisting:
+                ld      a,(WndCur)
+                call    WndFocusTo
+CopLoad:
                 ld      a,(CmdSrcBk)
                 ld      (NoteBackend),a
                 ld      hl,CmdWork
                 call    NoteLoadAs
                 jr      nc,CopOk
-                call    WndClose
-                jp      CmdIoError
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsAddLive
+                ld      hl,TxtCmdError
+                ld      de,0
+                call    DlgAlert
+                ld      a,1
+                ret
 CopOk:
                 ld      a,(CmdWasK)
                 call    StSelect
@@ -558,3 +702,7 @@ TxtCmdNoRoom:   defb    "NO ROOM FOR NOTEPAD",0
 TxtCmdSame:     defb    "SAME DEVICE",0
 TxtCmdDeleted:  defb    "DELETED",0
 TxtCmdNotNote:  defb    "NOT A 256 BYTE DOCUMENT",0
+
+TxtBrowseHelp:  defb    "SHIFT+ARROWS ENTER OPEN",0
+TxtBrowseHelp2: defb    "DELETE REMOVE R LIST",0
+TxtBrowseDelete: defb   "DELETE THIS FILE?",0

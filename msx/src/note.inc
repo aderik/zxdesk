@@ -708,9 +708,11 @@ NmsOk:
                 jp      nz,NoteSaveAlert
                 ret
 
-; OPEN reads the front notepad's file back over the document. The
-; Commander is available separately from VIEW > COMMANDER.
+; Tape has no directory; retain its sequential load operation.
 NoteMenuOpen:
+                call    StIdent
+                cp      ST_TAPE
+                jp      nz,CmdBrowseOpen
                 call    NoteIsFront
                 ret     nz
                 call    NoteLoad
