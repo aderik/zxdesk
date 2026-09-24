@@ -166,6 +166,35 @@ regressions. Arrangement scratch adds **3 bytes** of static RAM. A tile
 temporarily holds one replacement buffer before freeing the old one (up to
 704 payload bytes plus a four-byte heap header).
 
+## Resizing and scrolling
+
+Drag the bottom-right grip and release to resize in cells, with a minimum
+of 6 columns by 4 rows and the desktop as the outer limit. The pointer
+hotspot reaches column 31 and row 22 so every grip remains accessible.
+The old buffer is freed through `WndAllocBuf`; allocation failure restores
+the old dimensions and buffer size. Buffer composition and desktop repaint
+use successive frames, keeping large resizes within the tested frame budget.
+
+Notepad's right frame column contains up/down arrows, a track and a position
+marker. Arrows move the view by one line; clicking above/below the marker
+moves a page. `APP_SCROLL` reports total/visible/first units and `APP_SCROLLTO`
+sets the view. The 16-line document initially shows seven lines. Scrolling
+leaves the caret in place; SHIFT+DOWN past the viewport scrolls to follow it.
+A caret outside the visible interior is not painted.
+
+`msx/test.sh --resize-scroll` asserts real mouse growth, the 6x4 minimum,
+24x17 screen-edge growth, a grip press at that edge, allocation failure,
+heap recovery on close, `HeapStat`, compositor bytes, arrow/page scrolling,
+clamping and SHIFT+DOWN. On C-BIOS EU and JP, growth to 18x10 has name-table
+CRC32 **739b7584**, minimum size **fb3bbc3a**, and screen-edge size
+**6bb44a63**, with **Dropped = 0** in the resize subjects. The same focused subjects also
+pass on Roms_MSX1, Roms_MSX1 with Roms_Disk, and Roms_MSX2.
+
+Static RAM increases by **4 bytes**, to **3,518 bytes**. The normal build
+leaves **3,385 bytes** for the heap with the disk ROM (8,770 without it);
+the TEST build leaves **670 bytes** with the disk ROM. Resize uses one
+window buffer, with no extra temporary heap allocation.
+
 ## Settings
 
 **MSX DESK > SETTINGS** displays the pointer ramp (0 slow, 1 normal,

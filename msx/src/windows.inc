@@ -34,7 +34,7 @@ T_LEFT          equ     $82
 T_RIGHT         equ     $83
 T_BOTTOM        equ     $84
 T_BL            equ     $85
-T_BR            equ     $86
+T_BR            equ     $86             ; diagonal resize grip
 T_CLOSE         equ     $87
 
 ; A = slot. Returns HL = its record in the table.
@@ -190,7 +190,8 @@ WndAllocState:
                 ld      (WinStateP),hl
                 ld      c,APP_INIT
                 call    AppCall
-                call    AppSave
+                ; The live state is saved by WndFlush before repaint or
+                ; selecting another slot; copying it here doubles that work.
                 or      a
                 ret
 
@@ -392,7 +393,8 @@ WndFocusTo:
                 jp      RowsAddLive
 
 ; in:  B = cell column, C = cell row
-; out: A = CTL_CLOSEBOX, CTL_TITLEBAR, CTL_WININTERIOR or CTL_NONE;
+; out: A = CTL_CLOSEBOX, CTL_TITLEBAR, CTL_RESIZE, CTL_SCROLL,
+;      CTL_WININTERIOR or CTL_NONE;
 ;      WndHit = the slot, front to back so the first hit wins
 WndHitTest:
                 ld      a,b
@@ -441,6 +443,35 @@ WhtLoop:
                 ld      a,CTL_TITLEBAR
                 jr      WhtDone
 WhtBody:
+                dec     c
+                push    af
+                ld      a,e
+                cp      c
+                jr      nz,WhtNotRight
+                pop     af
+                dec     b
+                cp      b
+                ld      a,CTL_RESIZE
+                jr      z,WhtDone
+                ; HL still points at WR_H. Only scrolling applications
+                ; own the right edge; ScrPress checks the visible range.
+                ld      de,WR_APP-WR_H
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ex      de,hl
+                ld      de,APP_SCROLL
+                add     hl,de
+                ld      a,(hl)
+                inc     hl
+                or      (hl)
+                ld      a,CTL_SCROLL
+                jr      nz,WhtDone
+                jr      WhtInterior
+WhtNotRight:
+                pop     af
+WhtInterior:
                 ld      a,CTL_WININTERIOR
 WhtDone:
                 pop     bc
@@ -585,7 +616,8 @@ WdBottom:
                 djnz    WdBottom
                 ld      (hl),T_BR
                 ld      c,APP_DRAW
-                jp      AppCall
+                call    AppCall
+                jp      WndScrollBar
 
 ; B = row, C = column within the live window's buffer. Returns HL =
 ; the cell, for an application that builds its rows in place.
@@ -810,6 +842,13 @@ WinRedraw:
                 ld      a,(DgOpenFlag)
                 or      a
                 ret     nz                      ; keep the save-under stable
+                ld      a,(Resizing)
+                cp      2
+                jr      nz,WrdReady
+                xor     a
+                ld      (Resizing),a
+                ret                             ; replacement composed this frame
+WrdReady:
                 ld      a,(RepaintDue)
                 or      a
                 ret     z
@@ -856,8 +895,11 @@ WraBit2:
                 jr      z,WraBlit
                 ld      a,c
                 or      a
-                call    nz,WinDraw
-                call    z,WinDrawCap
+                jr      z,WraCap
+                call    WinDraw
+                jr      WraBlit
+WraCap:
+                call    WinDrawCap
 WraBlit:
                 call    WinBlit
                 pop     bc
@@ -1035,6 +1077,7 @@ WndInit:
                 xor     a
                 ld      (WndCount),a
                 ld      (Dragging),a
+                ld      (Resizing),a
                 ld      (WndForce),a
                 ld      (WinMoved),a
                 ld      (RepaintDue),a

@@ -615,6 +615,12 @@ def window_buffer(w, h, title, front, lines):
             continue
         for i, ch in enumerate(text[:w - 1 - col]):
             buf[row * w + col + i] = ch | (0x80 if inv else 0)
+    if title == b"NOTEPAD" and h - 2 < 16:
+        top = next((col for row, col, _, _ in lines if row == -1), 0)
+        thumb = 2 + top * max(0, h - 5) // (16 - (h - 2))
+        for row in range(1, h - 1):
+            buf[row * w + w - 1] = (ord('^') if row == 1 else ord('v') if row == h - 2
+                                     else 0xA0 if row == thumb else ord('|'))
     return bytes(buf)
 
 
@@ -717,6 +723,8 @@ NOTE_W, NOTE_H, CLK_W, CLK_H = 16, 3 + 6, 8, 3
 
 def note_win(x, y, rows, cx, cy, top=0):
     lines = [(1 + i, 1, (rows[top + i] if top + i < len(rows) else b"").ljust(14), False) for i in range(7)]
+    # Nonpainting row carries the viewport origin for the frame oracle.
+    lines.append((-1, top, b"", False))
     lines.append((1 + cy - top, 1 + cx, bytes([rows[cy][cx] if cx < len(rows[cy]) else 0x20]), True))
     return (x, y, NOTE_W, NOTE_H, b"NOTEPAD", lines)
 
@@ -1330,10 +1338,105 @@ def tape_checks(syms, fails):
               "bad header rejected, no payload accepted")
 
 
+def resize_scroll_checks(syms, fails):
+    def point(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")]
+
+    def press(x, y):
+        return point(x, y) + [(5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    new = press(92, 3) + press(100, 11)
+    # Call the real HeapStat at an idle loop boundary, using test scratch.
+    scratch = syms['CmdBuf']
+    probe = bytes([0xCD]) + syms['HeapStat'].to_bytes(2, 'little')
+    probe += bytes([0xC3]) + syms['MainLoop'].to_bytes(2, 'little')
+    heapstat = [(5, "; ".join(f"debug write memory {scratch+i} {v}" for i, v in enumerate(probe))
+                 + f"; set ::heapbp [debug set_bp {syms['MainLoop']} {{}} "
+                   f"{{debug remove_bp $::heapbp; reg PC {scratch}}}]"), (10, "")]
+    # Real mouse motion while CTRL supplies the held left button.
+    drag = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
+    drag += point(23 * 8 + 2, 14 * 8 + 2)
+    drag += [(5, "key_down 6 0x02"), (5, "mouse_move 32 16"),
+             (10, "key_up 6 0x02"), (10, "")]
+    cases = [("resize-grow", drag, 18, 10)]
+    minimum = point(25 * 8 + 2, 15 * 8 + 2) + [(5, "key_down 6 0x02")]
+    minimum += point(0, 8) + [(5, "key_up 6 0x02"), (10, "")]
+    cases.append(("resize-minimum", drag + minimum, 6, 4))
+    maximum = point(25 * 8 + 2, 15 * 8 + 2) + [(5, "key_down 6 0x02")]
+    maximum += point(255, 191) + [(5, "key_up 6 0x02"), (10, "")]
+    cases.append(("resize-screen-edge", drag + maximum, 24, 17))
+    edge_minimum = point(255, 183) + [(5, "key_down 6 0x02")]
+    edge_minimum += point(0, 8) + [(5, "key_up 6 0x02"), (10, "")]
+    cases.append(("resize-from-edge", drag + maximum + edge_minimum, 6, 4))
+    refuse = [(5, f"set ::failbp [debug set_bp {syms['HeapAlloc']} {{}} "
+                   f"{{debug remove_bp $::failbp; reg PC {syms['HpaNone']}}}]")]
+    cases.append(("resize-no-room", refuse + drag, 16, 9))
+    for name, steps, w, h in cases:
+        r = Run(syms, new + steps + heapstat, name)
+        win = note_win(8, 6, [b""] * 16, 0, 0)
+        lines = [(i + 1, 1, b" " * 14, False) for i in range(h - 2)] + [(1, 1, b" ", True)]
+        want = compose(expected_nt(), [(8, 6, w, h, win[4], lines)])
+        blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+        used = [b for b in blocks if b[2]]
+        free = [b[1] for b in blocks if not b[2]]
+        check(fails, name, r.peek('WinW') == w and r.peek('WinH') == h
+              and r.peek('LastHit') == 8 and r.nt() == want
+              and sorted(b[1] for b in used) == sorted([w * h, syms['NOTESTSZ']])
+              and all(b[3] == 0x10 for b in used) and r.peek('Dropped', 2) == 0
+              and r.peek('HpTotal', 2) == sum(free) and r.peek('HpBiggest', 2) == max(free),
+              f"size {r.peek('WinW')}x{r.peek('WinH')}, heap {[b[1] for b in used]}, "
+              f"HeapStat={r.peek('HpTotal', 2)}/{r.peek('HpBiggest', 2)}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}")
+
+    r = Run(syms, new + drag + minimum + press(8 * 8 + 2, 6 * 8 + 2) + heapstat,
+            "resize-close")
+    blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+    check(fails, "resize-close", r.peek('WndCount') == 0 and r.nt() == expected_nt()
+          and blocks == [(syms['HeapBase'], r.peek('HeapEnd', 2) - syms['HeapBase'] - 4, 0, 0)]
+          and r.peek('HpTotal', 2) == blocks[0][1] and r.peek('HpBiggest', 2) == blocks[0][1],
+          f"heap {blocks}, crc32 {zlib.crc32(r.nt()):08x}")
+
+    for name, cx, cy, top in [("resize-caret-right", 13, 0, 0),
+                               ("resize-caret-below", 0, 15, 9)]:
+        caret = [(5, f"debug write memory {syms['NoteCX']} {cx}; "
+                     f"debug write memory {syms['NoteCY']} {cy}; "
+                     f"debug write memory {syms['NoteTop']} {top}")]
+        r = Run(syms, new + caret + drag + minimum + heapstat, name)
+        want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", [(-1, top, b"", False)])])
+        check(fails, name, r.nt() == want and r.peek('NoteCX') == cx and r.peek('NoteCY') == cy
+              and r.bytes('NoteBuf', 256) == (b" " * 14 + b"\0\0") * 16
+              and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16,
+              f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), crc32 {zlib.crc32(r.nt()):08x}")
+
+    rows = [f"{i:02d}".encode() for i in range(16)]
+    seed = [(5, "; ".join(f"debug write memory {syms['NoteBuf'] + i * 16 + j} {v}"
+                         for i, row in enumerate(rows) for j, v in enumerate(row)))]
+    down = press(23 * 8 + 2, 13 * 8 + 2)
+    page = press(23 * 8 + 2, 10 * 8 + 2)
+    up = press(23 * 8 + 2, 7 * 8 + 2)
+    key = [(3, "key_down 6 0x01; key_down 8 0x40"),
+           (3, "key_up 8 0x40; key_up 6 0x01")]
+    for name, steps, top, cy in [("scroll-down", down, 1, 0),
+                                  ("scroll-up", down + up, 0, 0),
+                                  ("scroll-clamp", down * 12, 9, 0),
+                                  ("scroll-page", page, 7, 0),
+                                  ("scroll-page-up", page * 2, 0, 0),
+                                  ("scroll-key", key * 7, 1, 7)]:
+        r = Run(syms, new + seed + steps + [(10, "")], name)
+        want = compose(expected_nt(), [note_win(8, 6, rows, 0, cy, top)])
+        check(fails, name, r.peek('NoteTop') == top and r.peek('NoteCY') == cy and r.nt() == want,
+              f"top {r.peek('NoteTop')}, caret {r.peek('NoteCY')}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--resize-scroll"]:
+        resize_scroll_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--tape"]:
         tape_checks(syms, fails)
         return bool(fails)
@@ -1353,6 +1456,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)
     dialog_checks(syms, fails)
     arrange_checks(syms, fails)
