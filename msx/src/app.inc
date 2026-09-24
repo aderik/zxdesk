@@ -53,7 +53,7 @@ AppAbout:       defw    0, 0, 0, WdAbout
 AppNote:        defw    NOTESTSZ, NoteState, NoteInit, NoteDraw
                 defw    NoteKey, TxtWinTitle
                 defb    8, 6, NOTEW, NOTEH
-                defw    0
+                defw    NoteClose
                 defw    0, 0
                 defb    APPF_FULL
                 ; The clock keeps nothing per window: the time is the
