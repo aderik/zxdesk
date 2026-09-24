@@ -128,6 +128,12 @@ _ram            defl    _ram+size
                 var     HpBiggest, 2
                 ; storage: the six vectors are contiguous, StSelect copies
                 ; a registry row over them
+                var     TapeBuf, 256
+                var     TapeHdr, 19     ; magic, name[13], length
+                var     TapeIn, 19
+                var     TapeLen, 2
+                var     TapePos, 2
+                var     TapeMode, 1
                 var     StBackend, 1
                 var     StCapability, 1
                 var     StVecOpen, 2
@@ -1313,6 +1319,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "heap.inc"
                 include "storage.inc"
                 include "disk.inc"
+                include "tape.inc"
                 include "settings.inc"
                 include "hittest.inc"
                 include "app.inc"

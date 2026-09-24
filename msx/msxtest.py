@@ -428,6 +428,12 @@ def test_build_checks(tsyms, fails):
     print("test build:")
     r = Run(tsyms, [(60, "")], "subjects", rom=TROM)
     check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
+    tape_counts = b"".join(bytes((carry,)) + count.to_bytes(2, "little")
+                           for carry, count in ((0, 256), (0, 0), (1, 0),
+                                                (0, 64), (0, 192), (0, 0), (1, 0)))
+    check(fails, "tape-buffer", r.bytes("TtResults", 21) == tape_counts
+          and r.bytes("NoteBuf", 256) == bytes((-i) % 256 for i in range(256)),
+          "full/short writes, partial reads, EOF and invalid/closed handles; 256 pattern bytes")
     backend = 5 if EXT else 1
     saved = bytes((0x4D, 1, 2, 0, 1))
     default = bytes((0x4D, 1, 1, 0, backend))
@@ -455,7 +461,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 512, 300, 128
+    A, B, C = 256, 200, 128
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -1211,10 +1217,126 @@ def dialog_checks(syms, fails):
     run(typed + fault + file_save, 'dialog-menu-error', panel(alert=True), opened=1)
 
 
+def read_tape_wav(path):
+    """Decode BIOS 1200-baud FSK independently of the emulator: a zero
+    is two long half-waves, a one four short ones; 8N2, LSB first.
+    Silence separates blocks and the leader is a run of ones.
+    """
+    import wave
+    with wave.open(path) as w:
+        assert (w.getnchannels(), w.getsampwidth()) == (1, 1)
+        rate = w.getframerate()
+        samples = w.readframes(w.getnframes())
+    edges = [i for i in range(1, len(samples))
+             if (samples[i] >= 128) != (samples[i - 1] >= 128)]
+    runs = [b - a for a, b in zip(edges, edges[1:])]
+    split, silence = rate / 3200, rate / 1500
+    blocks, block, i = [], bytearray(), 0
+    while i < len(runs):
+        if runs[i] > silence:
+            if block:
+                blocks.append(bytes(block))
+                block.clear()
+            i += 1
+            continue
+        if runs[i] < split:              # leader or trailing stop bits
+            i += 1
+            continue
+        bits = []
+        for _ in range(11):
+            assert i < len(runs), "truncated cassette byte"
+            bit = int(runs[i] < split)
+            n = 4 if bit else 2
+            assert len(runs[i:i+n]) == n and all(
+                (v < split) == bool(bit) and v < silence for v in runs[i:i+n]), "bad FSK pulse"
+            bits.append(bit)
+            i += n
+        assert bits[0] == 0 and bits[9:] == [1, 1], "bad cassette framing"
+        block.append(sum(bits[b + 1] << b for b in range(8)))
+    if block:
+        blocks.append(bytes(block))
+    return blocks
+
+
+def tape_checks(syms, fails):
+    # C-BIOS has no cassette. Still verify the opt-in boot selection there;
+    # boot must not try to read SETTINGS from tape.
+    normal = Run(syms, [(10, "")], "tape-default")
+    check(fails, "tape-default", normal.peek("StBackend") == (5 if EXT else 1),
+          "without opt-in: disk when BDOS is present, otherwise RAM")
+    rom = os.path.join(BUILD, "msxtape.rom")
+    ts = assemble(rom, os.path.join(BUILD, "msxtape.sym"), ["TAPE=1"])
+    r = Run(ts, [(10, "")], "tape-select", rom=rom)
+    expected = ts["ST_DISK"] if EXT else ts["ST_TAPE"]
+    check(fails, "tape-select", r.peek("StBackend") == expected,
+          f"backend {r.peek('StBackend')}, expected {expected}")
+    if MACHINE.startswith("C-BIOS") or EXT:
+        return
+
+    def press(x, y):
+        return [(5, f"debug write memory {ts['PtrX']} {x}; debug write memory {ts['PtrY']} {y}; "
+                    f"debug write memory {ts['EvLastX']} {x}; debug write memory {ts['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (3, "key_up 6 0x02")]
+
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+
+    new = press(88, 3) + press(96, 11)
+    save = press(88, 3) + press(96, 27)
+    reopen = press(88, 3) + press(96, 19)
+    record = [(5, 'cassetteplayer new $::out/note.wav')]
+    snapshot = [(5, f'set f [open $::out/document.bin wb]; puts -nonewline $f '
+                 f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
+    rewind = [(5, 'cassetteplayer rewind; cassetteplayer play')]
+    r = Run(ts, record + new + tap(3, 32) + tap(8, 1) + tap(3, 64)
+            + snapshot + save + tap(5, 32) + tap(5, 32) + rewind + reopen
+            + [(10, 'cassetteplayer eject')], "note-tape", rom=rom)
+    document = open(os.path.join(OUT, "note-tape", "document.bin"), "rb").read()
+    check(fails, "note-tape", r.bytes("NoteBuf", 256) == document
+          and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0,
+          f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+          f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
+    blocks = read_tape_wav(os.path.join(OUT, "note-tape", "note.wav"))
+    check(fails, "tape-wav", blocks == [b"MSXT" + b"NOTE".ljust(13, b"\0")
+                                       + b"\0\1", document],
+          f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
+
+    # Carry from byte output and final close must reach the existing
+    # save-error dialog; edits must remain marked as unsaved.
+    for entry in ("TAPOUT", "TAPOOF"):
+        scratch = ts["CmdBuf"] + 250
+        fault = [(5, f"debug write memory {scratch} 55; debug write memory {scratch+1} 201; "
+                     f"debug set_bp {ts[entry]} {{}} {{reg PC {scratch}}}")]
+        rr = Run(ts, record + new + tap(3, 32) + fault + save + [(10, "cassetteplayer eject")],
+                 "tape-error-" + entry.lower(), rom=rom)
+        check(fails, "tape-error-" + entry.lower(), rr.peek("NoteModified") == 1
+              and rr.peek("NoteResult") != 0 and rr.peek("TapeMode") == 0,
+              "BIOS carry propagated, document remains unsaved")
+
+    # Real BIOS reads synthetic CAS headers: reject foreign format, a
+    # different filename and oversized payload before accepting a payload.
+    marker = bytes.fromhex("1fa6debacc137d74")
+    header = blocks[0]
+    for name, bad in (("magic", b"BAD!" + header[4:]),
+                      ("name", header[:4] + b"OTHER".ljust(13, b"\0") + header[17:]),
+                      ("length", header[:17] + b"\1\1")):
+        path = os.path.join(BUILD, "tape-" + name + ".cas")
+        with open(path, "wb") as f:
+            f.write(marker + bad)
+        rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")]
+                 + reopen + [(10, "")], "tape-bad-" + name, rom=rom)
+        check(fails, "tape-bad-" + name, rr.peek("NoteResult") != 0
+              and rr.peek("TapeLen", 2) == 0 and rr.peek("TapeMode") == 0,
+              "bad header rejected, no payload accepted")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--tape"]:
+        tape_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--arrange-only"]:
         arrange_checks(syms, fails)
         return bool(fails)
@@ -1231,6 +1353,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    tape_checks(syms, fails)
     dialog_checks(syms, fails)
     arrange_checks(syms, fails)
     settings_checks(syms, fails)

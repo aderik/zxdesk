@@ -13,7 +13,10 @@
 ;
 ;  Names are null-terminated NAME.EXT strings, up to 12 characters.
 ;  The disk backend validates 8.3 syntax. Modes match esxDOS.
-;  StInit chooses disk when BDOS is present and RAM otherwise.
+;  StInit prefers disk, then explicitly enabled tape, otherwise RAM.
+IFNDEF TAPE
+TAPE            equ     0               ; opt in only on a cassette BIOS
+ENDIF
 ;  Six RAM vectors dispatch via IX, preserving HL for buffers/names.
 ; ============================================================
 ; These are esxDOS's own, which is why they were written down here
@@ -96,7 +99,9 @@ StRegistry:
                 defb    STCAP_WRITE|STCAP_PERSIST|STCAP_RANDOM|STCAP_DIR
                 defw    DskOpen, DskClose, DskRead, DskWrite, DskDirEnt
                 defw    DskDelete
-                ; Tape through the BIOS is a later row.
+                defb    ST_TAPE, STCAP_WRITE|STCAP_PERSIST
+                defw    TapeOpen, TapeClose, TapeRead, TapeWrite, StNoDir
+                defw    StNoDelete
                 defb    $FF
 
 ; A backend that cannot enumerate says so rather than being absent
@@ -154,11 +159,17 @@ StCaps:         ld      a,(StCapability)
 ; whatever was in RAM at power on and have to be cleared before
 ; anything opens a file.
 StInit:
+                xor     a
+                ld      (TapeMode),a
                 call    RamInit
                 call    DskPresent              ; a disk ROM planted the BDOS
                 ld      a,ST_DISK               ; jump: everything persists
                 jp      z,StSelect              ; on the disk
+IF TAPE
+                ld      a,ST_TAPE
+ELSE
                 ld      a,ST_RAM
+ENDIF
                 jp      StSelect
 
 ; ============================================================

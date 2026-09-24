@@ -37,6 +37,9 @@ SetRestore:
 SetLoad:
                 call    StIdent
                 push    af
+                ld      a,(SetDevice)
+                cp      ST_TAPE                 ; never wait for tape at boot
+                jr      z,SetLoadBad
                 ld      b,FA_READ
                 call    SetFileOpen
                 jr      c,SetLoadBad
@@ -134,6 +137,10 @@ SetYOK:                                         ; to have the axis upside down
                 ld      a,(SetBackend)
                 cp      ST_RAM
                 jr      z,SetBackendOK
+IF TAPE
+                cp      ST_TAPE
+                jr      z,SetBackendOK
+ENDIF
                 cp      ST_DISK
                 jr      nz,SetBackendDefault
                 call    DskPresent
@@ -191,6 +198,9 @@ SetDraw:
                 ld      hl,SetRamLabel
                 cp      ST_RAM
                 jr      z,SetDrawBackend
+                ld      hl,SetTapeLabel
+                cp      ST_TAPE
+                jr      z,SetDrawBackend
                 ld      hl,SetDiskLabel
 SetDrawBackend:
                 ld      bc,$030E
@@ -205,4 +215,5 @@ SetSpeedLabel:  defb    "POINTER RAMP",0
 SetYLabel:      defb    "MOUSE Y INVERT",0
 SetBackendLabel: defb   "BACKEND",0
 SetRamLabel:    defb    "RAM",0
+SetTapeLabel:   defb    "TAPE",0
 SetDiskLabel:   defb    "DISK",0
