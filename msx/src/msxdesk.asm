@@ -173,6 +173,8 @@ _ram            defl    _ram+size
                 var     WndTab, 4*15    ; WNDMAX*WNDRECSZ, defined later
                 var     WndZ, 4
                 var     WndCount, 1
+                var     ArrI, 1
+                var     ArrTab, 2
                 var     WndCur, 1
                 var     Dragging, 1
                 var     DragDX, 1
@@ -1295,6 +1297,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "calendar.inc"
                 include "menus.inc"
                 include "windows.inc"
+                include "arrange.inc"
                 include "clock.inc"
                 include "note.inc"
                 include "commander.inc"

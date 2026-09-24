@@ -594,13 +594,15 @@ def window_buffer(w, h, title, front, lines):
     a list of (row, col, bytes, inverted)."""
     fill = 0xA0 if front else 0x20
     buf = bytearray([T_CLOSE] + [fill] * (w - 1))
-    for i, ch in enumerate(title):
+    for i, ch in enumerate(title[:w - 1]):
         buf[1 + i] = ch | (0x80 if front else 0)
     for _ in range(h - 2):
         buf += bytes([T_LEFT]) + b" " * (w - 2) + bytes([T_RIGHT])
     buf += bytes([T_BL]) + bytes([T_BOTTOM]) * (w - 2) + bytes([T_BR])
     for row, col, text, inv in lines:
-        for i, ch in enumerate(text[:w - col]):
+        if not 0 < row < h - 1 or not 0 <= col < w - 1:
+            continue
+        for i, ch in enumerate(text[:w - 1 - col]):
             buf[row * w + col + i] = ch | (0x80 if inv else 0)
     return bytes(buf)
 
@@ -1016,6 +1018,119 @@ def settings_checks(syms, fails):
                   "record " + r.bytes("SetRec", 5).hex())
 
 
+def arrange_checks(syms, fails):
+    """Menu-driven arrangements against arithmetic and compositor oracles."""
+    print("arrange:")
+
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    cascade = press(140, 3) + press(148, 27)
+    tile = press(140, 3) + press(148, 35)
+    opens = [press(140, 3) + press(148, 19),
+             press(92, 3) + press(100, 11) +
+             [(5, "key_down 2 0x40"), (5, "key_up 2 0x40")],  # A in the notepad
+             press(8, 3) + press(16, 11),
+             press(140, 3) + press(148, 19) +
+             [(5, "key_down 6 0x01; key_down 8 0x80"),
+              (5, "key_up 8 0x80; key_up 6 0x01")]]  # second calendar selects 2
+    windows = [cal_win(4, 4), note_win(10, 7, [b"A"] + [b""] * 15, 1, 0),
+               about_win(12, 14), cal_win(9, 7, sel=2)]
+
+    def tiled(n):
+        # Front-to-back cells, computed independently of the ROM table.
+        height, half = 22, 11
+        if n == 0:
+            return []
+        if n == 1:
+            return [(0, 1, 32, height)]
+        if n == 2:
+            return [(x, 1, 16, height) for x in (0, 16)]
+        if n == 3:
+            return [(0, 1, 16, height), (16, 1, 16, half), (16, 1 + half, 16, height - half)]
+        return [(x, y, 16, half) for x in (0, 16) for y in (1, 1 + half)]
+
+    def verify(steps, name, geometry, n):
+        r = Run(syms, steps + [(15, "")], name)
+        actual = [tuple(r.ram[syms['WndTab'] - WORK + i * 15:syms['WndTab'] - WORK + i * 15 + 4])
+                  for i in range(n)]
+        want = compose(expected_nt(), [tuple(g) + windows[i][4:] for i, g in enumerate(geometry)])
+        check(fails, name, actual == geometry and r.peek('WndCount') == n
+              and r.bytes('WndZ', n) == bytes(reversed(range(n))) and r.nt() == want,
+              f"geometry {actual}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+        for i in range(n):
+            base = syms['WndTab'] + i * 15
+            old = tuple(r.ram[base + 12 - WORK:base + 15 - WORK])
+            check(fails, name + f"-record-{i}", old == (*geometry[i][:2], 0), f"old x/y/moved {old}")
+        return r
+
+    for n in range(5):
+        steps = sum(opens[:n], [])
+        geometry = [(min(1 + i * 2, 32 - w[2]), min(2 + i, 23 - w[3]), w[2], w[3])
+                    for i, w in enumerate(windows[:n])]
+        before = verify(steps + cascade, f"arrange-cascade-{n}", geometry, n)
+        if n == 3:
+            # Force the allocator's real failure return after the windows
+            # exist. TILE must keep their buffers, state and geometry.
+            refuse = [(5, f"debug set_bp {syms['HeapAlloc']} {{}} {{reg PC {syms['HpaNone']}}}")]
+            r = verify(steps + cascade + refuse + tile, "arrange-no-room", geometry, n)
+            check(fails, "arrange-no-room-heap",
+                  r.bytes('WndTab', n * 15) == before.bytes('WndTab', n * 15)
+                  and heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+                  == heap_walk(before, syms['HeapBase'], before.peek('HeapEnd', 2)),
+                  "records, buffer pointers and heap blocks unchanged")
+        geometry = list(reversed(tiled(n)))
+        steps += cascade + tile
+        verify(steps, f"arrange-tile-{n}", geometry, n)
+        if n:
+            # Reallocation and edge clamping also work on already tiled sizes.
+            clamped = [(min(1 + i * 2, 32 - g[2]), min(2 + i, 23 - g[3]), g[2], g[3])
+                       for i, g in enumerate(geometry)]
+            verify(steps + cascade, f"arrange-clamp-{n}", clamped, n)
+            verify(steps + cascade + tile, f"arrange-repeat-{n}", geometry, n)
+        for x, y, _, _ in reversed(geometry):
+            steps += press(x * 8 + 2, y * 8 + 2)
+        r = Run(syms, steps + [(15, "")], f"arrange-close-{n}")
+        blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+        want_heap = [(syms['HeapBase'], r.peek('HeapEnd', 2) - syms['HeapBase'] - 4, 0, 0)]
+        check(fails, f"arrange-close-{n}", r.peek('WndCount') == 0 and blocks == want_heap
+              and r.nt() == expected_nt(), f"heap {blocks}, crc32 {zlib.crc32(r.nt()):08x}")
+
+    # A tall notepad scrolled to its last document row must blank the
+    # extra space, without treating the following state bytes as text.
+    last_row = [(5, f"debug write memory {syms['NoteCY']} 15; "
+                    f"debug write memory {syms['NoteTop']} 15; "
+                    f"debug write memory {syms['NoteBuf'] + 15 * 16} 90")]
+    r = Run(syms, opens[1] + last_row + tile + [(15, "")], "arrange-note-bottom")
+    want = compose(expected_nt(), [(0, 1, 32, 22, b"NOTEPAD",
+                                   [(1, 1, b"Z", False), (1, 2, b" ", True)])])
+    check(fails, "arrange-note-bottom", r.nt() == want and r.peek('NoteTop') == 15,
+          f"top {r.peek('NoteTop')}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # Commander has a second pane starting beyond a tiled window's right
+    # edge and a help row on its bottom border: neither may write there.
+    cmd = press(140, 3) + press(148, 51)
+    steps = opens[0] + cmd + opens[2] + opens[3] + tile
+    lines = [(1, 1, b"DISK" if EXT else b"RAM", True), (1, 16, b"RAM", False),
+             (2, 1, b"(EMPTY)", True), (2, 16, b"(EMPTY)", False),
+             (8, 1, b"READY", False), (9, 1, b"TAB PANE SHIFT+ARROWS R LIST", False),
+             (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
+    arranged = [windows[0], (0, 0, 30, 12, b"COMMANDER", lines), windows[2], windows[3]]
+    want = compose(expected_nt(), [g + w[4:] for g, w in zip(reversed(tiled(4)), arranged)])
+    r = Run(syms, steps + [(15, "")], "arrange-commander", files={})
+    check(fails, "arrange-commander", r.nt() == want,
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    for x, y, _, _ in tiled(4):
+        steps += press(x * 8 + 2, y * 8 + 2)
+    r = Run(syms, steps + [(15, "")], "arrange-commander-close", files={})
+    blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+    check(fails, "arrange-commander-close", r.peek('WndCount') == 0 and r.nt() == expected_nt()
+          and blocks == [(syms['HeapBase'], r.peek('HeapEnd', 2) - syms['HeapBase'] - 4, 0, 0)],
+          f"heap {blocks}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -1024,6 +1139,13 @@ def main():
         test_build_checks(tsyms, fails)
         settings_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--arrange"]:
+        arrange_checks(syms, fails)
+        vram0 = boot_checks(syms, fails)
+        window_checks(syms, fails, vram0)
+        app_checks(syms, fails, vram0)
+        return bool(fails)
+    arrange_checks(syms, fails)
     settings_checks(syms, fails)
     vram0 = boot_checks(syms, fails)
     mouse_checks(syms, fails, vram0)

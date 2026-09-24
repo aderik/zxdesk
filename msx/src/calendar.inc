@@ -434,6 +434,12 @@ CkyNotD:
 ;  the grid to put one on.
 ; ------------------------------------------------------------
 CalDraw:
+                ld      a,(WinW)
+                cp      CALW
+                jp      nz,CalDrawClipped
+                ld      a,(WinH)
+                cp      CALH
+                jp      nz,CalDrawClipped
                 call    CalPrepare
                 xor     a
                 ld      (PrintInv),a
@@ -473,6 +479,7 @@ CdWeek:
                 ld      a,(hl)
                 cp      6
                 jr      c,CdWeek
+CdSelection:
                 ; the selected day again, inverted
                 ld      a,(CalSel)
                 dec     a
@@ -502,6 +509,36 @@ CdWeek:
                 xor     a
                 ld      (PrintInv),a
                 ret
+
+; The home-size fast path writes weeks directly into the buffer.
+; A tiled calendar builds them in scratch RAM and uses the clipper.
+CalDrawClipped:
+                call    CalPrepare
+                xor     a
+                ld      (PrintInv),a
+                call    CalBuildHead
+                ld      hl,CalRow
+                ld      bc,$0101
+                call    WinPrint
+                ld      hl,CalDays
+                ld      bc,$0201
+                call    WinPrint
+                xor     a
+                ld      (CalIx),a
+CdcWeek:
+                call    CalBuildWeek
+                ld      hl,CalRow
+                ld      a,(CalIx)
+                add     a,3
+                ld      b,a
+                ld      c,1
+                call    WinPrint
+                ld      hl,CalIx
+                inc     (hl)
+                ld      a,(hl)
+                cp      6
+                jr      c,CdcWeek
+                jp      CdSelection
 
 ; Days 0 to 31 as two characters, a leading nought shown as a space.
 CalDayTab:      defb    "   1 2 3 4 5 6 7 8 9"

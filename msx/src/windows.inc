@@ -511,6 +511,25 @@ WdBodyStart:
                 add     hl,de
                 ld      a,(hl)
                 and     APPF_FULL
+                ; Full painters cover their home size only. Tiled windows
+                ; need the remaining interior cleared as well.
+                push    af
+                ld      hl,(WinApp)
+                ld      de,APP_W
+                add     hl,de
+                ld      a,(WinW)
+                cp      (hl)
+                jr      nz,WdNotFull
+                inc     hl
+                ld      a,(WinH)
+                cp      (hl)
+                jr      nz,WdNotFull
+                pop     af
+                jr      WdFullReady
+WdNotFull:
+                pop     af
+                xor     a
+WdFullReady:
                 ld      (WdFull),a
                 ld      a,(WinH)
                 sub     2
@@ -589,8 +608,25 @@ WcRowDone:
                 ret
 
 ; HL = null terminated text, B = row and C = column within the live
-; window's buffer, bit 7 from PrintInv. Clipped at the right edge.
+; window's buffer, bit 7 from PrintInv. Body text is clipped to the
+; interior; row zero is the title and may use the final column.
 WinPrint:
+                ld      a,b
+                or      a
+                ld      a,(WinW)
+                jr      z,WpWidth
+                ld      a,(WinH)
+                dec     a
+                cp      b
+                ret     z
+                ret     c
+                ld      a,(WinW)
+                dec     a
+WpWidth:
+                sub     c
+                ret     z
+                ret     c
+                push    af
                 push    hl
                 ld      a,(WinW)
                 ld      e,a
@@ -608,10 +644,9 @@ WpRowDone:
                 ld      de,(WinBufP)
                 add     hl,de
                 ex      de,hl                   ; DE = the cell
-                ld      a,(WinW)
-                sub     c
-                ld      b,a                     ; cells to the edge
                 pop     hl
+                pop     af
+                ld      b,a                     ; cells to the edge
                 ld      a,(PrintInv)
                 ld      c,a
 WpLoop:

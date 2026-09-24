@@ -325,6 +325,10 @@ MnActions:
                 defw    ClockOpen               ; VIEW, CLOCK
                 defb    3,1
                 defw    WndOpenCal              ; VIEW, CALENDAR
+                defb    3,2
+                defw    WndCascade
+                defb    3,3
+                defw    WndTile
                 defb    3,5
                 defw    CommanderOpen
                 defb    4,1
