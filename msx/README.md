@@ -380,3 +380,28 @@ strobe sequence that an interrupt handler touching PSG register 15
 would shuffle, and the per-frame clamp is 64 as on the ZX: at 16, a
 fast host move of 100 pixels lost 34 of its 50 counts (`ptr-fast`
 asserts (170, 120) for +100, +60).
+
+## Unsaved-work dialogues
+
+Closing a modified notepad opens **UNSAVED WORK** with **CANCEL**, **DISCARD**
+and **SAVE**. CANCEL is initially selected; ENTER chooses it, TAB or
+SHIFT+arrows moves the focus, ESC cancels, and a click chooses an answer.
+Clicks outside the panel and other typing are ignored. A failed open,
+write, short write or close during saving keeps the document modified and
+opens **COULD NOT SAVE**, dismissed with OK, ENTER or ESC. FILE > SAVE
+also reports failures with this alert.
+
+`msx/test.sh --dialogs` checks the panel and focus against a cell oracle,
+modal input, unchanged document bytes on cancel/error, heap recovery on
+discard and all 256 saved bytes in RAM or on the disk image. It injects
+storage open/write/close errors, including a write error with a full byte
+count. The arrangement close subjects now explicitly discard their edited
+notepad; `msx/test.sh --arrange-only` runs that group alone.
+
+The panel saves 140 shadow cells in the existing 256-byte Commander
+transfer buffer: modal input prevents Commander operations until restoration.
+Window redraws wait while the dialogue is open; pending updates repaint after
+restoration. Static RAM grows by **14 bytes** (9 dialogue state bytes and
+5 control-table bytes), with no extra heap allocation. The normal ROM uses
+3,215 static RAM bytes and leaves 3,688 heap bytes with the disk ROM;
+the TEST ROM leaves 973 heap bytes with it.

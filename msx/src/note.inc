@@ -523,8 +523,12 @@ NoteSaveFile:
                 ld      bc,NOTESIZE
                 call    StWrite
                 ld      (NoteGot),bc
+                push    af                      ; keep write errors through CLOSE
                 ld      a,(NoteHandle)
                 call    StClose
+                jr      c,NsCloseFail
+                pop     af
+                ret     c
                 ld      hl,(NoteGot)
                 ld      de,NOTESIZE
                 or      a
@@ -534,6 +538,8 @@ NoteSaveFile:
                 ld      (NoteModified),a
                 or      a
                 ret
+NsCloseFail:
+                pop     af
 NsShort:
                 scf
                 ret
@@ -636,6 +642,34 @@ NsanOk:
                 djnz    NsanRow
                 ret
 
+NoteClose:
+                ld      a,(NoteModified)
+                or      a
+                ret     z
+                ld      hl,NoteName
+                ld      de,TxtNoteLose
+                ld      bc,NoteCloseAnswer
+                call    DlgSave3
+                scf
+                ret
+NoteCloseAnswer:
+                or      a
+                ret     z
+                cp      2
+                jr      nz,NcaGo
+                call    NoteSave
+                jr      c,NoteSaveAlert
+NcaGo:
+                ld      a,1
+                ld      (WndForce),a
+                jp      WndClose
+NoteSaveAlert:
+                ld      hl,TxtNoteNoSave
+                ld      de,0
+                jp      DlgAlert
+TxtNoteLose:    defb    "UNSAVED WORK",0
+TxtNoteNoSave:  defb    "COULD NOT SAVE",0
+
 ; ---- The FILE menu
 NoteMenuNew:
                 ld      a,APP_NOTE
@@ -659,6 +693,8 @@ NoteMenuSave:
                 ld      a,1
 NmsOk:
                 ld      (NoteResult),a
+                or      a
+                jp      nz,NoteSaveAlert
                 ret
 
 ; OPEN reads the front notepad's file back over the document. The

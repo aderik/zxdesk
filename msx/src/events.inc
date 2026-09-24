@@ -143,6 +143,9 @@ HdlBtnDown:
                 rrca
                 and     $1F
                 ld      c,a
+                ld      a,(DgOpenFlag)
+                or      a
+                jp      nz,DgPress
                 ld      a,(MenuOpen)
                 or      a
                 jr      z,HbdNoMenu
@@ -210,6 +213,10 @@ HdlKey:
                 inc     (hl)
                 ld      a,b
                 ld      (LastKey),a
+                ld      a,(DgOpenFlag)
+                or      a
+                ld      a,b
+                jp      nz,DgKey
                 ld      a,(MenuOpen)            ; an open menu owns the keyboard
                 or      a
                 ret     nz

@@ -807,6 +807,9 @@ WndRepaintAll:
 ; The pending range: desktop, dirty buffers recomposed, all windows
 ; blitted within the range, back to front.
 WinRedraw:
+                ld      a,(DgOpenFlag)
+                or      a
+                ret     nz                      ; keep the save-under stable
                 ld      a,(RepaintDue)
                 or      a
                 ret     z

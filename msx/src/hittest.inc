@@ -11,7 +11,7 @@
 ;  The menu drop row is refilled from the menu model before every
 ;  search; a closed menu gets a height of zero, which can never
 ;  match because the row test is exclusive at the far edge. The
-;  dialogue row arrives with the dialogues.
+;  dialogue row owns hits above the menus and windows.
 ; ============================================================
 CTLSIZE         equ     5
 
@@ -31,6 +31,13 @@ CTL_SCROLL      equ     9
 ; constant part in.
 CtlDrop         equ     CtlTable+CTLDROPOFF
 CtlSync:
+                ld      a,(DgOpenFlag)
+                or      a
+                ld      a,0
+                jr      z,CsDialog
+                ld      a,DGH
+CsDialog:
+                ld      (CtlTable+3),a
                 ld      a,(MnX)
                 ld      (CtlDrop),a
                 ld      a,(MnY)
@@ -52,6 +59,7 @@ CtlInit:
                 ld      bc,CTLTABSZ
                 ldir
                 xor     a
+                ld      (DgOpenFlag),a
                 ld      (MenuOpen),a
                 ld      (MnX),a
                 ld      (MnY),a
@@ -113,9 +121,10 @@ HtMiss:
 ; Front to back is the z order. The drop is above the bar, the bar
 ; and the desktop above nothing.
 CtlTableRom:
+                defb    DGX,DGY,DGW,0,          CTL_DIALOG
                 defb    0,0,0,0,                CTL_MENUDROP
                 defb    0,MENUROW,SCRCOLS,1,    CTL_MENUBAR
                 defb    0,1,SCRCOLS,STATROW-1,  CTL_DESKTOP
                 defb    $FF
 CTLTABSZ        equ     $-CtlTableRom
-CTLDROPOFF      equ     0               ; the drop row's offset in the table
+CTLDROPOFF      equ     5               ; the drop row's offset in the table

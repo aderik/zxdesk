@@ -1097,8 +1097,10 @@ def arrange_checks(syms, fails):
                        for i, g in enumerate(geometry)]
             verify(steps + cascade, f"arrange-clamp-{n}", clamped, n)
             verify(steps + cascade + tile, f"arrange-repeat-{n}", geometry, n)
-        for x, y, _, _ in reversed(geometry):
+        for i, (x, y, _, _) in reversed(list(enumerate(geometry))):
             steps += press(x * 8 + 2, y * 8 + 2)
+            if i == 1:  # the modified notepad now asks before closing
+                steps += press(60, 98)  # DISCARD
         r = Run(syms, steps + [(15, "")], f"arrange-close-{n}")
         blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
         want_heap = [(syms['HeapBase'], r.peek('HeapEnd', 2) - syms['HeapBase'] - 4, 0, 0)]
@@ -1138,10 +1140,87 @@ def arrange_checks(syms, fails):
           f"heap {blocks}")
 
 
+def dialog_checks(syms, fails):
+    print("dialogues:")
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+    def tap(row, mask, shift=False):
+        return [(3, f"key_down {row} {mask}" + ("; key_down 6 1" if shift else "")),
+                (3, f"key_up {row} {mask}" + ("; key_up 6 1" if shift else ""))]
+    new = press(88, 3) + press(96, 11)
+    typed = new + tap(3, 32)
+    close = press(66, 50)
+    enter, tab, esc = tap(7, 64), tap(7, 8), tap(7, 4)
+    base = compose(expected_nt(), [note_win(8, 6, [b"H"] + [b""] * 15, 1, 0)])
+    def panel(focus=0, alert=False):
+        nt = bytearray(base)
+        for y in range(8, 15):
+            nt[y*32+6:y*32+26] = bytes([160 if y == 11+focus else 32])*20
+        lines = [(9, b"COULD NOT SAVE" if alert else b"NOTE"), (10, b"" if alert else b"UNSAVED WORK")]
+        lines += [(11+i, t) for i, t in enumerate([b"OK"] if alert else [b"CANCEL", b"DISCARD", b"SAVE"])]
+        for y, text in lines:
+            nt[y*32+7:y*32+7+len(text)] = bytes(c | (128 if y == 11+focus else 0) for c in text)
+        return bytes(nt)
+    def run(steps, name, want, count=1, opened=0, **kwargs):
+        r = Run(syms, steps + [(15, "")], name, **kwargs)
+        check(fails, name, r.nt() == want and r.peek('WndCount') == count
+              and r.peek('DgOpenFlag') == opened,
+              f"windows {r.peek('WndCount')}, dialog {r.peek('DgOpenFlag')}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+        return r
+    run(new + close, 'dialog-clean-close', expected_nt(), 0)
+    r = run(typed + close, 'dialog-open', panel(), opened=1)
+    document = r.bytes('NoteBuf', 256)
+    r = run(typed + close + press(88, 3) + press(30, 160) + tap(5, 32),
+            'dialog-modal', panel(), opened=1)
+    check(fails, 'dialog-modal-state', r.bytes('NoteBuf', 256) == document and r.peek('MenuOpen') == 0,
+          'outside presses and typing leave document and menus unchanged')
+    for suffix, answer in [('cancel', press(60, 90)), ('enter', enter), ('escape', esc)]:
+        r = run(typed + close + answer, 'dialog-' + suffix, base)
+        check(fails, 'dialog-' + suffix + '-state', r.bytes('NoteBuf', 256) == document
+              and r.peek('NoteModified') == 1, '256 document bytes and modified flag retained')
+    run(typed + close + tab, 'dialog-focus', panel(1), opened=1)
+    run(typed + close + tap(8, 32, True), 'dialog-focus-wrap', panel(2), opened=1)
+    for suffix, answer in [('mouse', press(60, 98)), ('key', tab + enter)]:
+        r = run(typed + close + answer, 'dialog-discard-' + suffix, expected_nt(), 0, files={})
+        check(fails, 'dialog-discard-' + suffix + '-heap',
+              heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2)) ==
+              [(syms['HeapBase'], r.peek('HeapEnd', 2)-syms['HeapBase']-4, 0, 0)]
+              and (read_disk_image(DISK) == {} if EXT else r.bytes('RamDir', 64)[15::16] == bytes(4)),
+              'all window allocations recovered; no file written')
+    for suffix, answer in [('mouse', press(60, 106)), ('key', tab + tab + enter)]:
+        r = run(typed + close + answer, 'dialog-save-' + suffix, expected_nt(), 0, files={})
+        stored = (read_disk_image(DISK).get('NOTE') == document if EXT else
+                  r.bytes('RamDir', 16) == b'NOTE' + bytes(9) + bytes([0, 1, 1])
+                  and r.bytes('RamHeap', 256) == document)
+        check(fails, 'dialog-save-' + suffix + '-file', stored, 'NOTE contains all 256 document bytes')
+    # Inject each storage API failure with its carry convention. WRITE
+    # retains BC=256 deliberately: carry must not be hidden by a full count.
+    for vector in ('StOpen', 'StWrite', 'StClose'):
+        scratch = syms['RamHeap'] + 768
+        fault = [(5, f"debug write_block memory {scratch} [binary format H* 37c9]; "
+                     f"debug set_bp {syms[vector]} {{}} {{reg PC {scratch}}}")]
+        steps = typed + fault + close + tab + tab + enter
+        r = run(steps, 'dialog-error-' + vector, panel(alert=True), opened=1)
+        check(fails, 'dialog-error-' + vector + '-state', r.bytes('NoteBuf', 256) == document
+              and r.peek('NoteModified') == 1, 'failed save preserves modified document')
+        run(steps + enter, 'dialog-alert-ok-' + vector, base)
+    file_save = press(88, 3) + press(96, 27)
+    run(typed + fault + file_save, 'dialog-menu-error', panel(alert=True), opened=1)
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--arrange-only"]:
+        arrange_checks(syms, fails)
+        return bool(fails)
+    if sys.argv[1:] == ["--dialogs"]:
+        dialog_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--settings"]:
         test_build_checks(tsyms, fails)
         settings_checks(syms, fails)
@@ -1152,6 +1231,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    dialog_checks(syms, fails)
     arrange_checks(syms, fails)
     settings_checks(syms, fails)
     vram0 = boot_checks(syms, fails)

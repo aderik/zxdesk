@@ -157,7 +157,13 @@ _ram            defl    _ram+size
                 var     MenuPick, 1     ; last item chosen, $FF for none
                 var     MnLastMenu, 1
                 var     MnSave, MNSAVESZ
-                var     CtlTable, 16    ; CTLTABSZ, which is defined later
+                var     DgOpenFlag, 1
+                var     DgFocus, 1
+                var     DgCount, 1
+                var     DgAfter, 2
+                var     DgLine1, 2
+                var     DgLine2, 2
+                var     CtlTable, 21    ; CTLTABSZ, which is defined later
                 ; windows: the live record, the table, the z order
                 var     WinRec, 0
                 var     WinX, 1
@@ -1315,6 +1321,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "windows.inc"
                 include "arrange.inc"
                 include "clock.inc"
+                include "dialog.inc"
                 include "note.inc"
                 include "commander.inc"
                 include "test.inc"
