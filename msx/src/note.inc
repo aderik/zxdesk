@@ -88,6 +88,8 @@ NsSame:
 
 ; The draw vector: the visible rows, then the cursor inverted.
 NoteDraw:
+                ld      a,(NoteTop)
+                call    NoteScrollTo            ; resize/TILE may expose more rows
                 xor     a
                 ld      (PrintInv),a
                 call    NoteVisRows
@@ -733,7 +735,8 @@ NoteScrollInfo:
                 ret
 
 ; Moving the view does not move the caret. NoteKey brings it back
-; into view on the next edit/navigation, while NoteDraw only paints.
+; into view on the next edit/navigation. NoteDraw uses the same clamp
+; when a larger window exposes more of the document.
 NoteScrollTo:
                 push    af
                 call    NoteVisRows
