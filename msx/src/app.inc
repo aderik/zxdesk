@@ -33,6 +33,7 @@ APP_ABOUT       equ     1
 APP_NOTE        equ     2
 APP_CLOCK       equ     3
 APP_CMD         equ     4
+APP_SETTINGS    equ     5
 
 AppTable:
 AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
@@ -67,6 +68,12 @@ AppClock:       defw    0, 0, 0, ClkDraw
 AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
                 defw    CmdKey, TxtCmdTitle
                 defb    1, 3, CMDW, CMDH
+                defw    0, 0, 0
+                defb    0
+
+AppSettings:    defw    0, 0, 0, SetDraw
+                defw    0, SetTitle
+                defb    6, 6, 20, 5
                 defw    0, 0, 0
                 defb    0
 

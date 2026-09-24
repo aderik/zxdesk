@@ -284,6 +284,16 @@ CMDSTSZ         equ     _ram-CmdState
                 var     ClkLast, 2
                 var     ClkDelta, 2
                 var     ClkSetAt, 2     ; IrqCnt when the clock was last set
+                ; SETTINGS record plus one byte to detect oversized files.
+                var     SetRec, 2
+                var     SetSpeed, 1
+                var     SetInvertY, 1
+                var     SetBackend, 1
+                var     SetExtra, 1
+                var     SetDevice, 1
+                var     SetHandle, 1
+                var     AccelPtr, 2
+                var     SetText, 2
 IFDEF TEST
                 var     TestDone, 1
                 var     ThPtr, 6
@@ -445,6 +455,10 @@ Start:
                 call    EvInit
                 call    HeapInit
                 call    StInit
+                call    StIdent
+                ld      (SetDevice),a
+                call    SetLoad
+                call    SetApply
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
@@ -643,7 +657,7 @@ RiSpeed:
                 srl     a
                 ld      e,a
                 ld      d,0
-                ld      hl,AccelTab
+                ld      hl,(AccelPtr)
                 add     hl,de
                 ld      a,(hl)
                 ld      (Speed),a
@@ -815,7 +829,7 @@ RmNoRight:
                 and     $0F
                 or      b               ; dy
                 ld      (MouseDY),a
-                neg
+                call    SetMouseY
                 call    ClampDelta
                 ld      hl,PtrY
                 ld      b,(hl)
@@ -1220,7 +1234,9 @@ TxtMarker:      defb    "ZXMSX",0
 TxtMenu:        defb    "MSX DESK  FILE   VIEW   HELP",0
 
 ; The measured default ramp: pixels per frame as the hold builds.
+AccelTabs:      defb    1,1,2,2,3
 AccelTab:       defb    1,2,3,5,7
+                defb    2,3,5,7,11
 
 Tiles:
                 ; $80 T_LATTICE: a halftone
@@ -1273,6 +1289,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "heap.inc"
                 include "storage.inc"
                 include "disk.inc"
+                include "settings.inc"
                 include "hittest.inc"
                 include "app.inc"
                 include "calendar.inc"

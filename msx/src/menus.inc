@@ -311,6 +311,8 @@ MnaNext:
                 jr      MnaLoop
 
 MnActions:
+                defb    1,1
+                defw    SetOpen
                 defb    1,0
                 defw    AboutOpen               ; MSX DESK, ABOUT
                 defb    2,0

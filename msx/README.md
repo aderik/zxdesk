@@ -148,6 +148,31 @@ keys move the pointer, and SHIFT+cursor keys go to the application.
 
 Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
+## Settings
+
+**MSX DESK > SETTINGS** displays the pointer ramp (0 slow, 1 normal,
+2 fast), mouse Y inversion (1 negates the raw delta, the MSX default),
+and application storage backend. Editing controls are deferred.
+
+`SetSave` writes `SETTINGS` through the storage layer; boot calls
+`SetLoad` then `SetApply`. The five bytes are `4D 01 rr yy bb`: MSX
+magic, format version, ramp, Y inversion and storage id (1 RAM, 5 disk).
+The MSX magic is distinct from ZX settings. Defaults are ramp 1,
+inversion 1 and the detected boot backend. Missing files, I/O failures,
+incorrect magic/version and lengths other than five bytes give defaults;
+`SetApply` clamps invalid fields and rejects disk selection without BDOS.
+Preferences stay on the detected boot device even if the application
+backend is changed to RAM, so the next boot can still find them.
+
+Run `msx/test.sh --settings` for the focused subjects. The TEST ROM
+asserts save/clear/load, invalid headers, all three ramps, both mouse Y
+signs, field validation and backend restoration. The normal ROM asserts
+the menu contents and actual inverted mouse movement; on disk it also
+boots seeded valid, invalid and truncated/oversized files. The TEST image
+contains `SETTINGS` bytes `4D 01 02 00 01` after saving with RAM selected.
+Static RAM grows by 12 bytes; TEST records reuse commander scratch space.
+The settings window uses 100 heap bytes plus a four-byte allocation header.
+
 ## Commander
 
 Open **VIEW > COMMANDER**. The two panes show DISK and RAM when a disk
@@ -269,12 +294,12 @@ Getting there took three measurements:
 
 The stack and the heap's end come from HIMEM at run time, STACKRES
 ($380) apart, not from an equate. The TEST build's records leave
-998 usable bytes of heap under a disk ROM, so its heap subject allocates
+986 usable bytes of heap under a disk ROM, so its heap subject allocates
 512, 300 and 128 bytes.
 
 Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
-the image with the document's bytes; `store-disk` finds SETTINGS (64
-bytes of the test pattern), NOTE1, NOTE3 and NOTE4 after NOTE2 was
+the image with the document's bytes; `store-disk` finds SETTINGS (five
+bytes, `4D 01 02 00 01`, after the settings subject), NOTE1, NOTE3 and NOTE4 after NOTE2 was
 deleted; `store-dir` expects the fifth file to be created rather than
 refused. All five configurations pass: C-BIOS EU and JP, Roms_MSX1,
 Roms_MSX1 with Roms_Disk, Roms_MSX2. `msx/test.sh`
@@ -288,7 +313,7 @@ when the machine starts.
 
 The build prints it and fails past the line:
 
-    msxdesk.rom: code $4000-$66C4, 9924 bytes, 22844 free; RAM $C000-$CC72, 3186 bytes, heap 9102 to $F000 without a disk ROM, 3717 with one
+    msxdesk.rom: code $4000-$6895, 10389 bytes, 22379 free; RAM $C000-$CC7E, 3198 bytes, heap 9090 to $F000 without a disk ROM, 3705 with one
 
 Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
 the heap takes everything from `RamEnd` to `HeapEnd`, which is HIMEM
