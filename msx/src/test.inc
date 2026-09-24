@@ -14,8 +14,104 @@ TestRun:
                 call    TestApp
                 call    TestHit
                 call    TestDiskNames
+                call    TestSettings
                 ld      a,1
                 ld      (TestDone),a
+                ret
+
+; Settings round trip, rejected headers and payload clamping. Each
+; snapshot is carry (0/1) followed by the five record bytes.
+; Reuse unused tail of the commander scratch buffer in the TEST ROM.
+TsetResults     equ     CmdBuf+120
+TsetApplied     equ     CmdBuf+144
+TestSettings:
+                call    SetDefaults
+                ld      a,ST_RAM
+                ld      (SetBackend),a
+                ld      a,2
+                ld      (SetSpeed),a
+                xor     a
+                ld      (SetInvertY),a
+                call    SetSave
+                ld      de,TsetResults
+                call    TsetSnapshot
+                ld      hl,SetRec
+                ld      b,SETSIZE
+TsetClear:
+                ld      (hl),0
+                inc     hl
+                djnz    TsetClear
+                call    SetLoad
+                ld      de,TsetResults+6
+                call    TsetSnapshot
+                xor     a
+                ld      (SetRec),a
+                call    SetWriteRecord
+                call    SetLoad
+                ld      de,TsetResults+12
+                call    TsetSnapshot
+                ld      a,99
+                ld      (SetRec+1),a
+                call    SetWriteRecord
+                call    SetLoad
+                ld      de,TsetResults+18
+                call    TsetSnapshot
+                ; Exercise all three table selections and mouse signs.
+                xor     a
+                ld      (SetSpeed),a
+                call    SetApply
+                ld      hl,(AccelPtr)
+                ld      de,TsetApplied
+                ld      bc,5
+                ldir
+                ld      a,1
+                ld      (SetSpeed),a
+                call    SetApply
+                ld      hl,(AccelPtr)
+                ld      de,TsetApplied+5
+                ld      bc,5
+                ldir
+                ld      a,2
+                ld      (SetSpeed),a
+                call    SetApply
+                ld      hl,(AccelPtr)
+                ld      de,TsetApplied+10
+                ld      bc,5
+                ldir
+                ld      a,13
+                call    SetMouseY
+                ld      (TsetApplied+15),a
+                xor     a
+                ld      (SetInvertY),a
+                ld      a,13
+                call    SetMouseY
+                ld      (TsetApplied+16),a
+                ld      a,255
+                ld      (SetSpeed),a
+                ld      (SetInvertY),a
+                ld      (SetBackend),a
+                call    SetApply
+                ld      hl,SetRec
+                ld      de,TsetApplied+17
+                ld      bc,SETSIZE
+                ldir
+                ; Leave a non-default, valid record on the disk image.
+                ld      a,ST_RAM
+                ld      (SetBackend),a
+                ld      a,2
+                ld      (SetSpeed),a
+                xor     a
+                ld      (SetInvertY),a
+                call    SetApply
+                jp      SetSave
+TsetSnapshot:
+                ld      a,0
+                adc     a,0
+                ld      (de),a
+                inc     de
+                ld      hl,SetRec
+                ld      bc,SETSIZE
+                ldir
                 ret
 
 ; Three allocations, a payload scribbled over, a free, a free by
@@ -25,7 +121,7 @@ TestRun:
 TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
-                ; build's records leave 998 usable bytes under a disk ROM's HIMEM.
+                ; build's records leave 986 usable bytes under a disk ROM's HIMEM.
                 ld      bc,512
                 ld      a,$10
                 call    HeapAlloc

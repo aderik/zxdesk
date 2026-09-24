@@ -423,6 +423,20 @@ def test_build_checks(tsyms, fails):
     print("test build:")
     r = Run(tsyms, [(60, "")], "subjects", rom=TROM)
     check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
+    backend = 5 if EXT else 1
+    saved = bytes((0x4D, 1, 2, 0, 1))
+    default = bytes((0x4D, 1, 1, 1, backend))
+    check(fails, "settings-roundtrip", r.bytes("TsetResults", 12) == (b"\0" + saved) * 2,
+          "SetSave, clear record, SetLoad: " + r.bytes("TsetResults", 12).hex())
+    check(fails, "settings-headers", r.bytes("TsetResults", 24)[12:] == (b"\1" + default) * 2,
+          "wrong magic and version both return carry and defaults")
+    check(fails, "settings-apply", r.peek("AccelPtr", 2) == tsyms["AccelTabs"] + 10,
+          "fast ramp selected")
+    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 243, 13)) + default
+    check(fails, "settings-input", r.bytes("TsetApplied", 22) == applied,
+          "three ramps, Y negation on/off, invalid payload clamped: " + r.bytes("TsetApplied", 22).hex())
+    check(fails, "settings-backend", r.peek("StBackend") == 1,
+          "save restores selected RAM backend, including on disk")
     parsed = r.bytes("CmdBuf", 120)
     expected_fcb = (b"NOTE       ", b"NOTE    TXT", b"ABCDEFGHXYZ")
     check(fails, "disk-83-names", all(parsed[i * 12] == 0 and parsed[i * 12 + 1:i * 12 + 12] == expected
@@ -478,7 +492,7 @@ def test_build_checks(tsyms, fails):
           f"wrote {st['TsWrote']}, read {st['TsRead']}, {st['TsBad']} wrong, err {st['TsErrCode']}")
     # four files in RAM and the fifth refused; on a disk the fifth is
     # created too, so after the delete a fourth entry is still there
-    disk = r.peek("StBackend") == 5
+    disk = r.peek("SetDevice") == 5
     want_dir = (4, 0, 0, 0) if disk else (4, 8, 0, 1)
     got_dir = (st["TsDirN"], st["TsFull"], st["TsDel"], st["TsDirAfter"])
     check(fails, "store-dir", got_dir == want_dir,
@@ -487,8 +501,7 @@ def test_build_checks(tsyms, fails):
     if disk:
         files = read_disk_image(DISK)
         names = sorted(files)
-        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and len(files["SETTINGS"]) == 64
-              and files["SETTINGS"] == bytes((1 + 7 * i) & 0xFF for i in range(64)),
+        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and files["SETTINGS"] == bytes((0x4D, 1, 2, 0, 1)),
               f"on the image: {[(n, len(files[n])) for n in names]}")
 
     # app model: the calendar's state saved and loaded back
@@ -966,10 +979,52 @@ def commander_checks(syms, fails, vram0):
 
 
 
+def settings_checks(syms, fails):
+    backend = 5 if EXT else 1
+    defaults = bytes((0x4D, 1, 1, 1, backend))
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+    r = Run(syms, press(20, 4) + press(30, 20) + [(10, "")], "settings-menu")
+    check(fails, "settings-menu", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppSettings"],
+          "MSX DESK > SETTINGS opens the settings window")
+    buf = r.peek("WinBufP", 2) - WORK
+    rows = [r.ram[buf + i * 20:buf + (i + 1) * 20] for i in range(5)]
+    check(fails, "settings-values", rows[1][1:13] == b"POINTER RAMP" and rows[1][16] == ord('1')
+          and rows[2][1:15] == b"MOUSE Y INVERT" and rows[2][16] == ord('1')
+          and rows[3][14:14 + (4 if EXT else 3)] == (b"DISK" if EXT else b"RAM"),
+          f"window rows {rows[1:4]}")
+    check(fails, "settings-missing", r.bytes("SetRec", 5) == defaults, "missing file gives defaults")
+    reset = (f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90; "
+             f"debug write memory {syms['SetInvertY']} 0")
+    r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
+                   (10, reset), (10, "mouse_move 0 -30"), (10, "")], "settings-mouse")
+    check(fails, "settings-mouse", r.ptr() == (120, 105),
+          f"Y inversion disabled: pointer {r.ptr()}, expected (120, 105)")
+    if EXT:
+        for name, data, expected in (
+                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 1, 0, 0, 1))),
+                ("magic", bytes((0, 1, 0, 0, 1)), defaults),
+                ("version", bytes((0x4D, 99, 0, 0, 1)), defaults),
+                ("short", b"M\1", defaults),
+                ("long", defaults + b"x", defaults),
+                ("fields", bytes((0x4D, 1, 255, 255, 255)), defaults)):
+            r = Run(syms, [(10, "")], "settings-boot-" + name, files={"SETTINGS": data})
+            check(fails, "settings-boot-" + name, r.bytes("SetRec", 5) == expected
+                  and r.peek("StBackend") == expected[4]
+                  and r.peek("AccelPtr", 2) == syms["AccelTabs"] + 5 * expected[2],
+                  "record " + r.bytes("SetRec", 5).hex())
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--settings"]:
+        test_build_checks(tsyms, fails)
+        settings_checks(syms, fails)
+        return bool(fails)
+    settings_checks(syms, fails)
     vram0 = boot_checks(syms, fails)
     mouse_checks(syms, fails, vram0)
     key_checks(syms, fails)
