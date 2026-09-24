@@ -174,7 +174,7 @@ and application storage backend. Editing controls are deferred.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
 `SetLoad` then `SetApply`. The five bytes are `4D 01 rr yy bb`: MSX
-magic, format version, ramp, Y inversion and storage id (1 RAM, 5 disk).
+magic, format version, ramp, Y inversion and storage id (1 RAM, 2 tape with `TAPE=1`, 5 disk).
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
 inversion 1 and the detected boot backend. Missing files, I/O failures,
 incorrect magic/version and lengths other than five bytes give defaults;
@@ -284,7 +284,7 @@ config for) works as a WD2793 in the Philips connection style:
 `disk.inc` is a storage backend on MSX-DOS 1's BDOS ($F37D): open,
 create, delete, close, random block read and write with a record size
 of one byte, search first/next for the directory. Names use uppercase 8.3 syntax. `StInit` selects it when the BDOS
-jump is there and the RAM backend otherwise, so the notepad's SAVE
+jump is there, explicitly enabled tape next, and the RAM backend otherwise, so the notepad's SAVE
 lands on a real MSX-DOS file that a PC can read.
 
 Getting there took three measurements:
@@ -313,7 +313,7 @@ Getting there took three measurements:
 The stack and the heap's end come from HIMEM at run time, STACKRES
 ($380) apart, not from an equate. The TEST build's records leave
 986 usable bytes of heap under a disk ROM, so its heap subject allocates
-512, 300 and 128 bytes.
+256, 200 and 128 bytes (reduced for the tape buffer).
 
 Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
 the image with the document's bytes; `store-disk` finds SETTINGS (five
@@ -326,6 +326,53 @@ inside the image; `run.sh` does the same for the host's openMSX. Any
 other machine from `/usr/share/openmsx/machines/` works the same way
 once its ROMs are present; a missing one is reported by name and sha1
 when the machine starts.
+
+## The tape backend
+
+`ST_TAPE` uses the main BIOS cassette entries: TAPOON/TAPOUT/TAPOOF
+for writing and TAPION/TAPIN/TAPIOF for reading. Enable it explicitly
+with pasmo `--equ TAPE=1` (default `TAPE=0`), for example:
+
+    pasmo -I msx/src --equ TAPE=1 --bin msx/src/msxdesk.asm msx/build/msxtape.rom msx/build/msxtape.sym
+
+Boot still prefers BDOS when present. Otherwise the opt-in selects tape,
+and without it boot selects RAM. C-BIOS has no cassette implementation;
+use Roms_MSX1 or Roms_MSX2 for transfers. SETTINGS displays TAPE and
+uses defaults at boot on that device, without waiting for a cassette.
+
+Like the ZX backend, writes are buffered until close and reads load a
+file at open. One handle holds at most 256 bytes; short writes/reads
+report the actual count, EOF returns zero, and directory/delete are
+unsupported. The MSX-specific format consists of two BIOS blocks:
+
+- Long leader, `MSXT`, a 13-byte zero-padded name including terminator,
+  and a two-byte little-endian length (19 header bytes).
+- Short leader and exactly that many payload bytes (0–256).
+
+This is a Desk format, not BASIC's cassette format or a ZX tape image.
+Position the cassette at the desired file: an unexpected name, magic or
+length fails the open. BIOS carry failures propagate through storage;
+a save failure leaves the document marked as unsaved.
+
+`MSX_MACHINE=Roms_MSX1 msx/test.sh --tape` records a real WAV using
+`cassetteplayer new`, saves the notepad, edits it, rewinds and plays the
+cassette, and uses FILE > OPEN. All 256 restored bytes match the snapshot;
+Python independently decodes the WAV's FSK pulses into a 19-byte header
+and the identical 256-byte document, CRC32 **0b0601cb** on both real
+machines. The subject also checks backend precedence, invalid headers,
+and injected TAPOUT/TAPOOF failures. The TEST ROM checks buffering,
+partial reads, full writes, EOF and invalid handles on C-BIOS too.
+These subjects are included in the normal suite.
+
+Tape traffic masks interrupts in the BIOS. The notepad round trip
+measured **Dropped = 34** on both real machines; this operation is outside
+the zero-drop UI budget. The clock retains its existing IrqCnt accounting.
+
+Static RAM grows by **299 bytes**: a 256-byte buffer, two 19-byte headers,
+two 2-byte counters and one mode byte. Normal static RAM is **3,514 bytes**,
+with **3,389 bytes** left for the heap behind the disk ROM; the TEST build
+leaves **674 bytes**. Tape adds no heap allocation. The TEST heap subject
+now uses 256/200/128-byte allocations to fit this smaller budget.
 
 ## Memory budget
 

@@ -15,9 +15,83 @@ TestRun:
                 call    TestHit
                 call    TestDiskNames
                 call    TestSettings
+                call    TestTapeBuffer
                 ld      a,1
                 ld      (TestDone),a
                 ret
+
+; Pure buffering contract, no cassette BIOS needed on C-BIOS. The
+; physical open/close path is exercised by note-tape on real ROMs.
+TtResults       equ     CmdBuf+176
+TestTapeBuffer:
+                ld      hl,NoteBuf
+                ld      b,0
+TtPattern:
+                ld      (hl),b
+                inc     hl
+                djnz    TtPattern
+                ld      hl,TtName
+                ld      b,FA_OVERWRITE
+                call    TapeOpen
+                ld      hl,NoteBuf
+                ld      bc,257
+                call    TapeWrite
+                ld      de,TtResults
+                call    TtRecord
+                ld      a,1
+                ld      hl,NoteBuf
+                ld      bc,1
+                call    TapeWrite
+                ld      de,TtResults+3
+                call    TtRecord
+                xor     a                       ; invalid handle
+                ld      bc,1
+                call    TapeWrite
+                ld      de,TtResults+6
+                call    TtRecord
+                ld      hl,NoteBuf
+                ld      b,0
+TtClear:
+                ld      (hl),0
+                inc     hl
+                djnz    TtClear
+                ld      a,FA_READ               ; simulate a loaded file
+                ld      (TapeMode),a
+                ld      hl,NoteBuf
+                ld      bc,64
+                call    TapeRead
+                ld      de,TtResults+9
+                call    TtRecord
+                ld      a,1
+                ld      hl,NoteBuf+64
+                ld      bc,257
+                call    TapeRead
+                ld      de,TtResults+12
+                call    TtRecord
+                ld      a,1
+                ld      bc,1
+                call    TapeRead
+                ld      de,TtResults+15
+                call    TtRecord
+                ld      a,1
+                call    TapeClose
+                ld      a,1                     ; read after close fails
+                ld      bc,1
+                call    TapeRead
+                ld      de,TtResults+18
+                jp      TtRecord
+TtRecord:
+                ld      a,0
+                adc     a,0
+                ld      (de),a
+                inc     de
+                ld      a,c
+                ld      (de),a
+                inc     de
+                ld      a,b
+                ld      (de),a
+                ret
+TtName:         defb    "BUFFER",0
 
 ; Settings round trip, rejected headers and payload clamping. Each
 ; snapshot is carry (0/1) followed by the five record bytes.
@@ -123,12 +197,12 @@ TsetSnapshot:
 TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
-                ; build's records leave 986 usable bytes under a disk ROM's HIMEM.
-                ld      bc,512
+                ; build includes the tape buffer as well as the test records.
+                ld      bc,256
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,300
+                ld      bc,200
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
@@ -145,7 +219,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,299
+                ld      bc,199
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree
