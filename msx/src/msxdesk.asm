@@ -50,7 +50,8 @@ MENUROW         equ     0
 STATROW         equ     23
 PTRXMAX         equ     247
 PTRYMAX         equ     172             ; keeps the pointer clear of the status band
-MOUSEMAX        equ     16              ; largest delta believed per frame
+MOUSEMAX        equ     64              ; the most a mouse may move in one frame, as
+                                        ; on the ZX; 16 threw away fast moves
 MOUSEWAIT       equ     10              ; settle loops between strobe and sample; a real
                                         ; mouse may want more, tune on hardware
 
@@ -414,9 +415,12 @@ Start:
                 ld      b,$0F           ; white border, as the ZX had
                 ld      c,7
                 call    WrtVdp
-                ld      b,$E2           ; 16K, display on, interrupts, 16x16
+                ld      b,$A2           ; 16K, display OFF, interrupts, 16x16
                 ld      c,1             ; sprites: CHGMOD leaves them 8x8 and
-                call    WrtVdp          ; the arrow lost its tail
+                call    WrtVdp          ; the arrow lost its tail. The display
+                                        ; stays off until the desktop has been
+                                        ; flushed once: CHGMOD leaves the font
+                                        ; table on the screen and it showed
                 ld      a,$E2
                 ld      (RG1SAV),a      ; keep the BIOS's shadow honest
                 call    LoadFont
@@ -489,6 +493,15 @@ ENDIF
 ;  of the frame, as before, so the model is settled before the
 ;  next frame paints it.
 ; ------------------------------------------------------------
+                ; The first frame: the whole desktop out, then the display on.
+                ei
+                halt
+                call    NtFlush
+                ld      b,$E2           ; display on
+                ld      c,1
+                call    WrtVdp
+                ld      hl,(IrqCnt)     ; that frame was not a loop frame:
+                ld      (Frames),hl     ; keep the watchdog's two counts level
 MainLoop:
                 ei
                 halt
@@ -780,8 +793,10 @@ CdNeg:
 ;  $F nibbles are therefore taken as no mouse.
 ; ------------------------------------------------------------
 ReadMouse:
-                ld      a,$13           ; port A, pin 8 high
-                call    MouseNibble
+                di                      ; the four nibbles are one strobe
+                ld      a,$13           ; sequence; an interrupt handler that
+                call    MouseNibble     ; touches PSG register 15 in between
+                                        ; would shuffle them
                 ld      d,a
                 rlca
                 rlca
@@ -810,6 +825,7 @@ ReadMouse:
                 ld      a,$03
                 call    MouseNibble
                 and     d
+                ei
                 cp      $0F
                 ret     z               ; four $F nibbles: nothing there
                 ; Buttons first, while E still holds the last byte read:

@@ -9,7 +9,9 @@
 # cbios), otherwise the toolchain image with the X socket passed in
 # (works under Wayland through XWayland). Cursor keys move the pointer,
 # CTRL is the button, the host mouse is the MSX mouse once the window
-# has focus; F12 opens the openMSX console.
+# has focus and is grabbed (openMSX gets relative motion only while the
+# pointer is inside the window, so it is grabbed; F12 opens the console,
+# `set grabinput off` lets go).
 set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACHINE="${MSX_MACHINE:-C-BIOS_MSX1_EU}"
@@ -20,7 +22,7 @@ docker run --rm -v "$ROOT:/work" -w /work/msx -u "$(id -u):$(id -g)" "$IMAGE" \
   pasmo -I src --bin src/msxdesk.asm build/msxdesk.rom build/msxdesk.sym 2>&1 | grep -v "WARNING: Var\|3 pass" || true
 [[ -s "$ROOT/msx/build/msxdesk.rom" ]] || { echo "no ROM built" >&2; exit 1; }
 
-ARGS=(-machine "$MACHINE" -cartb "$ROOT/msx/build/msxdesk.rom" -romtype page12 -command "plug joyporta mouse")
+ARGS=(-machine "$MACHINE" -cartb "$ROOT/msx/build/msxdesk.rom" -romtype page12 -command "plug joyporta mouse" -command "set grabinput on")
 # MSX_EXT=Roms_Disk puts the disk interface in slot 1, ahead of the
 # cartridge in slot 2, so its init runs first; MSX_DISK=file.dsk mounts an
 # image (the harness's msx/build/disk.dsk is a blank 720K one).

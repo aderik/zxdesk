@@ -359,6 +359,11 @@ def mouse_checks(syms, fails, vram0):
                    (10, "mouse_move 20 0"), (10, "mouse_move 0 -30"),
                    (5, "key_down 6 0x02"), (5, "key_up 6 0x02"), (10, "")], "mouse")
     check(fails, "ptr-moved", r.ptr() == (130, 75), f"pointer {r.ptr()}, expected (130, 75)")
+    # a fast move: 100 host pixels in one frame is 50 for the ROM, and
+    # a clamp of 16 (the first version's) threw 34 of them away
+    r2 = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"), (10, reset),
+                    (5, "mouse_move 100 0"), (5, "mouse_move 0 60"), (10, "")], "mouse-fast")
+    check(fails, "ptr-fast", r2.ptr() == (170, 120), f"pointer {r2.ptr()}, expected (170, 120): nothing clamped away")
     check(fails, "hit-desktop", r.peek("LastHit") == 5, f"press at (130,75) hit {r.peek('LastHit')}, CTL_DESKTOP is 5")
     check(fails, "sprite-follows", r.sat(0)[:2] == (74, 130), f"sprite 0 {r.sat(0)}")
     c = r.counts()

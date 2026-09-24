@@ -367,3 +367,12 @@ row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R
 The stack is set from HIMEM at startup ($F380 without a disk ROM): the BIOS called the cartridge on
 its own stack, and C-BIOS and a real BIOS need not agree where that
 was. VDP register writes go through `WrtVdp`, under DI like `SetWrt`.
+
+The display is switched off (R1 bit 6) right after CHGMOD and on again
+after the first flush: CHGMOD leaves the BIOS font table on the screen
+and it showed for the fraction of a second the tiles, colours and
+desktop took to load. The mouse's four nibbles are read under DI, one
+strobe sequence that an interrupt handler touching PSG register 15
+would shuffle, and the per-frame clamp is 64 as on the ZX: at 16, a
+fast host move of 100 pixels lost 34 of its 50 counts (`ptr-fast`
+asserts (170, 120) for +100, +60).
