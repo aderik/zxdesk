@@ -371,7 +371,11 @@ was. VDP register writes go through `WrtVdp`, under DI like `SetWrt`.
 The display is switched off (R1 bit 6) right after CHGMOD and on again
 after the first flush: CHGMOD leaves the BIOS font table on the screen
 and it showed for the fraction of a second the tiles, colours and
-desktop took to load. The mouse's four nibbles are read under DI, one
+desktop took to load. The SETTINGS byte "mouse Y invert" is 0 for a pointer that
+follows the hand (the MSX mouse's negative delta negated) and 1 for
+upside down; the first version had 0 mean "no negation" and a file the
+harness left on the disk image turned the axis over on a real screen.
+A byte that is neither is a damaged file and reads as 0. The mouse's four nibbles are read under DI, one
 strobe sequence that an interrupt handler touching PSG register 15
 would shuffle, and the per-frame clamp is 64 as on the ZX: at 16, a
 fast host move of 100 pixels lost 34 of its 50 counts (`ptr-fast`

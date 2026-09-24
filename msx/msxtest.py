@@ -430,14 +430,14 @@ def test_build_checks(tsyms, fails):
     check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
     backend = 5 if EXT else 1
     saved = bytes((0x4D, 1, 2, 0, 1))
-    default = bytes((0x4D, 1, 1, 1, backend))
+    default = bytes((0x4D, 1, 1, 0, backend))
     check(fails, "settings-roundtrip", r.bytes("TsetResults", 12) == (b"\0" + saved) * 2,
           "SetSave, clear record, SetLoad: " + r.bytes("TsetResults", 12).hex())
     check(fails, "settings-headers", r.bytes("TsetResults", 24)[12:] == (b"\1" + default) * 2,
           "wrong magic and version both return carry and defaults")
     check(fails, "settings-apply", r.peek("AccelPtr", 2) == tsyms["AccelTabs"] + 10,
           "fast ramp selected")
-    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 243, 13)) + default
+    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default
     check(fails, "settings-input", r.bytes("TsetApplied", 22) == applied,
           "three ramps, Y negation on/off, invalid payload clamped: " + r.bytes("TsetApplied", 22).hex())
     check(fails, "settings-backend", r.peek("StBackend") == 1,
@@ -988,7 +988,7 @@ def commander_checks(syms, fails, vram0):
 
 def settings_checks(syms, fails):
     backend = 5 if EXT else 1
-    defaults = bytes((0x4D, 1, 1, 1, backend))
+    defaults = bytes((0x4D, 1, 1, 0, backend))
     def press(x, y):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}"),
                 (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
@@ -998,16 +998,18 @@ def settings_checks(syms, fails):
     buf = r.peek("WinBufP", 2) - WORK
     rows = [r.ram[buf + i * 20:buf + (i + 1) * 20] for i in range(5)]
     check(fails, "settings-values", rows[1][1:13] == b"POINTER RAMP" and rows[1][16] == ord('1')
-          and rows[2][1:15] == b"MOUSE Y INVERT" and rows[2][16] == ord('1')
+          and rows[2][1:15] == b"MOUSE Y INVERT" and rows[2][16] == ord('0')
           and rows[3][14:14 + (4 if EXT else 3)] == (b"DISK" if EXT else b"RAM"),
           f"window rows {rows[1:4]}")
     check(fails, "settings-missing", r.bytes("SetRec", 5) == defaults, "missing file gives defaults")
-    reset = (f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90; "
-             f"debug write memory {syms['SetInvertY']} 0")
-    r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
-                   (10, reset), (10, "mouse_move 0 -30"), (10, "")], "settings-mouse")
-    check(fails, "settings-mouse", r.ptr() == (120, 105),
-          f"Y inversion disabled: pointer {r.ptr()}, expected (120, 105)")
+    # 0: the pointer follows the hand, host up is screen up; 1: upside down
+    for inv, want in ((0, (120, 75)), (1, (120, 105))):
+        reset = (f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90; "
+                 f"debug write memory {syms['SetInvertY']} {inv}")
+        r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
+                       (10, reset), (10, "mouse_move 0 -30"), (10, "")], f"settings-mouse-{inv}")
+        check(fails, f"settings-mouse-{inv}", r.ptr() == want,
+              f"Y invert {inv}, host up 30: pointer {r.ptr()}, expected {want}")
     if EXT:
         for name, data, expected in (
                 ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 1, 0, 0, 1))),

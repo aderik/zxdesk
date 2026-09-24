@@ -1,5 +1,5 @@
-; MSX format v1: magic 'M', version, ramp (0..2), mouse Y negation
-; (0..1), backend id. Separate magic from the ZX record.
+; MSX format v1: magic 'M', version, ramp (0..2), mouse Y inverted
+; (0 = as the hand moves, 1 = upside down), backend id. Separate magic from the ZX record.
 SETMAGIC        equ     $4D
 SETVERSION      equ     1
 SETSIZE         equ     5
@@ -12,7 +12,7 @@ SetDefaults:
                 ld      a,(SetDevice)
                 ld      (SetBackend),a
                 ret
-SetInitial:     defb    SETMAGIC,SETVERSION,1,1,ST_RAM
+SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -128,9 +128,9 @@ SetSpeedOK:
                 ld      a,(SetInvertY)
                 cp      2
                 jr      c,SetYOK
-                ld      a,1
-                ld      (SetInvertY),a
-SetYOK:
+                xor     a                       ; anything but 0 or 1 is a
+                ld      (SetInvertY),a          ; damaged file, not a wish
+SetYOK:                                         ; to have the axis upside down
                 ld      a,(SetBackend)
                 cp      ST_RAM
                 jr      z,SetBackendOK
@@ -146,8 +146,15 @@ SetBackendDefault:
                 ld      (SetBackend),a
                 jp      StSelect
 
-; Same negation as the original MSX input path when the setting is 1.
+; A = the mouse's raw dy. An MSX mouse reports the negative of the
+; movement, so the screen delta is always the negation; the setting
+; flips it once more. 0 is therefore a mouse that moves the pointer
+; the way the hand went, which is what a default should be: the first
+; version had 0 mean "no negation" and a SETTINGS file the harness
+; left on the disk image turned the Y axis upside down on a real
+; screen.
 SetMouseY:
+                neg
                 push    bc
                 ld      b,a
                 ld      a,(SetInvertY)

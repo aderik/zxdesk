@@ -78,6 +78,8 @@ TsetClear:
                 ld      de,TsetApplied+10
                 ld      bc,5
                 ldir
+                ld      a,1                     ; inverted: 13 comes back as 13
+                ld      (SetInvertY),a
                 ld      a,13
                 call    SetMouseY
                 ld      (TsetApplied+15),a
