@@ -195,6 +195,13 @@ leaves **3,385 bytes** for the heap with the disk ROM (8,770 without it);
 the TEST build leaves **670 bytes** with the disk ROM. Resize uses one
 window buffer, with no extra temporary heap allocation.
 
+Resizing or TILE also clamps the notepad's viewport to the last valid
+first line, without moving the caret. A clock dragged to row 20 moves up
+to row 19 when resized to the 6x4 minimum; a failed allocation preserves
+its original 8x3 geometry. The resize/scroll subjects cover these cases
+with memory and full name-table assertions. These fixes add **0 bytes**
+of static RAM.
+
 ## Settings
 
 **MSX DESK > SETTINGS** displays the pointer ramp (0 slow, 1 normal,

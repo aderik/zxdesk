@@ -1121,15 +1121,16 @@ def arrange_checks(syms, fails):
         check(fails, f"arrange-close-{n}", r.peek('WndCount') == 0 and blocks == want_heap
               and r.nt() == expected_nt(), f"heap {blocks}, crc32 {zlib.crc32(r.nt()):08x}")
 
-    # A tall notepad scrolled to its last document row must blank the
-    # extra space, without treating the following state bytes as text.
+    # TILE resets the viewport when the whole document fits and blanks
+    # the extra space without treating following state bytes as text.
     last_row = [(5, f"debug write memory {syms['NoteCY']} 15; "
                     f"debug write memory {syms['NoteTop']} 15; "
                     f"debug write memory {syms['NoteBuf'] + 15 * 16} 90")]
     r = Run(syms, opens[1] + last_row + tile + [(15, "")], "arrange-note-bottom")
     want = compose(expected_nt(), [(0, 1, 32, 22, b"NOTEPAD",
-                                   [(1, 1, b"Z", False), (1, 2, b" ", True)])])
-    check(fails, "arrange-note-bottom", r.nt() == want and r.peek('NoteTop') == 15,
+                                   [(1, 1, b"A", False), (16, 1, b"Z", False),
+                                    (16, 2, b" ", True)])])
+    check(fails, "arrange-note-bottom", r.nt() == want and r.peek('NoteTop') == 0,
           f"top {r.peek('NoteTop')}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     # Commander has a second pane starting beyond a tiled window's right
@@ -1403,11 +1404,30 @@ def resize_scroll_checks(syms, fails):
                      f"debug write memory {syms['NoteCY']} {cy}; "
                      f"debug write memory {syms['NoteTop']} {top}")]
         r = Run(syms, new + caret + drag + minimum + heapstat, name)
-        want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", [(-1, top, b"", False)])])
+        # The intermediate 18x10 window clamps the origin to at most eight.
+        want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", [(-1, min(top, 8), b"", False)])])
         check(fails, name, r.nt() == want and r.peek('NoteCX') == cx and r.peek('NoteCY') == cy
+              and r.peek('NoteTop') == min(top, 8)
               and r.bytes('NoteBuf', 256) == (b" " * 14 + b"\0\0") * 16
               and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16,
               f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), crc32 {zlib.crc32(r.nt()):08x}")
+
+    clock = press(140, 3) + press(148, 11)
+    move = point(19 * 8 + 2, 3 * 8 + 2) + [(5, "key_down 6 0x02")]
+    move += [(5, f"debug write memory {syms['PtrY']} {20 * 8 + 2}"),
+             (5, "key_up 6 0x02")]
+    shrink = point(25 * 8 + 2, 22 * 8 + 2) + [(5, "key_down 6 0x02")]
+    shrink += point(0, 8) + [(5, "key_up 6 0x02")]
+    for name, resize, y, w, h in [("resize-bottom-start", [], 20, 8, 3),
+                                 ("resize-bottom-minimum", shrink, 19, 6, 4),
+                                 ("resize-bottom-no-room", refuse + shrink, 20, 8, 3)]:
+        r = Run(syms, clock + move + resize + heapstat, name)
+        win = clock_win(18, y, r.peek('ClkH'), r.peek('ClkM'))
+        want = compose(expected_nt(), [(18, y, w, h, win[4], win[5])])
+        check(fails, name, (r.peek('WinX'), r.peek('WinY'), r.peek('WinW'), r.peek('WinH'))
+              == (18, y, w, h) and r.nt() == want,
+              f"position {r.peek('WinX')},{r.peek('WinY')}, size {r.peek('WinW')}x{r.peek('WinH')}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
     rows = [f"{i:02d}".encode() for i in range(16)]
     seed = [(5, "; ".join(f"debug write memory {syms['NoteBuf'] + i * 16 + j} {v}"
@@ -1415,6 +1435,24 @@ def resize_scroll_checks(syms, fails):
     down = press(23 * 8 + 2, 13 * 8 + 2)
     page = press(23 * 8 + 2, 10 * 8 + 2)
     up = press(23 * 8 + 2, 7 * 8 + 2)
+    tile = press(140, 3) + press(148, 35)
+    grow = point(23 * 8 + 2, 14 * 8 + 2) + [(5, "key_down 6 0x02")]
+    grow += point(255, 183) + [(5, "key_up 6 0x02"), (10, "")]
+    for name, steps, x, y, w, h, top in [
+            ("scroll-grow", grow, 8, 6, 24, 17, 1),
+            ("scroll-tile", tile, 0, 1, 32, 22, 0),
+            ("scroll-grow-tile", grow + tile, 0, 1, 32, 22, 0)]:
+        r = Run(syms, new + seed + down * 9 + steps + [(10, "")], name)
+        lines = [(i + 1, 1, row.ljust(14), False) for i, row in enumerate(rows[top:])]
+        lines += [(-1, top, b"", False)]
+        if top == 0:
+            lines += [(1, 1, b"0", True)]
+        want = compose(expected_nt(), [(x, y, w, h, b"NOTEPAD", lines)])
+        check(fails, name, r.peek('NoteTop') == top and r.peek('NoteCY') == 0
+              and (r.peek('WinW'), r.peek('WinH')) == (w, h) and r.nt() == want,
+              f"top {r.peek('NoteTop')}, caret {r.peek('NoteCY')}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
     key = [(3, "key_down 6 0x01; key_down 8 0x40"),
            (3, "key_up 8 0x40; key_up 6 0x01")]
     for name, steps, top, cy in [("scroll-down", down, 1, 0),

@@ -37,6 +37,10 @@ RszEnd:
                 jr      c,RszHeight
                 ld      a,b
 RszHeight:
+                cp      4
+                jr      nc,RszAlloc
+                ld      a,4
+RszAlloc:
                 ld      (WinH),a
                 call    WndAllocBuf
                 pop     hl
@@ -45,6 +49,17 @@ RszHeight:
                 ld      (WinW),hl
                 call    WndAllocBuf
 RszPaint:
+                ; A three-row clock may start on row 20. Keep the minimum
+                ; height on screen by moving up after allocation succeeds
+                ; (or after restoring the original size on failure).
+                ld      a,WINBOTTOM
+                ld      hl,WinH
+                sub     (hl)
+                ld      hl,WinY
+                cp      (hl)
+                jr      nc,RszDraw
+                ld      (hl),a
+RszDraw:
                 ; Compose the replacement now, blit next frame. Combining
                 ; a large recompose with desktop restoration exceeds NTSC.
                 call    WinDraw
