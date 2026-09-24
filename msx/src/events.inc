@@ -193,6 +193,10 @@ HbdWindow:
                 pop     af
                 cp      CTL_CLOSEBOX
                 jp      z,WndClose
+                cp      CTL_RESIZE
+                jp      z,RszStart
+                cp      CTL_SCROLL
+                jp      z,ScrPress
                 cp      CTL_TITLEBAR
                 ret     nz                      ; a press in the body does nothing yet
                 jp      WndGrab
@@ -207,7 +211,7 @@ HdlBtnUp:
                 inc     (hl)
                 xor     a
                 ld      (Dragging),a
-                ret
+                jp      RszEnd
 HdlKey:
                 ld      hl,EvCounts+3
                 inc     (hl)

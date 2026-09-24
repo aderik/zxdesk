@@ -54,7 +54,7 @@ AppNote:        defw    NOTESTSZ, NoteState, NoteInit, NoteDraw
                 defw    NoteKey, TxtWinTitle
                 defb    8, 6, NOTEW, NOTEH
                 defw    NoteClose
-                defw    0, 0
+                defw    NoteScrollInfo, NoteScrollTo
                 defb    APPF_FULL
                 ; The clock keeps nothing per window: the time is the
                 ; machine's, so two clock windows are two views of it.

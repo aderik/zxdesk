@@ -88,7 +88,6 @@ NsSame:
 
 ; The draw vector: the visible rows, then the cursor inverted.
 NoteDraw:
-                call    NoteScroll
                 xor     a
                 ld      (PrintInv),a
                 call    NoteVisRows
@@ -114,8 +113,22 @@ NdNoRow:
                 ld      a,(NoteCY)
                 ld      b,a
                 ld      a,(NoteTop)
-                neg
-                add     a,b
+                ld      c,a
+                ld      a,b
+                sub     c
+                ret     c
+                ld      c,a
+                call    NoteVisRows
+                cp      c
+                ret     z
+                ret     c
+                ld      a,(WinW)
+                sub     2
+                ld      hl,NoteCX
+                cp      (hl)
+                ret     z
+                ret     c
+                ld      a,c
                 inc     a
                 ld      b,a                     ; the cursor's window row
                 ld      a,(NoteCX)
@@ -133,19 +146,15 @@ NoteInit:
                 ld      hl,TxtNoteName
                 call    NoteSetName
 NoteNew:
+                ; Build one blank row, then spread it through the document.
                 xor     a
-                ld      (NoteRowIx),a
-                ld      b,NOTEROWS
-NnRow:
-                push    bc
-                ld      a,(NoteRowIx)
                 call    NoteBlankRow
-                ld      a,(NoteRowIx)
-                inc     a
-                ld      (NoteRowIx),a
-                pop     bc
-                djnz    NnRow
+                ld      hl,NoteBuf
+                ld      de,NoteBuf+NOTESTRIDE
+                ld      bc,NOTESIZE-NOTESTRIDE
+                ldir
                 xor     a
+                ld      (NoteRowIx),a
                 ld      (NoteCX),a
                 ld      (NoteCY),a
                 ld      (NoteTop),a
@@ -714,3 +723,28 @@ NmoOk:
 
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
+
+; Scroll model: sixteen document lines, a cell per visible line.
+NoteScrollInfo:
+                call    NoteVisRows
+                ld      c,a
+                ld      b,NOTEROWS
+                ld      a,(NoteTop)
+                ret
+
+; Moving the view does not move the caret. NoteKey brings it back
+; into view on the next edit/navigation, while NoteDraw only paints.
+NoteScrollTo:
+                push    af
+                call    NoteVisRows
+                ld      b,a
+                ld      a,NOTEROWS
+                sub     b
+                ld      b,a
+                pop     af
+                cp      b
+                jr      c,NstSet
+                ld      a,b
+NstSet:
+                ld      (NoteTop),a
+                ret

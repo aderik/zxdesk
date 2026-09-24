@@ -48,8 +48,8 @@ SCRCOLS         equ     32
 SCRROWS         equ     24
 MENUROW         equ     0
 STATROW         equ     23
-PTRXMAX         equ     247
-PTRYMAX         equ     172             ; keeps the pointer clear of the status band
+PTRXMAX         equ     255
+PTRYMAX         equ     183             ; hotspot reaches every desktop cell
 MOUSEMAX        equ     64              ; the most a mouse may move in one frame, as
                                         ; on the ZX; 16 threw away fast moves
 MOUSEWAIT       equ     10              ; settle loops between strobe and sample; a real
@@ -189,6 +189,10 @@ _ram            defl    _ram+size
                 var     ArrI, 1
                 var     ArrTab, 2
                 var     WndCur, 1
+                var     Resizing, 1     ; 0 idle, 1 held, 2 composed: defer blit
+                var     ScrFirst, 1
+                var     ScrShow, 1
+                var     ScrThumb, 1
                 var     Dragging, 1
                 var     DragDX, 1
                 var     DragDY, 1
@@ -1279,7 +1283,7 @@ Tiles:
                 ; $84 T_BOTTOM, $85 T_BL, $86 T_BR
                 defb    $00,$00,$00,$00,$00,$00,$00,$FF
                 defb    $80,$80,$80,$80,$80,$80,$80,$FF
-                defb    $01,$01,$01,$01,$01,$01,$01,$FF
+                defb    $01,$05,$09,$15,$29,$55,$AB,$FF
                 ; $87 T_CLOSE: the close box
                 defb    $FF,$81,$BD,$A5,$A5,$BD,$81,$FF
 TILESEND:
@@ -1327,6 +1331,8 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "menus.inc"
                 include "windows.inc"
                 include "arrange.inc"
+                include "resize.inc"
+                include "scroll.inc"
                 include "clock.inc"
                 include "dialog.inc"
                 include "note.inc"
