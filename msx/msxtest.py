@@ -803,7 +803,7 @@ def app_checks(syms, fails, vram0):
           f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     # save, type more, open: the file comes back over the document
-    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + [(10, "")], "note-file")
+    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + tap(7, 64) + [(10, "")], "note-file")
     buf = r.bytes("NoteBuf", 256)
     rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
     ramdir = r.bytes("RamDir", 16)
@@ -838,7 +838,7 @@ def app_checks(syms, fails, vram0):
           f"{since_set} interrupts since the set, {hms[1] * 60 + hms[2]} s counted, model {clock_model(since_set, hz50)}")
 
 
-def commander_checks(syms, fails, vram0):
+def commander_checks(syms, fails, vram0, browse_only=False):
     print("commander:")
     nt0 = vram0[NT:NT + COLS * ROWS]
     def press(x, y):
@@ -889,6 +889,86 @@ def commander_checks(syms, fails, vram0):
         return r.peek("StBackend") == (5 if EXT else 1)
     left = list(fixtures)
     right = [] if EXT else left
+    # FILE > OPEN is a single active-backend picker; VIEW stays two-pane.
+    browse = press(88, 3) + press(96, 19)
+    new = press(88, 3) + press(96, 11)
+    erase = tap(8, 8)
+    def browser(names, selection=0, status=b"READY", sizes=None):
+        lines = [(1, 1, b"DISK" if EXT else b"RAM", True),
+                 (8, 1, status, False), (9, 1, b"SHIFT+ARROWS ENTER OPEN", False),
+                 (10, 1, b"DELETE REMOVE R LIST", False)]
+        for i, name in enumerate(names or ["(EMPTY)"]):
+            lines.append((2+i, 1, name.encode(), i == selection))
+            if names:
+                size = 256 if sizes is None else sizes[i]
+                lines.append((2+i, 22, f"{size:05d}".encode(), i == selection))
+        return (1, 3, 30, 12, b"COMMANDER", lines)
+    def pick(steps, name, prefix=None, files=fixtures):
+        return Run(syms, seed_ram({} if EXT else files) + (prefix or [])
+                   + browse + steps + [(15, "")], name, files=files if EXT else None)
+    r = pick([], "browse-list")
+    screen(r, "browse-list", [browser(left)])
+    check(fails, "browse-backend", backend(r) and r.peek("CmdBrowse") == 1,
+          f"backend {r.peek('StBackend')}, single pane {r.peek('CmdBrowse')}")
+    r = pick([], "browse-empty", files={})
+    screen(r, "browse-empty", [browser([])])
+    sizes = {"ZERO": b"", "SHORT": b"x" * 37, "NOTE.TXT": doc("NOTE.TXT")}
+    r = pick([], "browse-lengths", files=sizes)
+    screen(r, "browse-lengths", [browser(list(sizes), sizes=[0, 37, 256])])
+    if EXT:
+        sizes = {"BIG": b"x" * 12345, "MAX": b"x" * 65535}
+        r = pick([], "browse-large-lengths", files=sizes)
+        screen(r, "browse-large-lengths", [browser(list(sizes), sizes=[12345, 65535])])
+    r = pick(down, "browse-select")
+    screen(r, "browse-select", [browser(left, 1)])
+    r = pick(down + tap(8, 32, True), "browse-up")
+    screen(r, "browse-up", [browser(left)])
+    # Existing frontmost notepad is reused; the earlier document is retained.
+    prefix = new + tap(3, 32) + new + tap(3, 64)
+    r = pick(down + enter, "browse-load", prefix)
+    screen(r, "browse-load", [note_win(8, 6, [b"H"] + [b""]*15, 1, 0),
+                              note_win(10, 7, [b"BETA"] + [b""]*15, 0, 0)])
+    check(fails, "browse-load-bytes", r.peek("WndCount") == 2
+          and r.bytes("NoteBuf", 256) == fixtures["BETA"] and backend(r)
+          and r.bytes("NoteName", 5) == b"BETA\0"
+          and r.peek("NoteBackend") == (5 if EXT else 1),
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, windows {r.peek('WndCount')}")
+    # Fail the storage open after directory resolution. The target stays open.
+    scratch = syms["RamHeap"] + 768
+    fault = [(5, f"debug write_block memory {scratch} [binary format H* 37c9]; "
+                 f"debug set_bp {syms['StOpen']} {{}} {{reg PC {scratch}}}")]
+    for prefix, name in [(new, "browse-load-error"), ([], "browse-new-error")]:
+        r = pick(fault + enter, name, prefix=prefix)
+        check(fails, name, r.peek("WndCount") == 1 and r.peek("DgOpenFlag") == 1
+              and backend(r), "storage failure retains target notepad and opens alert")
+    r = pick(enter, "browse-new-note")
+    check(fails, "browse-new-note", r.peek("WndCount") == 1
+          and r.bytes("NoteBuf", 256) == fixtures["ALPHA"], "no notepad: create one and load ALPHA")
+    for focus in (0, 1):
+        r = pick(down + erase + (tab if focus else []), f"browse-confirm-{focus}")
+        want = bytearray(compose(nt0, [browser(left, 1)]))
+        for y in range(8, 15):
+            want[y*32+6:y*32+26] = bytes([160 if y == 11+focus else 32])*20
+        for y, label in [(9, b"BETA"), (10, b"DELETE THIS FILE?"), (11, b"CANCEL"), (12, b"DELETE")]:
+            want[y*32+7:y*32+7+len(label)] = bytes(c | (128 if y == 11+focus else 0) for c in label)
+        check(fails, f"browse-confirm-{focus}", r.nt() == want and r.peek("DgOpenFlag") == 1,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    r = pick(down + erase + enter, "browse-cancel")
+    screen(r, "browse-cancel", [browser(left, 1)])
+    check(fails, "browse-cancel-files", read_disk_image(DISK) == fixtures if EXT else
+          r.bytes("RamDir", 64)[15::16] == bytes([1]*4), "cancel retains all files")
+    r = pick(down + erase + tab + enter, "browse-delete")
+    remaining = [name for name in left if name != "BETA"]
+    screen(r, "browse-delete", [browser(remaining, status=b"DELETED")])
+    check(fails, "browse-delete-file", read_disk_image(DISK) == {k:v for k,v in fixtures.items() if k != "BETA"}
+          if EXT else r.bytes("RamDir", 64)[15::16] == bytes([1, 0, 1, 1]),
+          "selected BETA removed from storage")
+    r = pick(press(12, 27), "browse-close")
+    check(fails, "browse-close-heap", r.peek("WndCount") == 0 and not
+          [b for b in heap_walk(r, syms["HeapBase"], r.peek("HeapEnd", 2)) if b[2]],
+          "picker allocations fully recovered")
+    if browse_only:
+        return
     r = run([], "cmd-list")
     check(fails, "cmd-open", r.peek("WndCount") == 1 and backend(r),
           f"windows {r.peek('WndCount')}, backend {r.peek('StBackend')}")
@@ -1472,6 +1552,13 @@ def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] in (["--browse"], ["--commander"]):
+        commander_checks(syms, fails, bytes(NT) + expected_nt(),
+                         browse_only=sys.argv[1:] == ["--browse"])
+        return bool(fails)
+    if sys.argv[1:] == ["--apps"]:
+        app_checks(syms, fails, bytes(NT) + expected_nt())
+        return bool(fails)
     if sys.argv[1:] == ["--resize-scroll"]:
         resize_scroll_checks(syms, fails)
         return bool(fails)

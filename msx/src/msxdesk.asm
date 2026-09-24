@@ -260,7 +260,9 @@ NOTESTSZ        equ     _ram-NoteState
                 var     NoteResult, 1
                 var     NotePrevBackend, 1
                 ; Commander: cached visible names belong to each instance.
+                var     CmdNumber, 6
                 var     CmdState, 0
+                var     CmdBrowse, 1
                 var     CmdBk0, 1
                 var     CmdBk1, 1
                 var     CmdSel0, 1
