@@ -198,8 +198,14 @@ HbdWindow:
                 cp      CTL_SCROLL
                 jp      z,ScrPress
                 cp      CTL_TITLEBAR
-                ret     nz                      ; a press in the body does nothing yet
-                jp      WndGrab
+                jr      z,HbdGrab
+                ld      hl,(WinApp)
+                ld      de,AppSettings
+                or      a
+                sbc     hl,de
+                ret     nz
+                jp      SetPress
+HbdGrab:        jp      WndGrab
 HbdBar:
                 call    MenuHitTitle
                 or      a

@@ -314,7 +314,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetDevice, 1
                 var     SetHandle, 1
                 var     AccelPtr, 2
-                var     SetText, 2
+                var     SetRow, 1
 IFDEF TEST
                 var     TestDone, 1
                 var     ThPtr, 6

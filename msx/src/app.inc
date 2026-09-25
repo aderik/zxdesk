@@ -71,9 +71,9 @@ AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
                 defw    0, 0, 0
                 defb    0
 
-AppSettings:    defw    0, 0, 0, SetDraw
-                defw    0, SetTitle
-                defb    6, 6, 20, 5
+AppSettings:    defw    1, SetRow, SetInit, SetDraw
+                defw    SetKey, SetTitle
+                defb    6, 6, 24, 7
                 defw    0, 0, 0
                 defb    0
 
