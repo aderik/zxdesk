@@ -161,6 +161,7 @@ StCaps:         ld      a,(StCapability)
 StInit:
                 xor     a
                 ld      (TapeMode),a
+                ld      (TapeBusy),a
                 call    RamInit
                 call    DskPresent              ; a disk ROM planted the BDOS
                 ld      a,ST_DISK               ; jump: everything persists

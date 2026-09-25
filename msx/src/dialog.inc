@@ -24,6 +24,10 @@ DlgAlert:
                 ld      (DgAfter),bc
                 ld      a,1
 DgOpen:
+                push    af
+                ld      a,SND_BEEP
+                call    SndPlay
+                pop     af
                 ld      (DgCount),a
                 ld      (DgLine1),hl
                 ld      (DgLine2),de
@@ -188,6 +192,10 @@ DgChoose:
 DgCancel:
                 xor     a
 DgAnswer:
+                push    af
+                ld      a,SND_CLICK
+                call    SndPlay
+                pop     af
                 push    af
                 ld      de,DgSave
                 ld      b,DGY

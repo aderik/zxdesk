@@ -37,6 +37,8 @@ TapeOpenMode:
                 ld      a,(TapeMode)
                 cp      FA_OVERWRITE
                 jr      z,TapeOpened
+                ld      a,1
+                ld      (TapeBusy),a
                 di
                 ld      hl,TapeIn
                 ld      bc,19
@@ -62,12 +64,20 @@ TapeCompare:
                 ld      hl,TapeBuf
                 call    TapeGetBlock
                 jr      c,TapeLoadFail
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
                 ei
 TapeOpened:
                 ld      a,1
                 or      a
                 ret
 TapeLoadFail:
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
                 ei
                 xor     a
                 ld      (TapeMode),a
@@ -189,6 +199,8 @@ TapeClose:
 TapeSave:
                 ld      hl,(TapeLen)
                 ld      (TapeHdr+17),hl
+                ld      a,1
+                ld      (TapeBusy),a
                 di
                 ld      a,1                     ; long header leader
                 ld      hl,TapeHdr
@@ -200,6 +212,10 @@ TapeSave:
                 ld      bc,(TapeLen)
                 call    TapePutBlock
 TapeSaveDone:
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
                 ei
                 ret
 

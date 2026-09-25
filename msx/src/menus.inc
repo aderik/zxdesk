@@ -283,6 +283,10 @@ MpSkip:
 ; A = the item picked from MnLastMenu. The actions arrive with the
 ; things they open; until then a pick is recorded and nothing more.
 MenuAction:
+                push    af
+                ld      a,SND_CLICK
+                call    SndPlay
+                pop     af
                 ld      c,a
                 ld      a,(MnLastMenu)
                 ld      b,a
