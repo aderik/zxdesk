@@ -205,7 +205,10 @@ of static RAM.
 ## Settings
 
 **MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
-inversion (OFF/ON), application storage (RAM/DISK), and SOUND (OFF/ON). DISK is offered
+inversion (OFF/ON), application storage (RAM/DISK), SOUND (OFF/ON), and
+KEY PTR (OFF/ON). KEY PTR defaults to ON: cursor keys move the pointer
+unless SHIFT is held. OFF disables cursor pointer movement and clears its
+acceleration counters; the mouse and CTRL button remain active. DISK is offered
 only when `DskPresent` detects it. Click a bracketed value to cycle it;
 TAB or SHIFT+UP/DOWN selects a row, SHIFT+LEFT/RIGHT decrements/increments,
 and ENTER or SPACE activates the selected button. Changes apply immediately.
@@ -213,12 +216,15 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The six bytes are `4D 02 rr yy bb ss`: MSX
-magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with `TAPE=1`, 5 disk), and sound (0 OFF, 1 ON).
+`SetLoad` then `SetApply`. The seven bytes are `4D 03 rr yy bb ss kk`: MSX
+magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
+`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON).
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
-inversion 0, sound 1 and the detected boot backend. Missing files, I/O failures,
-incorrect magic/version and incorrect lengths give defaults. Version 1
-five-byte records migrate with sound ON; version 2 requires six bytes;
+inversion 0, sound 1, key pointer 1 and the detected boot backend. Missing
+files, I/O failures, incorrect magic/version and incorrect lengths give defaults. Version 1
+five-byte records migrate with sound and key pointer ON; version 2 six-byte
+records retain sound and migrate with key pointer ON; version 3 requires
+seven bytes.
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -228,7 +234,7 @@ asserts save/clear/load, invalid headers, all three ramps, both mouse Y
 signs, field validation and backend restoration. The normal ROM asserts
 the menu contents and actual inverted mouse movement; on disk it also
 boots seeded valid, invalid and truncated/oversized files. The TEST image
-contains `SETTINGS` bytes `4D 02 02 00 01 01` after saving with RAM selected.
+contains `SETTINGS` bytes `4D 03 02 00 01 01 01` after saving with RAM selected.
 The persistence implementation added 12 static RAM bytes; TEST records
 reuse commander scratch space.
 In lf-1210, the settings window used 177 heap bytes: a 168-byte cell buffer,
@@ -630,3 +636,30 @@ Disk SOUND OFF save/reload name-table CRC32 is **fc73ad4c**. The BIOS
 transfer probes use stubbed BIOS returns to assert PSG ownership during
 success and failure; actual cassette waveform round trips remain in the
 pipeline's existing tape subjects.
+
+For lf-1216, KEY PTR adds **100 ROM bytes** and **1 static RAM byte**.
+The normal build uses **13,412 ROM bytes**, **3,527 static RAM bytes**,
+and leaves **8,761 heap bytes** without disk or **3,376** with disk.
+The TEST build uses **14,585 ROM bytes**, **6,242 static RAM bytes**,
+and leaves **6,046 / 661 heap bytes** respectively. Each SETTINGS window
+now uses **225 heap bytes**, up **24**, for its extra row.
+
+The `--settings` subjects include KEY PTR ON/OFF with and without SHIFT,
+the measured acceleration ramp, disabling during a held direction,
+mouse movement and CTRL while OFF, mouse/keyboard cycling, OFF persistence,
+and v1/v2 migration. On C-BIOS, OFF save/clear/load has name-table CRC32
+**ebe8b816**; v2 migration preserving SOUND OFF has **43f72adc** and
+returns carry clear. The complete `test-all.sh` suite is left to the
+pipeline, as required by this implementation run.
+
+Focused lf-1216 verification (`msx/test.sh --settings`):
+
+| Configuration | Result |
+|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | 107 assertions passed |
+| C-BIOS_MSX1_JP, 60 Hz | 107 assertions passed |
+| Roms_MSX1 | 107 assertions passed |
+| Roms_MSX1 + Roms_Disk | 116 assertions passed |
+| Roms_MSX2 | 107 assertions passed |
+
+Disk KEY PTR OFF save/clear/load has name-table CRC32 **338c5e83**.

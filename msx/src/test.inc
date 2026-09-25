@@ -94,10 +94,10 @@ TtRecord:
 TtName:         defb    "BUFFER",0
 
 ; Settings round trip, rejected headers and payload clamping. Each
-; snapshot is carry (0/1) followed by the six record bytes.
+; snapshot is carry (0/1) followed by the seven record bytes.
 ; Reuse unused tail of the commander scratch buffer in the TEST ROM.
 TsetResults     equ     CmdBuf+120
-TsetApplied     equ     CmdBuf+148
+TsetApplied     equ     CmdBuf+152
 TestSettings:
                 call    SetDefaults
                 ld      a,ST_RAM
@@ -116,19 +116,19 @@ TsetClear:
                 inc     hl
                 djnz    TsetClear
                 call    SetLoad
-                ld      de,TsetResults+7
+                ld      de,TsetResults+8
                 call    TsetSnapshot
                 xor     a
                 ld      (SetRec),a
                 call    SetWriteRecord
                 call    SetLoad
-                ld      de,TsetResults+14
+                ld      de,TsetResults+16
                 call    TsetSnapshot
                 ld      a,99
                 ld      (SetRec+1),a
                 call    SetWriteRecord
                 call    SetLoad
-                ld      de,TsetResults+21
+                ld      de,TsetResults+24
                 call    TsetSnapshot
                 ; Exercise all three table selections and mouse signs.
                 xor     a
@@ -167,6 +167,7 @@ TsetClear:
                 ld      (SetInvertY),a
                 ld      (SetBackend),a
                 ld      (SetSound),a
+                ld      (SetKeyPtr),a
                 call    SetApply
                 ld      hl,SetRec
                 ld      de,TsetApplied+17
