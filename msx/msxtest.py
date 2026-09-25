@@ -1117,8 +1117,8 @@ def settings_checks(syms, fails):
 
     verify(opened, "settings-values", 1, 0, backend, 0)
     # Real mouse button events; pointer placement avoids host acceleration.
-    def click(row):
-        return [(5, f"debug write memory {syms['PtrX']} 180; debug write memory {syms['PtrY']} {(7 + row) * 8 + 2}"),
+    def click(row, x=6, y=6):
+        return [(5, f"debug write memory {syms['PtrX']} {(x + 16) * 8 + 4}; debug write memory {syms['PtrY']} {(y + 1 + row) * 8 + 2}"),
                 (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
     steps = [(5, "plug joyporta mouse")] + opened
     speed, inv, device = 1, 0, backend
@@ -1159,7 +1159,7 @@ def settings_checks(syms, fails):
         for row, values in enumerate(((2, 0, backend), (1, 1, backend), (1, 0, 1))):
             rear_focus = (row + 1) % 3
             two = [(5, "plug joyporta mouse")] + opened + tap(7, 8) * rear_focus + opened
-            two += tap(7, 8) * row + tap(7, 64) if control == "key" else click(row)
+            two += tap(7, 8) * row + tap(7, 64) if control == "key" else click(row, 8, 7)
             name = f"settings-two-{control}-{row}"
             r = Run(syms, two + [(10, "")], name)
             expected = bytes((0x4d, 1, *values))
