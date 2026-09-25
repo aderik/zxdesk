@@ -312,6 +312,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetInvertY, 1
                 var     SetBackend, 1
                 var     SetSound, 1
+                var     SetKeyPtr, 1
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1
@@ -621,6 +622,15 @@ ReadInput:
                 ld      a,$FF
                 ld      (Buttons),a
                 call    ReadMouse
+                ld      a,(SetKeyPtr)
+                or      a
+                jr      nz,RiKeys
+                ld      (HeldX),a
+                ld      (HeldY),a
+                ld      (HoldCnt),a
+                ld      (Dirs),a
+                jp      RiBtn
+RiKeys:
 
                 ; cursor keys: row 8, bit 4 left, 5 up, 6 down, 7 right.
                 ; With SHIFT held they are the application's, as KEY_LEFT

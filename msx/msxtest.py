@@ -435,17 +435,17 @@ def test_build_checks(tsyms, fails):
           and r.bytes("NoteBuf", 256) == bytes((-i) % 256 for i in range(256)),
           "full/short writes, partial reads, EOF and invalid/closed handles; 256 pattern bytes")
     backend = 5 if EXT else 1
-    saved = bytes((0x4D, 2, 2, 0, 1, 1))
-    default = bytes((0x4D, 2, 1, 0, backend, 1))
-    check(fails, "settings-roundtrip", r.bytes("TsetResults", 14) == (b"\0" + saved) * 2,
-          "SetSave, clear record, SetLoad: " + r.bytes("TsetResults", 14).hex())
-    check(fails, "settings-headers", r.bytes("TsetResults", 28)[14:] == (b"\1" + default) * 2,
+    saved = bytes((0x4D, 3, 2, 0, 1, 1, 1))
+    default = bytes((0x4D, 3, 1, 0, backend, 1, 1))
+    check(fails, "settings-roundtrip", r.bytes("TsetResults", 16) == (b"\0" + saved) * 2,
+          "SetSave, clear record, SetLoad: " + r.bytes("TsetResults", 16).hex())
+    check(fails, "settings-headers", r.bytes("TsetResults", 32)[16:] == (b"\1" + default) * 2,
           "wrong magic and version both return carry and defaults")
     check(fails, "settings-apply", r.peek("AccelPtr", 2) == tsyms["AccelTabs"] + 10,
           "fast ramp selected")
     applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default
-    check(fails, "settings-input", r.bytes("TsetApplied", 23) == applied,
-          "three ramps, Y negation on/off, invalid payload clamped: " + r.bytes("TsetApplied", 23).hex())
+    check(fails, "settings-input", r.bytes("TsetApplied", 24) == applied,
+          "three ramps, Y negation on/off, invalid payload clamped: " + r.bytes("TsetApplied", 24).hex())
     check(fails, "settings-backend", r.peek("StBackend") == 1,
           "save restores selected RAM backend, including on disk")
     parsed = r.bytes("CmdBuf", 120)
@@ -512,7 +512,7 @@ def test_build_checks(tsyms, fails):
     if disk:
         files = read_disk_image(DISK)
         names = sorted(files)
-        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and files["SETTINGS"] == bytes((0x4D, 2, 2, 0, 1, 1)),
+        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and files["SETTINGS"] == bytes((0x4D, 3, 2, 0, 1, 1, 1)),
               f"on the image: {[(n, len(files[n])) for n in names]}")
 
     # app model: the calendar's state saved and loaded back
@@ -1167,10 +1167,22 @@ def sound_checks(syms, fails):
                f"debug set_bp {syms['SndPlay']} {{}} {{"
                f"set a [expr {{{records} + [reg A]}}]; "
                "debug write memory $a [expr {[debug read memory $a] + 1}]}")
-    menu = Run(syms, opened + [(5, observe)] + opened, "sound-menu-settings")
+    timing = (f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
+              f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")
+    menu = Run(syms, opened + [(5, observe + "; " + timing)] + opened, "sound-menu-settings")
+    lines = [(i + 1, 1, label, False) for i, label in enumerate(
+        (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR"))]
+    lines += [(i + 1, 16, label, i == 0) for i, label in enumerate(
+        (b"[MED ]", b"[OFF ]", b"[DISK]" if EXT else b"[RAM ]",
+         b"[ON  ]", b"[ON  ]", b"[SAVE]", b"[DONE]"))]
+    expected = compose(expected_nt(), [(6, 6, 24, 9, b"SETTINGS", lines),
+                                       (8, 7, 24, 9, b"SETTINGS", lines)])
+    frame_us = [int(line.split()[-1]) for line in menu.log.splitlines() if line.startswith("frame us")]
     check(fails, "sound-menu-settings", menu.peek("WndCount") == 2 and menu.peek("TapeBusy") == 0
-          and menu.ram[records-WORK] == 1 and menu.peek("Dropped", 2) == 0,
-          "menu selection calls CLICK with SETTINGS open")
+          and menu.ram[records-WORK] == 1 and menu.peek("Dropped", 2) == 0 and menu.nt() == expected,
+          f"windows {menu.peek('WndCount')}, clicks {menu.ram[records-WORK]}, "
+          f"TapeBusy {menu.peek('TapeBusy')}, Dropped {menu.peek('Dropped', 2)}, "
+          f"crc32 {zlib.crc32(menu.nt()):08x}/{zlib.crc32(expected):08x}, max frame {max(frame_us)} us")
     message = syms["SetSaveError"]
     alertcode = bytes((0x21, message & 255, message >> 8, 0x11, 0, 0)) + call("DlgAlert") + bytes((0xaf, 0xc9))
     alertsetup = (observe + f"; debug write_block memory {reader} [binary format H* {alertcode.hex()}]; "
@@ -1188,9 +1200,40 @@ def sound_checks(syms, fails):
 
 
 
+def keyptr_checks(syms, fails):
+    for enabled in (0, 1):
+        for shift in (0, 1):
+            steps = [(5, f"debug write memory {syms['SetKeyPtr']} {enabled}")]
+            if shift:
+                steps += [(5, "key_down 6 1")]
+            steps += [(5, "key_down 8 128"), (20, "key_up 8 128"),
+                      (5, "key_down 8 64"), (10, "key_up 8 64"), (5, "")]
+            name = f"keyptr-{enabled}-shift-{shift}"
+            r = Run(syms, steps, name)
+            hx, hy = r.peek("HeldX"), r.peek("HeldY")
+            moving = enabled and not shift
+            want = (120 + ramp(hx), 90 + ramp(hy)) if moving else (120, 90)
+            check(fails, name, r.ptr() == want and
+                  ((19 <= hx <= 21 and 9 <= hy <= 11) if moving else (hx, hy) == (0, 0)),
+                  f"pointer {r.ptr()}, expected {want}; HeldX/Y {hx}/{hy}")
+    # Switch OFF during a held direction: clear the previous ramp and counters.
+    disable = (f"debug write memory {syms['SetKeyPtr']} 0; "
+               f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90")
+    r = Run(syms, [(5, "key_down 8 192"), (12, disable), (10, "")], "keyptr-disable-held")
+    check(fails, "keyptr-disable-held", r.ptr() == (120, 90) and
+          all(r.peek(n) == 0 for n in ("HeldX", "HeldY", "HoldCnt", "Dirs")),
+          f"pointer {r.ptr()}; disabled ramp/counters zero")
+    r = Run(syms, [(5, "plug joyporta mouse"), (5, "exec xdotool mousemove 300 200"),
+                   (5, disable), (5, "mouse_move 20 -30"), (10, "key_down 6 2"),
+                   (5, "key_up 6 2"), (5, "")], "keyptr-off-mouse-ctrl")
+    check(fails, "keyptr-off-mouse-ctrl", r.ptr() == (130, 75) and r.counts()[1] == 1,
+          f"mouse pointer {r.ptr()}, CTRL presses {r.counts()[1]}")
+
+
 def settings_checks(syms, fails):
+    keyptr_checks(syms, fails)
     backend = 5 if EXT else 1
-    defaults = bytes((0x4D, 2, 1, 0, backend, 1))
+    defaults = bytes((0x4D, 3, 1, 0, backend, 1, 1))
     def press(x, y):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}"),
                 (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
@@ -1203,24 +1246,24 @@ def settings_checks(syms, fails):
         return [(3, f"key_down {row} {mask}{extra}"), (3, f"key_up {row} {mask}{release}")]
 
     opened = press(20, 4) + press(30, 20)
-    def lines_for(speed, inv, device, focus, sound=1):
+    def lines_for(speed, inv, device, focus, sound=1, keyptr=1):
         labels = [b"[SLOW]", b"[MED ]", b"[FAST]"]
         buttons = [labels[speed], b"[ON  ]" if inv else b"[OFF ]",
-                   b"[DISK]" if device == 5 else b"[RAM ]", b"[ON  ]" if sound else b"[OFF ]", b"[SAVE]", b"[DONE]"]
+                   b"[DISK]" if device == 5 else b"[RAM ]", b"[ON  ]" if sound else b"[OFF ]", b"[ON  ]" if keyptr else b"[OFF ]", b"[SAVE]", b"[DONE]"]
         lines = [(i + 1, 1, label, False) for i, label in enumerate(
-            (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND"))]
+            (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR"))]
         lines += [(i + 1, 16, label, i == focus) for i, label in enumerate(buttons)]
         return lines
 
-    def verify(steps, name, speed, inv, device, focus, closed=False, sound=1):
+    def verify(steps, name, speed, inv, device, focus, closed=False, sound=1, keyptr=1):
         r = Run(syms, steps + [(10, "")], name)
-        lines = lines_for(speed, inv, device, focus, sound)
-        want = compose(expected_nt(), [] if closed else [(6, 6, 24, 8, b"SETTINGS", lines)])
+        lines = lines_for(speed, inv, device, focus, sound, keyptr)
+        want = compose(expected_nt(), [] if closed else [(6, 6, 24, 9, b"SETTINGS", lines)])
         check(fails, name, zlib.crc32(r.nt()) == zlib.crc32(want)
-              and r.bytes("SetRec", 6) == bytes((0x4d, 2, speed, inv, device, sound))
+              and r.bytes("SetRec", 7) == bytes((0x4d, 3, speed, inv, device, sound, keyptr))
               and r.peek("StBackend") == device
               and r.peek("AccelPtr", 2) == syms["AccelTabs"] + speed * 5,
-              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; record {r.bytes('SetRec', 6).hex()}")
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; record {r.bytes('SetRec', 7).hex()}")
         return r
 
     verify(opened, "settings-values", 1, 0, backend, 0)
@@ -1237,7 +1280,7 @@ def settings_checks(syms, fails):
                 (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
     steps = [(5, "plug joyporta mouse")] + opened
     speed, inv, device = 1, 0, backend
-    for n, row in enumerate((0, 0, 0, 1, 1, 2, 2, 4, 5)):
+    for n, row in enumerate((0, 0, 0, 1, 1, 2, 2, 5, 6)):
         steps += click(row)
         if row == 0:
             speed = (speed + 1) % 3
@@ -1245,7 +1288,7 @@ def settings_checks(syms, fails):
             inv ^= 1
         elif row == 2:
             device = 5 if EXT and device == 1 else 1
-        r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 5)
+        r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 6)
     # Keyboard increment, wrap, decrement, focus in both directions, SAVE and DONE.
     steps = list(opened)
     cases = [(tap(7, 64), 2, 0, backend, 0),
@@ -1258,14 +1301,14 @@ def settings_checks(syms, fails):
              (tap(7, 64), 2, 0, 1 if EXT else backend, 2),
              (tap(8, 32, True), 2, 0, 1, 1),
              (tap(7, 64), 2, 1, 1, 1),
-             (tap(7, 8) * 3, 2, 1, 1, 4),
-             (tap(7, 64), 2, 1, 1, 4)]
+             (tap(7, 8) * 4, 2, 1, 1, 5),
+             (tap(7, 64), 2, 1, 1, 5)]
     for n, (keys, speed, inv, device, focus) in enumerate(cases):
         steps += keys
         r = verify(steps, f"settings-key-{n}", speed, inv, device, focus)
-    saved = bytes((0x4d, 2, 2, 1, 1, 1))
+    saved = bytes((0x4d, 3, 2, 1, 1, 1, 1))
     def file_bytes(r):
-        return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", 6)
+        return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", 7)
     check(fails, "settings-ui-save", file_bytes(r) == saved, "SAVE writes changed record")
 
     # Two instances share values, including the hidden window's cached buffer,
@@ -1277,47 +1320,68 @@ def settings_checks(syms, fails):
             two += tap(7, 8) * row + tap(7, 64) if control == "key" else click(row, 8, 7)
             name = f"settings-two-{control}-{row}"
             r = Run(syms, two + [(10, "")], name)
-            expected = bytes((0x4d, 2, *values, 1))
+            expected = bytes((0x4d, 3, *values, 1, 1))
             check(fails, name + "-record", r.peek("WndCount") == 2
-                  and r.bytes("WndZ", 2) == bytes((1, 0)) and r.bytes("SetRec", 6) == expected,
-                  f"two windows, record {r.bytes('SetRec', 6).hex()}")
+                  and r.bytes("WndZ", 2) == bytes((1, 0)) and r.bytes("SetRec", 7) == expected,
+                  f"two windows, record {r.bytes('SetRec', 7).hex()}")
             for slot, focus in ((0, rear_focus), (1, row)):
                 record = syms["WndTab"] + slot * syms["WNDRECSZ"]
                 buf = r.peek16_at(record + syms["WR_BUFP"]) - WORK
                 state = r.peek16_at(record + syms["WR_STATEP"]) - WORK
-                want = window_buffer(24, 8, b"SETTINGS", slot == 1, lines_for(*values, focus))
+                want = window_buffer(24, 9, b"SETTINGS", slot == 1, lines_for(*values, focus))
                 actual = r.ram[buf:buf + len(want)]
                 check(fails, name + f"-buffer-{slot}", actual == want and r.ram[state] == focus,
                       f"crc32 {zlib.crc32(actual):08x}, expected {zlib.crc32(want):08x}; focus {r.ram[state]}")
             remaining = two + tap(7, 4)  # ESC must expose the updated rear buffer.
             verify(remaining, name + "-close", *values, rear_focus)
-            remaining += tap(7, 8) * (4 - rear_focus) + tap(7, 64)
-            r = verify(remaining, name + "-save", *values, 4)
+            remaining += tap(7, 8) * (5 - rear_focus) + tap(7, 64)
+            r = verify(remaining, name + "-save", *values, 5)
             check(fails, name + "-file", file_bytes(r) == expected,
                   f"SAVE from the remaining window writes {expected.hex()}")
 
     # Change after saving, then DONE: the stored bytes must stay identical.
-    steps += tap(8, 32, True) * 3 + tap(7, 64)
+    steps += tap(8, 32, True) * 4 + tap(7, 64)
     verify(steps, "settings-unsaved", 2, 0, 1, 1)
-    steps += tap(7, 8) * 4 + tap(7, 64)
-    r = verify(steps, "settings-done", 2, 0, 1, 5, True)
+    steps += tap(7, 8) * 5 + tap(7, 64)
+    r = verify(steps, "settings-done", 2, 0, 1, 6, True)
     check(fails, "settings-done-file", file_bytes(r) == saved, "DONE preserves saved file")
     # Invoke real SetLoad/SetApply at the next SetKey call after clearing RAM.
-    clear = "; ".join(f"debug write memory {syms['SetRec'] + i} 0" for i in range(6))
+    clear = "; ".join(f"debug write memory {syms['SetRec'] + i} 0" for i in range(7))
     scratch = syms['CmdBuf']
     code = bytes([0xcd, syms['SetLoad'] & 255, syms['SetLoad'] >> 8,
+                  0xf5, 0xd1, 0x7b, 0x32, (scratch + 30) & 255, (scratch + 30) >> 8,
                   0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
     steps += opened + [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                                 f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 64)
     verify(steps, "settings-ui-reload", 2, 1, 1, 0)
-    # SAVE with sound OFF, clear all six bytes, then load through real storage.
-    off = opened + tap(7, 8) * 3 + tap(7, 64) + tap(7, 8) + tap(7, 64)
-    r = verify(off, "settings-sound-save", 1, 0, backend, 4, sound=0)
-    check(fails, "settings-sound-file", file_bytes(r) == bytes((0x4d, 2, 1, 0, backend, 0)),
+    # SAVE with sound OFF, clear all seven bytes, then load through real storage.
+    off = opened + tap(7, 8) * 3 + tap(7, 64) + tap(7, 8) * 2 + tap(7, 64)
+    r = verify(off, "settings-sound-save", 1, 0, backend, 5, sound=0)
+    check(fails, "settings-sound-file", file_bytes(r) == bytes((0x4d, 3, 1, 0, backend, 0, 1)),
           "SAVE persists SOUND OFF")
     off += [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                        f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 64)
-    verify(off, "settings-sound-reload", 1, 0, backend, 4, sound=0)
+    verify(off, "settings-sound-reload", 1, 0, backend, 5, sound=0)
+    for control in ("mouse", "key"):
+        toggle = click(4) if control == "mouse" else tap(7, 8) * 4 + tap(7, 64)
+        base = [(5, "plug joyporta mouse")] + opened + toggle
+        verify(base, "settings-keyptr-" + control, 1, 0, backend, 4, keyptr=0)
+        again = click(4) if control == "mouse" else tap(8, 16, True)
+        verify(base + again, "settings-keyptr-wrap-" + control, 1, 0, backend, 4)
+    off = opened + tap(7, 8) * 4 + tap(7, 64) + tap(7, 8) + tap(7, 64)
+    r = verify(off, "settings-keyptr-save", 1, 0, backend, 5, keyptr=0)
+    check(fails, "settings-keyptr-file", file_bytes(r) == bytes((0x4d, 3, 1, 0, backend, 1, 0)),
+          "SAVE persists KEY PTR OFF")
+    reload = (clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
+              f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
+    verify(off + [(5, reload)] + tap(7, 64), "settings-keyptr-reload", 1, 0, backend, 5, keyptr=0)
+    if not EXT:
+        legacy = bytes((0x4d, 2, 2, 1, 1, 0))
+        migrate = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
+                   f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 6; " + reload)
+        r = verify(off + [(5, migrate)] + tap(7, 64), "settings-v2-migrate", 2, 1, 1, 5, sound=0)
+        check(fails, "settings-v2-carry", r.ram[scratch + 30 - WORK] & 1 == 0,
+              "previous version loads without carry")
     if not EXT:
         # RAM backend directory length is changed to a genuine five-byte v1 file.
         # Locate the saved file's directory entry through RamDir's fixed layout.
@@ -1326,8 +1390,8 @@ def settings_checks(syms, fails):
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 5; " +
                    clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                    f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
-        verify(opened + tap(7, 8) * 4 + tap(7, 64) + [(5, migrate)] + tap(7, 64),
-               "settings-v1-migrate", 2, 1, 1, 4)
+        verify(opened + tap(7, 8) * 5 + tap(7, 64) + [(5, migrate)] + tap(7, 64),
+               "settings-v1-migrate", 2, 1, 1, 5)
     if not EXT:
         code = bytes([0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
         inject = (f"debug write memory {syms['SetDevice']} 5; debug write memory {syms['SetBackend']} 5; "
@@ -1344,20 +1408,23 @@ def settings_checks(syms, fails):
               f"Y invert {inv}, host up 30: pointer {r.ptr()}, expected {want}")
     if EXT:
         for name, data, expected in (
-                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 2, 0, 0, 1, 0))),
+                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 3, 0, 0, 1, 0, 1))),
+                ("v3-off", bytes((0x4D, 3, 0, 0, 1, 0, 0)), bytes((0x4D, 3, 0, 0, 1, 0, 0))),
+                ("v3-short", defaults[:-1], defaults),
+                ("v2-long", bytes((0x4D, 2, 0, 0, 1, 0, 0)), defaults),
                 ("v1-long", bytes((0x4D, 1, 0, 0, 1, 0)), defaults),
                 ("v2-short", bytes((0x4D, 2, 0, 0, 1)), defaults),
-                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 2, 0, 0, 1, 1))),
+                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 3, 0, 0, 1, 1, 1))),
                 ("magic", bytes((0, 1, 0, 0, 1)), defaults),
                 ("version", bytes((0x4D, 99, 0, 0, 1)), defaults),
                 ("short", b"M\1", defaults),
                 ("long", defaults + b"x", defaults),
                 ("fields", bytes((0x4D, 1, 255, 255, 255)), defaults)):
             r = Run(syms, [(10, "")], "settings-boot-" + name, files={"SETTINGS": data})
-            check(fails, "settings-boot-" + name, r.bytes("SetRec", 6) == expected
+            check(fails, "settings-boot-" + name, r.bytes("SetRec", 7) == expected
                   and r.peek("StBackend") == expected[4]
                   and r.peek("AccelPtr", 2) == syms["AccelTabs"] + 5 * expected[2],
-                  "record " + r.bytes("SetRec", 6).hex())
+                  "record " + r.bytes("SetRec", 7).hex())
 
 
 def arrange_checks(syms, fails):

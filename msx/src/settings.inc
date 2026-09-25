@@ -1,8 +1,9 @@
-; MSX format v2: magic 'M', version, ramp (0..2), mouse Y inverted
-; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1). Separate magic from the ZX record.
+; MSX format v3: magic 'M', version, ramp (0..2), mouse Y inverted
+; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
+; key pointer (0/1). Separate magic from the ZX record.
 SETMAGIC        equ     $4D
-SETVERSION      equ     2
-SETSIZE         equ     6
+SETVERSION      equ     3
+SETSIZE         equ     7
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -12,7 +13,7 @@ SetDefaults:
                 ld      a,(SetDevice)
                 ld      (SetBackend),a
                 ret
-SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1
+SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1,1
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -65,6 +66,8 @@ SetLoad:
                 ld      a,(SetRec+1)
                 cp      1
                 jr      z,SetLoadV1
+                cp      2
+                jr      z,SetLoadV2
                 cp      SETVERSION
                 jr      nz,SetLoadBad
                 ld      a,c
@@ -78,6 +81,14 @@ SetLoadV1:
                 jr      nz,SetLoadBad
                 ld      a,1
                 ld      (SetSound),a
+                jr      SetLoadUpgrade
+SetLoadV2:
+                ld      a,c
+                cp      6
+                jr      nz,SetLoadBad
+SetLoadUpgrade:
+                ld      a,1
+                ld      (SetKeyPtr),a
                 ld      a,SETVERSION
                 ld      (SetRec+1),a
                 or      a
@@ -125,6 +136,12 @@ SetSaveBad:
                 jp      SetRestore
 
 SetApply:
+                ld      a,(SetKeyPtr)
+                cp      2
+                jr      c,SetKeyPtrOK
+                ld      a,1
+                ld      (SetKeyPtr),a
+SetKeyPtrOK:
                 ld      a,(SetSound)
                 cp      2
                 jr      c,SetSoundOK
@@ -206,13 +223,32 @@ SetMouseY:
 
 SetOpen:
                 ld      a,APP_SETTINGS
-                jp      WndOpen
+                call    WndOpen
+                ret     c
+                ; Compose now, then restore the desktop and blit next frame,
+                ; as for resize: doing both while opening misses NTSC frames.
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+SetOpenBit:
+                rlca
+                djnz    SetOpenBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a                  ; new buffer is already composed
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; retain successful open's carry
+                ret
 SetInit:
                 xor     a
                 ld      (SetRow),a
                 ret
 
-; Six rows: cyclic values, SAVE, DONE. Focus is per window.
+; Seven rows: cyclic values, SAVE, DONE. Focus is per window.
 SetKey:
                 cp      KEY_ESC
                 jp      z,SetDone
@@ -237,7 +273,7 @@ SetKey:
 SetNext:
                 ld      a,(SetRow)
                 inc     a
-                cp      6
+                cp      7
                 jp      c,SetFocus
                 xor     a
                 jp      SetFocus
@@ -245,7 +281,7 @@ SetPrev:
                 ld      a,(SetRow)
                 sub     1
                 jp      nc,SetFocus
-                ld      a,5
+                ld      a,6
 SetFocus:
                 ld      (SetRow),a
 SetChanged:
@@ -253,10 +289,12 @@ SetChanged:
                 ret
 SetChange:
                 ld      a,(SetRow)
-                cp      5
+                cp      6
                 jp      z,SetDone
-                cp      4
+                cp      5
                 jp      z,SetStore
+                cp      4
+                jp      z,SetCycleKeyPtr
                 cp      3
                 jp      z,SetCycleSound
                 cp      2
@@ -270,6 +308,11 @@ SetChange:
                 sub     3
 SetCycleSpeed:
                 ld      (SetSpeed),a
+                jp      SetActivate
+SetCycleKeyPtr:
+                ld      a,(SetKeyPtr)
+                xor     1
+                ld      (SetKeyPtr),a
                 jp      SetActivate
 SetCycleSound:
                 ld      a,(SetSound)
@@ -343,7 +386,7 @@ SetDone:
                 ret
 
 ; Called after focusing a body hit. Derive coordinates again because
-; WndFocusTo uses BC. Only the six visible button rectangles activate.
+; WndFocusTo uses BC. Only the seven visible button rectangles activate.
 SetPress:
                 ld      a,(PtrX)
                 srl     a
@@ -372,7 +415,7 @@ SetPress:
                 cp      d
                 ret     nc
                 dec     a
-                cp      6
+                cp      7
                 ret     nc
                 ld      (SetRow),a
                 ld      b,1
@@ -397,6 +440,9 @@ SetDraw:
                 call    WinPrint
                 ld      hl,SetSoundLabel
                 ld      bc,$0401
+                call    WinPrint
+                ld      hl,SetKeyPtrLabel
+                ld      bc,$0501
                 call    WinPrint
                 ld      a,(SetSpeed)
                 ld      hl,SetSlow
@@ -436,11 +482,19 @@ SetDrawBackend:
 SetDrawSound:
                 ld      b,4
                 call    SetButton
-                ld      hl,SetSaveLabel
+                ld      a,(SetKeyPtr)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawKeyPtr
+                ld      hl,SetOn
+SetDrawKeyPtr:
                 ld      b,5
                 call    SetButton
-                ld      hl,SetDoneLabel
+                ld      hl,SetSaveLabel
                 ld      b,6
+                call    SetButton
+                ld      hl,SetDoneLabel
+                ld      b,7
                 call    SetButton
                 xor     a
                 ld      (PrintInv),a
@@ -473,3 +527,4 @@ SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0
 
 SetSoundLabel:  defb    "SOUND",0
+SetKeyPtrLabel: defb    "KEY PTR",0
