@@ -1235,6 +1235,86 @@ def arrange_checks(syms, fails):
           f"heap {blocks}")
 
 
+def note_load_checks(syms, fails):
+    print("notepad load failures:")
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 6 2"), (5, "key_up 6 2")]
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+    new = press(88, 3) + press(96, 11)
+    file_open = press(88, 3) + press(96, 19)
+    enter, esc = tap(7, 64), tap(7, 4)
+    document = b"H".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+    loaded = b"LOADED".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+    directory = b"OTHER" + bytes(8) + bytes([0, 1, 1]) + bytes(48)
+    # RAM fixtures keep the fault injection identical on every BIOS.
+    seed = [(5, f"debug write memory {syms['NoteBackend']} 1; "
+                f"debug write memory {syms['StBackend']} 1; "
+                f"debug write memory {syms['NoteCY']} 9; "
+                f"debug write memory {syms['NoteTop']} 3; "
+                f"debug write_block memory {syms['RamDir']} [binary format H* {directory.hex()}]; "
+                f"debug write_block memory {syms['RamHeap']} [binary format H* {loaded.hex()}]")]
+    scratch = syms['RamHeap'] + 768
+    records = scratch + 16
+    for route in ('menu', 'picker', 'commander'):
+        for fault in ('open', 'length', 'read', 'close'):
+            # Observe carry before backend restoration and count actual closes.
+            hooks = [
+                f"debug write_block memory {scratch} [binary format H* 37c9]",
+                f"set closes 0; debug write memory {records+1} 0",
+                f"set closebp [debug set_bp {syms['StClose']} {{}} {{incr closes; debug write memory {records+1} $closes}}]",
+                f"set resultbp [debug set_bp {syms['NoteRestoreBackend']} {{}} {{debug write memory {records} [expr {{[reg F] & 1}}]}}]",
+            ]
+            if fault == 'open':
+                hooks += [f"set faultbp [debug set_bp {syms['StOpen']} {{}} {{reg PC {scratch}}}]"]
+            elif fault == 'length':
+                hooks += [f"set faultbp [debug set_bp {syms['StRead']} {{}} {{reg BC 37}}]"]
+            elif fault == 'read':
+                hooks += [f"set faultbp [debug set_bp {syms['StRead']} {{}} {{reg PC {scratch}}}]"]
+            else:
+                hooks += [f"set faultbp [debug set_bp {syms['RamClose']} {{}} {{reg PC {scratch}}}]"]
+            # Exercise the sequential FILE > OPEN branch even on C-BIOS,
+            # with actual I/O selected from the note's RAM backend.
+            if route == 'menu':
+                hooks += [f"set menubp [debug set_bp {syms['NoteMenuOpen']} {{}} {{debug write memory {syms['StBackend']} 2}}]",
+                          f"debug write_block memory {syms['RamDir']} [binary format H* {(b'NOTE\0' + directory[5:]).hex()}]"]
+            action = file_open if route == 'menu' else (
+                file_open + enter if route == 'picker' else press(140, 3) + press(148, 51) + enter)
+            steps = new + tap(3, 32) + seed + [(5, '; '.join(hooks))] + action
+            for dismissed in (False, True):
+                name = f"note-load-{route}-{fault}" + ("-cancel" if dismissed else "")
+                r = Run(syms, steps + (esc if dismissed else []) + [(15, "")], name, files={})
+                existing = route != 'commander'  # two-pane opens a fresh notepad
+                want_doc = document if existing else (b" " * 14 + b"\0\0") * 16
+                check(fails, name, r.bytes('NoteBuf', 256) == want_doc
+                      and r.peek('NoteModified') == int(existing)
+                      and (r.peek('NoteCX'), r.peek('NoteCY'), r.peek('NoteTop')) ==
+                          ((1, 9, 3) if existing else (0, 0, 0))
+                      and r.bytes('NoteName', 5) == b'NOTE\0'
+                      and r.peek('NoteBackend') == 1
+                      and r.peek('DgOpenFlag') == int(not dismissed)
+                      and (dismissed or (r.peek('DgCount') == 1
+                           and r.nt()[9*32+7:9*32+21] == b'COULD NOT LOAD'))
+                      and r.ram[records-WORK] == 1
+                      and r.ram[records+1-WORK] == (0 if fault == 'open' else 1),
+                      f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}; "
+                      f"carry {r.ram[records-WORK]}, closes {r.ram[records+1-WORK]}")
+            if route == 'commander':
+                continue
+            clean = [(5, "debug remove_bp $faultbp; debug remove_bp $closebp; debug remove_bp $resultbp")]
+            r = Run(syms, steps + esc + clean + action + [(15, "")],
+                    f"note-load-{route}-{fault}-retry", files={})
+            want = compose(expected_nt(), [note_win(8, 6, [b"LOADED"] + [b""] * 15, 0, 0)])
+            check(fails, f"note-load-{route}-{fault}-retry",
+                  r.bytes('NoteBuf', 256) == loaded and r.peek('NoteModified') == 0
+                  and r.bytes('NoteName', 5 if route == 'menu' else 6) ==
+                      (b'NOTE\0' if route == 'menu' else b'OTHER\0')
+                  and r.nt() == want and r.peek('DgOpenFlag') == 0,
+                  f"name table crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+
 def dialog_checks(syms, fails):
     print("dialogues:")
     def press(x, y):
@@ -1568,6 +1648,9 @@ def main():
     if sys.argv[1:] == ["--arrange-only"]:
         arrange_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--note-load"]:
+        note_load_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--dialogs"]:
         dialog_checks(syms, fails)
         return bool(fails)
@@ -1581,6 +1664,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)
     dialog_checks(syms, fails)

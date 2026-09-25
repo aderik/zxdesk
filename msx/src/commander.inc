@@ -636,22 +636,25 @@ CopExisting:
                 ld      a,(WndCur)
                 call    WndFocusTo
 CopLoad:
+                ld      a,(NoteBackend)
+                push    af                      ; retain document ownership on failure
                 ld      a,(CmdSrcBk)
                 ld      (NoteBackend),a
                 ld      hl,CmdWork
                 call    NoteLoadAs
                 jr      nc,CopOk
+                pop     af
+                ld      (NoteBackend),a
                 ld      a,(CmdWasK)
                 call    StSelect
                 ld      a,(WndCur)
                 call    WndTouch
                 call    RowsAddLive
-                ld      hl,TxtCmdError
-                ld      de,0
-                call    DlgAlert
+                call    NoteLoadAlert
                 ld      a,1
                 ret
 CopOk:
+                pop     af
                 ld      a,(CmdWasK)
                 call    StSelect
                 ld      a,1                     ; repaint the new notepad
