@@ -134,6 +134,7 @@ _ram            defl    _ram+size
                 var     TapeLen, 2
                 var     TapePos, 2
                 var     TapeMode, 1
+                var     TapeBusy, 1
                 var     StBackend, 1
                 var     StCapability, 1
                 var     StVecOpen, 2
@@ -310,6 +311,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetSpeed, 1
                 var     SetInvertY, 1
                 var     SetBackend, 1
+                var     SetSound, 1
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1
@@ -1327,6 +1329,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "disk.inc"
                 include "tape.inc"
                 include "settings.inc"
+                include "sound.inc"
                 include "hittest.inc"
                 include "app.inc"
                 include "calendar.inc"

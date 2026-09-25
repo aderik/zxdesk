@@ -1,8 +1,8 @@
-; MSX format v1: magic 'M', version, ramp (0..2), mouse Y inverted
-; (0 = as the hand moves, 1 = upside down), backend id. Separate magic from the ZX record.
+; MSX format v2: magic 'M', version, ramp (0..2), mouse Y inverted
+; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1). Separate magic from the ZX record.
 SETMAGIC        equ     $4D
-SETVERSION      equ     1
-SETSIZE         equ     5
+SETVERSION      equ     2
+SETSIZE         equ     6
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -12,7 +12,7 @@ SetDefaults:
                 ld      a,(SetDevice)
                 ld      (SetBackend),a
                 ret
-SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM
+SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -59,15 +59,27 @@ SetLoad:
                 ld      a,b
                 or      a
                 jr      nz,SetLoadBad
-                ld      a,c
-                cp      SETSIZE
-                jr      nz,SetLoadBad
                 ld      a,(SetRec)
                 cp      SETMAGIC
                 jr      nz,SetLoadBad
                 ld      a,(SetRec+1)
+                cp      1
+                jr      z,SetLoadV1
                 cp      SETVERSION
                 jr      nz,SetLoadBad
+                ld      a,c
+                cp      SETSIZE
+                jr      nz,SetLoadBad
+                or      a
+                jp      SetRestore
+SetLoadV1:
+                ld      a,c
+                cp      5
+                jr      nz,SetLoadBad
+                ld      a,1
+                ld      (SetSound),a
+                ld      a,SETVERSION
+                ld      (SetRec+1),a
                 or      a
                 jp      SetRestore
 SetLoadBad:
@@ -113,6 +125,12 @@ SetSaveBad:
                 jp      SetRestore
 
 SetApply:
+                ld      a,(SetSound)
+                cp      2
+                jr      c,SetSoundOK
+                ld      a,1
+                ld      (SetSound),a
+SetSoundOK:
                 ld      a,(SetSpeed)
                 cp      3
                 jr      c,SetSpeedOK
@@ -194,7 +212,7 @@ SetInit:
                 ld      (SetRow),a
                 ret
 
-; Five rows: cyclic values, SAVE, DONE. Focus is per window.
+; Six rows: cyclic values, SAVE, DONE. Focus is per window.
 SetKey:
                 cp      KEY_ESC
                 jp      z,SetDone
@@ -219,7 +237,7 @@ SetKey:
 SetNext:
                 ld      a,(SetRow)
                 inc     a
-                cp      5
+                cp      6
                 jp      c,SetFocus
                 xor     a
                 jp      SetFocus
@@ -227,7 +245,7 @@ SetPrev:
                 ld      a,(SetRow)
                 sub     1
                 jp      nc,SetFocus
-                ld      a,4
+                ld      a,5
 SetFocus:
                 ld      (SetRow),a
 SetChanged:
@@ -235,10 +253,12 @@ SetChanged:
                 ret
 SetChange:
                 ld      a,(SetRow)
-                cp      4
+                cp      5
                 jp      z,SetDone
-                cp      3
+                cp      4
                 jp      z,SetStore
+                cp      3
+                jp      z,SetCycleSound
                 cp      2
                 jp      z,SetCycleBackend
                 cp      1
@@ -250,6 +270,11 @@ SetChange:
                 sub     3
 SetCycleSpeed:
                 ld      (SetSpeed),a
+                jp      SetActivate
+SetCycleSound:
+                ld      a,(SetSound)
+                xor     1
+                ld      (SetSound),a
                 jp      SetActivate
 SetCycleY:
                 ld      a,(SetInvertY)
@@ -318,7 +343,7 @@ SetDone:
                 ret
 
 ; Called after focusing a body hit. Derive coordinates again because
-; WndFocusTo uses BC. Only the five visible button rectangles activate.
+; WndFocusTo uses BC. Only the six visible button rectangles activate.
 SetPress:
                 ld      a,(PtrX)
                 srl     a
@@ -347,7 +372,7 @@ SetPress:
                 cp      d
                 ret     nc
                 dec     a
-                cp      5
+                cp      6
                 ret     nc
                 ld      (SetRow),a
                 ld      b,1
@@ -369,6 +394,9 @@ SetDraw:
                 call    WinPrint
                 ld      hl,SetBackendLabel
                 ld      bc,$0301
+                call    WinPrint
+                ld      hl,SetSoundLabel
+                ld      bc,$0401
                 call    WinPrint
                 ld      a,(SetSpeed)
                 ld      hl,SetSlow
@@ -400,11 +428,19 @@ SetDrawY:
 SetDrawBackend:
                 ld      b,3
                 call    SetButton
-                ld      hl,SetSaveLabel
+                ld      a,(SetSound)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawSound
+                ld      hl,SetOn
+SetDrawSound:
                 ld      b,4
                 call    SetButton
-                ld      hl,SetDoneLabel
+                ld      hl,SetSaveLabel
                 ld      b,5
+                call    SetButton
+                ld      hl,SetDoneLabel
+                ld      b,6
                 call    SetButton
                 xor     a
                 ld      (PrintInv),a
@@ -435,3 +471,5 @@ SetDiskLabel:   defb    "[DISK]",0
 SetSaveLabel:   defb    "[SAVE]",0
 SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0
+
+SetSoundLabel:  defb    "SOUND",0

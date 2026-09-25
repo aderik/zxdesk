@@ -205,7 +205,7 @@ of static RAM.
 ## Settings
 
 **MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
-inversion (OFF/ON), and application storage (RAM/DISK). DISK is offered
+inversion (OFF/ON), application storage (RAM/DISK), and SOUND (OFF/ON). DISK is offered
 only when `DskPresent` detects it. Click a bracketed value to cycle it;
 TAB or SHIFT+UP/DOWN selects a row, SHIFT+LEFT/RIGHT decrements/increments,
 and ENTER or SPACE activates the selected button. Changes apply immediately.
@@ -213,11 +213,12 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The five bytes are `4D 01 rr yy bb`: MSX
-magic, format version, ramp, Y inversion and storage id (1 RAM, 2 tape with `TAPE=1`, 5 disk).
+`SetLoad` then `SetApply`. The six bytes are `4D 02 rr yy bb ss`: MSX
+magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with `TAPE=1`, 5 disk), and sound (0 OFF, 1 ON).
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
-inversion 1 and the detected boot backend. Missing files, I/O failures,
-incorrect magic/version and lengths other than five bytes give defaults;
+inversion 0, sound 1 and the detected boot backend. Missing files, I/O failures,
+incorrect magic/version and incorrect lengths give defaults. Version 1
+five-byte records migrate with sound ON; version 2 requires six bytes;
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -227,17 +228,17 @@ asserts save/clear/load, invalid headers, all three ramps, both mouse Y
 signs, field validation and backend restoration. The normal ROM asserts
 the menu contents and actual inverted mouse movement; on disk it also
 boots seeded valid, invalid and truncated/oversized files. The TEST image
-contains `SETTINGS` bytes `4D 01 02 00 01` after saving with RAM selected.
+contains `SETTINGS` bytes `4D 02 02 00 01 01` after saving with RAM selected.
 The persistence implementation added 12 static RAM bytes; TEST records
 reuse commander scratch space.
-The settings window now uses 177 heap bytes: a 168-byte cell buffer,
+In lf-1210, the settings window used 177 heap bytes: a 168-byte cell buffer,
 one byte of row focus, and two four-byte allocation headers (+73 bytes).
 The old two-byte digit scratch is replaced by one focus byte, reducing
 static RAM by one byte to 3,524. The normal ROM uses 13,013 bytes
 (TEST: 14,180). The heap budget is 8,764 bytes without
 a disk ROM and 3,379 with one (TEST: 6,049 and 664).
 
-The SETTINGS UI subjects assert a composed name-table CRC32 and all five
+The lf-1210 SETTINGS UI subjects asserted a composed name-table CRC32 and all five
 record bytes after each mouse click and keyboard change, including ramp
 wrap (CRC32 `049f8dfa`), SAVE, DONE without writing, and clearing/reloading
 the saved record (`4D 01 02 01 01`, screen CRC32 `0574f7ad` on C-BIOS).
@@ -265,6 +266,36 @@ ROM uses **13,066 bytes**; RAM and heap budgets are unchanged. Python syntax
 and diff checks pass. Emulator assertions have not been run in this
 implementation environment (openMSX and xdotool are unavailable); the
 focused subjects and full machine matrix remain to be run by the pipeline.
+
+## PSG sound
+
+SOUND defaults to ON. Menu selections and dialogue answers click; opening a
+dialogue beeps. Channel A uses a single falling AY envelope: seven register
+writes, with no delay loop or later frame callback. The mixer retains its
+I/O direction bits, register 15 is untouched, and the address latch returns
+to register 14. Tape owns the PSG from the start of a BIOS transfer until
+its success or error return; sound requests in that interval are ignored.
+
+`msx/test.sh --sound` checks PSG readback through Z80 IN instructions,
+both sound tables, OFF and tape suppression, pointer movement after a beep,
+UI call sites with SETTINGS open, frame drops, and the SETTINGS UI and
+persistence subjects. Breakpoints measure entry through return using
+`machine_info time`; the subject prints cycles and requires fewer than 1000.
+The SETTINGS format is now version 2; its sixth byte is SOUND.
+
+This change adds **2 static RAM bytes** (SetSound and TapeBusy), for
+**3,526 bytes** total. The normal ROM uses **13,312 bytes**, leaving
+**8,762 heap bytes** without disk and **3,377** with disk. SETTINGS grows
+by one 24-cell row: **201 heap bytes** per window, up **24 bytes**.
+Sound itself allocates no heap memory.
+
+Measured on C-BIOS EU/JP and the real MSX1 BIOS: CLICK/BEEP take **850
+cycles**, OFF takes **140**, and tape suppression takes **167**, from
+SndPlay entry through return (breakpoints + machine_info time). The sound
+subjects report **Dropped = 0**. SOUND OFF save/reload has name-table CRC32
+**24174bd9** on C-BIOS; five-byte v1 migration has **fe9a6441**.
+The full test-all.sh matrix remains for the pipeline, as required by this
+implementation run.
 
 ## Commander
 
@@ -584,3 +615,18 @@ For lf-1212, all 32 focused subjects passed on C-BIOS_MSX1_EU (50 Hz),
 C-BIOS_MSX1_JP (60 Hz), Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2.
 The full `msx/test-all.sh` run is left to the pipeline, as required by the
 ticket's implementation-run instructions.
+
+Focused lf-1215 verification (the complete suite was not run here):
+
+| Configuration | Result |
+|---|---|
+| C-BIOS MSX1 EU, 50 Hz | 11 sound assertions; 73 SETTINGS UI/persistence assertions passed |
+| C-BIOS MSX1 JP, 60 Hz | 103 assertions with --sound (TEST ROM, sound, SETTINGS); final sound recheck passed |
+| Roms_MSX1 | 11 assertions with --sound-only passed |
+| Roms_MSX1 + Roms_Disk | 111 assertions with --sound passed |
+| Roms_MSX2 | 11 assertions with --sound-only passed |
+
+Disk SOUND OFF save/reload name-table CRC32 is **fc73ad4c**. The BIOS
+transfer probes use stubbed BIOS returns to assert PSG ownership during
+success and failure; actual cassette waveform round trips remain in the
+pipeline's existing tape subjects.
