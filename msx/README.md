@@ -205,8 +205,11 @@ of static RAM.
 ## Settings
 
 **MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
-inversion (OFF/ON), application storage (RAM/DISK), SOUND (OFF/ON), and
-KEY PTR (OFF/ON). KEY PTR defaults to ON: cursor keys move the pointer
+inversion (OFF/ON), application storage (RAM/DISK), SOUND (OFF/ON),
+KEY PTR (OFF/ON), and LATTICE (NONE/DOTS/GRID). LATTICE defaults to
+DOTS; it updates the desktop and menu rule patterns in all three screen
+banks without changing name-table cells. KEY PTR defaults to ON: cursor
+keys move the pointer
 unless SHIFT is held. OFF disables cursor pointer movement and clears its
 acceleration counters; the mouse and CTRL button remain active. DISK is offered
 only when `DskPresent` detects it. Click a bracketed value to cycle it;
@@ -216,15 +219,18 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The seven bytes are `4D 03 rr yy bb ss kk`: MSX
+`SetLoad` then `SetApply`. The eight bytes are `4D 04 rr yy bb ss kk ll`: MSX
 magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
-`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON).
+`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), and lattice (0 NONE, 1 DOTS,
+2 GRID).
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
-inversion 0, sound 1, key pointer 1 and the detected boot backend. Missing
+inversion 0, sound 1, key pointer 1, lattice 1 and the detected boot backend. Missing
 files, I/O failures, incorrect magic/version and incorrect lengths give defaults. Version 1
 five-byte records migrate with sound and key pointer ON; version 2 six-byte
-records retain sound and migrate with key pointer ON; version 3 requires
-seven bytes.
+records retain sound and migrate with key pointer ON; version 3 seven-byte
+records retain both fields and migrate with lattice
+DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 requires
+eight bytes.
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -234,7 +240,7 @@ asserts save/clear/load, invalid headers, all three ramps, both mouse Y
 signs, field validation and backend restoration. The normal ROM asserts
 the menu contents and actual inverted mouse movement; on disk it also
 boots seeded valid, invalid and truncated/oversized files. The TEST image
-contains `SETTINGS` bytes `4D 03 02 00 01 01 01` after saving with RAM selected.
+contains `SETTINGS` bytes `4D 04 02 00 01 01 01 01` after saving with RAM selected.
 The persistence implementation added 12 static RAM bytes; TEST records
 reuse commander scratch space.
 In lf-1210, the settings window used 177 heap bytes: a 168-byte cell buffer,
@@ -663,3 +669,35 @@ Focused lf-1216 verification (`msx/test.sh --settings`):
 | Roms_MSX2 | 107 assertions passed |
 
 Disk KEY PTR OFF save/clear/load has name-table CRC32 **338c5e83**.
+
+For lf-1217, LATTICE adds **226 ROM bytes** and **1 static RAM byte**.
+The normal build uses **13,638 ROM bytes**, **3,528 static RAM bytes**,
+and leaves **8,760 / 3,375 heap bytes** without/with disk. The TEST build
+uses **14,814 ROM bytes**, **6,243 static RAM bytes**, and leaves
+**6,045 / 660 heap bytes**. Each SETTINGS window uses **249 heap bytes**
+including allocation headers, up **24** for the extra row. Pattern updates
+allocate no heap memory.
+
+`--settings` asserts all eight bytes of both tiles in all three pattern
+banks for NONE, DOTS and GRID, plus invalid-value fallback. The isolated
+pattern update preserves the full VRAM name table and RAM shadow byte for
+byte: C-BIOS CRC32 **add5ac78** with no window, **240fbe30** with SETTINGS,
+and **b8b1f0d6** with two SETTINGS windows, for every pattern. UI tests
+assert mouse/keyboard wrap, both cached window buffers and their distinct
+focus, closing the front window, SAVE/clear/SetLoad (GRID CRC32
+**6d26cc98**), and carry-clear v3 migration with DOTS (**0cefb18a**).
+The displayed LATTICE value itself changes during UI interaction; the
+isolated update checks that changing the background does not repaint cells.
+
+Focused verification: C-BIOS EU (50 Hz), **151 assertions** with
+`--settings`; C-BIOS JP (60 Hz), **162 assertions** with `--sound`
+(including SETTINGS). The JP two-SETTINGS sound/menu probe reports
+**Dropped = 0**, maximum measured frame **12,276 us**. The complete
+`test-all.sh` matrix remains for the pipeline, as required by this run.
+
+Roms_MSX1 + Roms_Disk passes **162 assertions** with `--settings`,
+including seeded v1/v2/v3 migration, v4 GRID at boot, invalid fields and
+short/oversized records. Its unchanged name-table CRC32 values with one
+and two SETTINGS windows are **fc6b58a5** and **ea011005**; GRID
+SAVE/clear/load is **b5422a0d**. Standalone Roms_MSX1 and Roms_MSX2 are
+left to the pipeline's full machine matrix.
