@@ -204,9 +204,13 @@ of static RAM.
 
 ## Settings
 
-**MSX DESK > SETTINGS** displays the pointer ramp (0 slow, 1 normal,
-2 fast), mouse Y inversion (1 negates the raw delta, the MSX default),
-and application storage backend. Editing controls are deferred.
+**MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
+inversion (OFF/ON), and application storage (RAM/DISK). DISK is offered
+only when `DskPresent` detects it. Click a bracketed value to cycle it;
+TAB or SHIFT+UP/DOWN selects a row, SHIFT+LEFT/RIGHT decrements/increments,
+and ENTER or SPACE activates the selected button. Changes apply immediately.
+SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
+SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
 `SetLoad` then `SetApply`. The five bytes are `4D 01 rr yy bb`: MSX
@@ -224,8 +228,32 @@ signs, field validation and backend restoration. The normal ROM asserts
 the menu contents and actual inverted mouse movement; on disk it also
 boots seeded valid, invalid and truncated/oversized files. The TEST image
 contains `SETTINGS` bytes `4D 01 02 00 01` after saving with RAM selected.
-Static RAM grows by 12 bytes; TEST records reuse commander scratch space.
-The settings window uses 100 heap bytes plus a four-byte allocation header.
+The persistence implementation added 12 static RAM bytes; TEST records
+reuse commander scratch space.
+The settings window now uses 177 heap bytes: a 168-byte cell buffer,
+one byte of row focus, and two four-byte allocation headers (+73 bytes).
+The old two-byte digit scratch is replaced by one focus byte, reducing
+static RAM by one byte to 3,524. The normal ROM uses 13,013 bytes
+(TEST: 14,180). The heap budget is 8,764 bytes without
+a disk ROM and 3,379 with one (TEST: 6,049 and 664).
+
+The SETTINGS UI subjects assert a composed name-table CRC32 and all five
+record bytes after each mouse click and keyboard change, including ramp
+wrap (CRC32 `049f8dfa`), SAVE, DONE without writing, and clearing/reloading
+the saved record (`4D 01 02 01 01`, screen CRC32 `0574f7ad` on C-BIOS).
+They also check the active ramp pointer/backend and unavailable-disk fallback.
+The full `test-all.sh` suite remains the pipeline's responsibility for lf-1210,
+as required by the implementation-run instructions.
+
+Focused `msx/test.sh --settings` results for lf-1210:
+
+| Configuration | Assertions |
+|---|---|
+| C-BIOS_MSX1_EU (50 Hz) | 50 passed |
+| C-BIOS_MSX1_JP (60 Hz) | 50 passed |
+| Roms_MSX1 | 50 passed |
+| Roms_MSX1 + Roms_Disk | 56 passed |
+| Roms_MSX2 | 50 passed |
 
 ## Commander
 

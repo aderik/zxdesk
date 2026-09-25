@@ -1089,13 +1089,85 @@ def settings_checks(syms, fails):
     r = Run(syms, press(20, 4) + press(30, 20) + [(10, "")], "settings-menu")
     check(fails, "settings-menu", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppSettings"],
           "MSX DESK > SETTINGS opens the settings window")
-    buf = r.peek("WinBufP", 2) - WORK
-    rows = [r.ram[buf + i * 20:buf + (i + 1) * 20] for i in range(5)]
-    check(fails, "settings-values", rows[1][1:13] == b"POINTER RAMP" and rows[1][16] == ord('1')
-          and rows[2][1:15] == b"MOUSE Y INVERT" and rows[2][16] == ord('0')
-          and rows[3][14:14 + (4 if EXT else 3)] == (b"DISK" if EXT else b"RAM"),
-          f"window rows {rows[1:4]}")
-    check(fails, "settings-missing", r.bytes("SetRec", 5) == defaults, "missing file gives defaults")
+    def tap(row, mask, shift=False):
+        extra = "; key_down 6 1" if shift else ""
+        release = "; key_up 6 1" if shift else ""
+        return [(3, f"key_down {row} {mask}{extra}"), (3, f"key_up {row} {mask}{release}")]
+
+    opened = press(20, 4) + press(30, 20)
+    def verify(steps, name, speed, inv, device, focus, closed=False):
+        r = Run(syms, steps + [(10, "")], name)
+        labels = [b"[SLOW]", b"[MED ]", b"[FAST]"]
+        buttons = [labels[speed], b"[ON  ]" if inv else b"[OFF ]",
+                   b"[DISK]" if device == 5 else b"[RAM ]", b"[SAVE]", b"[DONE]"]
+        lines = [(i + 1, 1, label, False) for i, label in enumerate(
+            (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND"))]
+        lines += [(i + 1, 16, label, i == focus) for i, label in enumerate(buttons)]
+        want = compose(expected_nt(), [] if closed else [(6, 6, 24, 7, b"SETTINGS", lines)])
+        check(fails, name, zlib.crc32(r.nt()) == zlib.crc32(want)
+              and r.bytes("SetRec", 5) == bytes((0x4d, 1, speed, inv, device))
+              and r.peek("StBackend") == device
+              and r.peek("AccelPtr", 2) == syms["AccelTabs"] + speed * 5,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; record {r.bytes('SetRec', 5).hex()}")
+        return r
+
+    verify(opened, "settings-values", 1, 0, backend, 0)
+    # Real mouse button events; pointer placement avoids host acceleration.
+    def click(row):
+        return [(5, f"debug write memory {syms['PtrX']} 180; debug write memory {syms['PtrY']} {(7 + row) * 8 + 2}"),
+                (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
+    steps = [(5, "plug joyporta mouse")] + opened
+    speed, inv, device = 1, 0, backend
+    for n, row in enumerate((0, 0, 0, 1, 1, 2, 2, 3, 4)):
+        steps += click(row)
+        if row == 0:
+            speed = (speed + 1) % 3
+        elif row == 1:
+            inv ^= 1
+        elif row == 2:
+            device = 5 if EXT and device == 1 else 1
+        r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 4)
+    # Keyboard increment, wrap, decrement, focus in both directions, SAVE and DONE.
+    steps = list(opened)
+    cases = [(tap(7, 64), 2, 0, backend, 0),
+             (tap(8, 128, True), 0, 0, backend, 0),
+             (tap(8, 16, True), 2, 0, backend, 0),
+             (tap(8, 64, True), 2, 0, backend, 1),
+             (tap(7, 64), 2, 1, backend, 1),
+             (tap(8, 16, True), 2, 0, backend, 1),
+             (tap(7, 8), 2, 0, backend, 2),
+             (tap(7, 64), 2, 0, 1 if EXT else backend, 2),
+             (tap(8, 32, True), 2, 0, 1, 1),
+             (tap(7, 64), 2, 1, 1, 1),
+             (tap(7, 8) + tap(7, 8), 2, 1, 1, 3),
+             (tap(7, 64), 2, 1, 1, 3)]
+    for n, (keys, speed, inv, device, focus) in enumerate(cases):
+        steps += keys
+        r = verify(steps, f"settings-key-{n}", speed, inv, device, focus)
+    saved = bytes((0x4d, 1, 2, 1, 1))
+    def file_bytes(r):
+        return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", 5)
+    check(fails, "settings-ui-save", file_bytes(r) == saved, "SAVE writes changed record")
+    # Change after saving, then DONE: the stored bytes must stay identical.
+    steps += tap(8, 32, True) + tap(8, 32, True) + tap(7, 64)
+    verify(steps, "settings-unsaved", 2, 0, 1, 1)
+    steps += tap(7, 8) + tap(7, 8) + tap(7, 8) + tap(7, 64)
+    r = verify(steps, "settings-done", 2, 0, 1, 4, True)
+    check(fails, "settings-done-file", file_bytes(r) == saved, "DONE preserves saved file")
+    # Invoke real SetLoad/SetApply at the next SetKey call after clearing RAM.
+    clear = "; ".join(f"debug write memory {syms['SetRec'] + i} 0" for i in range(5))
+    scratch = syms['CmdBuf']
+    code = bytes([0xcd, syms['SetLoad'] & 255, syms['SetLoad'] >> 8,
+                  0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
+    steps += opened + [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
+                                f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 64)
+    verify(steps, "settings-ui-reload", 2, 1, 1, 0)
+    if not EXT:
+        code = bytes([0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
+        inject = (f"debug write memory {syms['SetDevice']} 5; debug write memory {syms['SetBackend']} 5; "
+                  f"debug write_block memory {scratch} [binary format H* {code.hex()}]; "
+                  f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
+        verify(opened + [(5, inject)] + tap(7, 64), "settings-no-drive-fallback", 1, 0, 1, 0)
     # 0: the pointer follows the hand, host up is screen up; 1: upside down
     for inv, want in ((0, (120, 75)), (1, (120, 105))):
         reset = (f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90; "

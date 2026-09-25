@@ -150,6 +150,20 @@ SetBackendOK:
                 jp      StSelect
 SetBackendDefault:
                 ld      a,(SetDevice)
+                cp      ST_RAM
+                jr      z,SetFallbackOK
+IF TAPE
+                cp      ST_TAPE
+                jr      z,SetFallbackOK
+ENDIF
+                cp      ST_DISK
+                jr      nz,SetFallbackRam
+                call    DskPresent
+                ld      a,ST_DISK
+                jr      z,SetFallbackOK
+SetFallbackRam:
+                ld      a,ST_RAM
+SetFallbackOK:
                 ld      (SetBackend),a
                 jp      StSelect
 
@@ -175,25 +189,172 @@ SetMouseY:
 SetOpen:
                 ld      a,APP_SETTINGS
                 jp      WndOpen
+SetInit:
+                xor     a
+                ld      (SetRow),a
+                ret
+
+; Five rows: cyclic values, SAVE, DONE. Focus is per window.
+SetKey:
+                cp      KEY_ESC
+                jp      z,SetDone
+                cp      9
+                jp      z,SetNext
+                cp      KEY_DOWN
+                jp      z,SetNext
+                cp      KEY_UP
+                jp      z,SetPrev
+                ld      b,1
+                cp      KEY_RIGHT
+                jp      z,SetChange
+                cp      KEY_ENTER
+                jp      z,SetChange
+                cp      ' '
+                jp      z,SetChange
+                ld      b,2                       ; -1 modulo three
+                cp      KEY_LEFT
+                jp      z,SetChange
+                xor     a
+                ret
+SetNext:
+                ld      a,(SetRow)
+                inc     a
+                cp      5
+                jp      c,SetFocus
+                xor     a
+                jp      SetFocus
+SetPrev:
+                ld      a,(SetRow)
+                sub     1
+                jp      nc,SetFocus
+                ld      a,4
+SetFocus:
+                ld      (SetRow),a
+SetChanged:
+                ld      a,1
+                ret
+SetChange:
+                ld      a,(SetRow)
+                cp      4
+                jp      z,SetDone
+                cp      3
+                jp      z,SetStore
+                cp      2
+                jp      z,SetCycleBackend
+                cp      1
+                jp      z,SetCycleY
+                ld      a,(SetSpeed)
+                add     a,b
+                cp      3
+                jp      c,SetCycleSpeed
+                sub     3
+SetCycleSpeed:
+                ld      (SetSpeed),a
+                jp      SetActivate
+SetCycleY:
+                ld      a,(SetInvertY)
+                xor     1
+                ld      (SetInvertY),a
+                jp      SetActivate
+SetCycleBackend:
+                call    DskPresent
+                ld      a,ST_RAM
+                jp      nz,SetCycleDevice
+                ld      a,(SetBackend)
+                cp      ST_DISK
+                ld      a,ST_RAM
+                jp      z,SetCycleDevice
+                ld      a,ST_DISK
+SetCycleDevice:
+                ld      (SetBackend),a
+SetActivate:
+                call    SetApply
+                jp      SetChanged
+SetStore:
+                call    SetSave
+                jp      nc,SetChanged
+                ld      hl,SetSaveError
+                ld      de,0
+                call    DlgAlert
+                xor     a
+                ret
+SetDone:
+                call    WndClose
+                xor     a                       ; do not touch the closed slot
+                ret
+
+; Called after focusing a body hit. Derive coordinates again because
+; WndFocusTo uses BC. Only the five visible button rectangles activate.
+SetPress:
+                ld      a,(PtrX)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinX
+                sub     (hl)
+                cp      16
+                ret     c
+                cp      22
+                ret     nc
+                ld      hl,WinW
+                ld      d,(hl)
+                dec     d
+                cp      d
+                ret     nc
+                ld      a,(PtrY)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinY
+                sub     (hl)
+                ld      hl,WinH
+                ld      d,(hl)
+                dec     d
+                cp      d
+                ret     nc
+                dec     a
+                cp      5
+                ret     nc
+                ld      (SetRow),a
+                ld      b,1
+                call    SetChange
+                or      a
+                ret     z
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
+
 SetDraw:
                 xor     a
                 ld      (PrintInv),a
-                ld      (SetText+1),a
                 ld      hl,SetSpeedLabel
                 ld      bc,$0101
                 call    WinPrint
-                ld      a,(SetSpeed)
-                ld      bc,$0110
-                call    SetDigit
                 ld      hl,SetYLabel
                 ld      bc,$0201
                 call    WinPrint
-                ld      a,(SetInvertY)
-                ld      bc,$0210
-                call    SetDigit
                 ld      hl,SetBackendLabel
                 ld      bc,$0301
                 call    WinPrint
+                ld      a,(SetSpeed)
+                ld      hl,SetSlow
+                or      a
+                jr      z,SetDrawSpeed
+                ld      hl,SetMed
+                dec     a
+                jr      z,SetDrawSpeed
+                ld      hl,SetFast
+SetDrawSpeed:
+                ld      b,1
+                call    SetButton
+                ld      a,(SetInvertY)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawY
+                ld      hl,SetOn
+SetDrawY:
+                ld      b,2
+                call    SetButton
                 ld      a,(SetBackend)
                 ld      hl,SetRamLabel
                 cp      ST_RAM
@@ -203,17 +364,40 @@ SetDraw:
                 jr      z,SetDrawBackend
                 ld      hl,SetDiskLabel
 SetDrawBackend:
-                ld      bc,$030E
-                jp      WinPrint
-SetDigit:
-                add     a,'0'
-                ld      (SetText),a
-                ld      hl,SetText
+                ld      b,3
+                call    SetButton
+                ld      hl,SetSaveLabel
+                ld      b,4
+                call    SetButton
+                ld      hl,SetDoneLabel
+                ld      b,5
+                call    SetButton
+                xor     a
+                ld      (PrintInv),a
+                ret
+SetButton:
+                ld      a,(SetRow)
+                inc     a
+                cp      b
+                ld      a,0
+                jr      nz,SetButtonNormal
+                ld      a,INVBANK
+SetButtonNormal:
+                ld      (PrintInv),a
+                ld      c,16
                 jp      WinPrint
 SetTitle:       defb    "SETTINGS",0
 SetSpeedLabel:  defb    "POINTER RAMP",0
 SetYLabel:      defb    "MOUSE Y INVERT",0
 SetBackendLabel: defb   "BACKEND",0
-SetRamLabel:    defb    "RAM",0
-SetTapeLabel:   defb    "TAPE",0
-SetDiskLabel:   defb    "DISK",0
+SetSlow:        defb    "[SLOW]",0
+SetMed:         defb    "[MED ]",0
+SetFast:        defb    "[FAST]",0
+SetOff:         defb    "[OFF ]",0
+SetOn:          defb    "[ON  ]",0
+SetRamLabel:    defb    "[RAM ]",0
+SetTapeLabel:   defb    "[TAPE]",0
+SetDiskLabel:   defb    "[DISK]",0
+SetSaveLabel:   defb    "[SAVE]",0
+SetDoneLabel:   defb    "[DONE]",0
+SetSaveError:   defb    "COULD NOT SAVE",0
