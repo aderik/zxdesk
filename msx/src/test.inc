@@ -22,7 +22,7 @@ TestRun:
 
 ; Pure buffering contract, no cassette BIOS needed on C-BIOS. The
 ; physical open/close path is exercised by note-tape on real ROMs.
-TtResults       equ     CmdBuf+176
+TtResults       equ     CmdBuf+181
 TestTapeBuffer:
                 ld      hl,NoteBuf
                 ld      b,0
@@ -94,10 +94,10 @@ TtRecord:
 TtName:         defb    "BUFFER",0
 
 ; Settings round trip, rejected headers and payload clamping. Each
-; snapshot is carry (0/1) followed by the seven record bytes.
+; snapshot is carry (0/1) followed by the eight record bytes.
 ; Reuse unused tail of the commander scratch buffer in the TEST ROM.
 TsetResults     equ     CmdBuf+120
-TsetApplied     equ     CmdBuf+152
+TsetApplied     equ     CmdBuf+156
 TestSettings:
                 call    SetDefaults
                 ld      a,ST_RAM
@@ -116,19 +116,19 @@ TsetClear:
                 inc     hl
                 djnz    TsetClear
                 call    SetLoad
-                ld      de,TsetResults+8
+                ld      de,TsetResults+9
                 call    TsetSnapshot
                 xor     a
                 ld      (SetRec),a
                 call    SetWriteRecord
                 call    SetLoad
-                ld      de,TsetResults+16
+                ld      de,TsetResults+18
                 call    TsetSnapshot
                 ld      a,99
                 ld      (SetRec+1),a
                 call    SetWriteRecord
                 call    SetLoad
-                ld      de,TsetResults+24
+                ld      de,TsetResults+27
                 call    TsetSnapshot
                 ; Exercise all three table selections and mouse signs.
                 xor     a
@@ -168,6 +168,7 @@ TsetClear:
                 ld      (SetBackend),a
                 ld      (SetSound),a
                 ld      (SetKeyPtr),a
+                ld      (SetLattice),a
                 call    SetApply
                 ld      hl,SetRec
                 ld      de,TsetApplied+17

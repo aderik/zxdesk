@@ -313,6 +313,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetBackend, 1
                 var     SetSound, 1
                 var     SetKeyPtr, 1
+                var     SetLattice, 1
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1

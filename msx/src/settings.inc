@@ -1,9 +1,9 @@
-; MSX format v3: magic 'M', version, ramp (0..2), mouse Y inverted
+; MSX format v4: magic 'M', version, ramp (0..2), mouse Y inverted
 ; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
-; key pointer (0/1). Separate magic from the ZX record.
+; key pointer (0/1), lattice (0..2). Separate magic from the ZX record.
 SETMAGIC        equ     $4D
-SETVERSION      equ     3
-SETSIZE         equ     7
+SETVERSION      equ     4
+SETSIZE         equ     8
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -13,7 +13,7 @@ SetDefaults:
                 ld      a,(SetDevice)
                 ld      (SetBackend),a
                 ret
-SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1,1
+SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1,1,1
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -68,6 +68,8 @@ SetLoad:
                 jr      z,SetLoadV1
                 cp      2
                 jr      z,SetLoadV2
+                cp      3
+                jr      z,SetLoadV3
                 cp      SETVERSION
                 jr      nz,SetLoadBad
                 ld      a,c
@@ -89,6 +91,14 @@ SetLoadV2:
 SetLoadUpgrade:
                 ld      a,1
                 ld      (SetKeyPtr),a
+                jr      SetLoadLattice
+SetLoadV3:
+                ld      a,c
+                cp      7
+                jr      nz,SetLoadBad
+SetLoadLattice:
+                ld      a,1
+                ld      (SetLattice),a
                 ld      a,SETVERSION
                 ld      (SetRec+1),a
                 or      a
@@ -136,6 +146,7 @@ SetSaveBad:
                 jp      SetRestore
 
 SetApply:
+                call    SetApplyLattice
                 ld      a,(SetKeyPtr)
                 cp      2
                 jr      c,SetKeyPtrOK
@@ -202,6 +213,52 @@ SetFallbackOK:
                 ld      (SetBackend),a
                 jp      StSelect
 
+; Change only pattern bytes, never the shadow/name table or window buffers.
+; Screen 2 has a separate pattern bank for each third of the screen.
+SetApplyLattice:
+                ld      a,(SetLattice)
+                cp      3
+                jr      c,SetLatticeOK
+                ld      a,1
+                ld      (SetLattice),a
+SetLatticeOK:
+                add     a,a
+                add     a,a
+                add     a,a
+                ld      e,a
+                ld      d,0
+                ld      hl,SetPatterns
+                add     hl,de
+                ex      de,hl
+                ld      hl,PGT+T_LATTICE*8
+                ld      b,3
+SetLatticeBank:
+                push    bc
+                push    hl
+                push    de
+                call    SetWrt
+                ex      de,hl
+                push    hl
+                ld      bc,8
+                call    CopyVram
+                ; The rule follows immediately; replace only its top row.
+                ld      a,$FF
+                out     (VDPDATA),a
+                pop     hl
+                inc     hl
+                ld      bc,7
+                call    CopyVram
+                pop     de
+                pop     hl
+                ld      bc,$0800
+                add     hl,bc
+                pop     bc
+                djnz    SetLatticeBank
+                ret
+SetPatterns:    defb    0,0,0,0,0,0,0,0
+                defb    $AA,$55,$AA,$55,$AA,$55,$AA,$55
+                defb    $FF,$55,$FF,$55,$FF,$55,$FF,$55
+
 ; A = the mouse's raw dy. An MSX mouse reports the negative of the
 ; movement, so the screen delta is always the negation; the setting
 ; flips it once more. 0 is therefore a mouse that moves the pointer
@@ -248,7 +305,7 @@ SetInit:
                 ld      (SetRow),a
                 ret
 
-; Seven rows: cyclic values, SAVE, DONE. Focus is per window.
+; Eight rows: cyclic values, SAVE, DONE. Focus is per window.
 SetKey:
                 cp      KEY_ESC
                 jp      z,SetDone
@@ -273,7 +330,7 @@ SetKey:
 SetNext:
                 ld      a,(SetRow)
                 inc     a
-                cp      7
+                cp      8
                 jp      c,SetFocus
                 xor     a
                 jp      SetFocus
@@ -281,7 +338,7 @@ SetPrev:
                 ld      a,(SetRow)
                 sub     1
                 jp      nc,SetFocus
-                ld      a,6
+                ld      a,7
 SetFocus:
                 ld      (SetRow),a
 SetChanged:
@@ -289,10 +346,12 @@ SetChanged:
                 ret
 SetChange:
                 ld      a,(SetRow)
-                cp      6
+                cp      7
                 jp      z,SetDone
-                cp      5
+                cp      6
                 jp      z,SetStore
+                cp      5
+                jp      z,SetCycleLattice
                 cp      4
                 jp      z,SetCycleKeyPtr
                 cp      3
@@ -308,6 +367,15 @@ SetChange:
                 sub     3
 SetCycleSpeed:
                 ld      (SetSpeed),a
+                jp      SetActivate
+SetCycleLattice:
+                ld      a,(SetLattice)
+                add     a,b
+                cp      3
+                jr      c,SetCycleLatticeStore
+                sub     3
+SetCycleLatticeStore:
+                ld      (SetLattice),a
                 jp      SetActivate
 SetCycleKeyPtr:
                 ld      a,(SetKeyPtr)
@@ -386,7 +454,7 @@ SetDone:
                 ret
 
 ; Called after focusing a body hit. Derive coordinates again because
-; WndFocusTo uses BC. Only the seven visible button rectangles activate.
+; WndFocusTo uses BC. Only the eight visible button rectangles activate.
 SetPress:
                 ld      a,(PtrX)
                 srl     a
@@ -415,7 +483,7 @@ SetPress:
                 cp      d
                 ret     nc
                 dec     a
-                cp      7
+                cp      8
                 ret     nc
                 ld      (SetRow),a
                 ld      b,1
@@ -443,6 +511,9 @@ SetDraw:
                 call    WinPrint
                 ld      hl,SetKeyPtrLabel
                 ld      bc,$0501
+                call    WinPrint
+                ld      hl,SetLatticeLabel
+                ld      bc,$0601
                 call    WinPrint
                 ld      a,(SetSpeed)
                 ld      hl,SetSlow
@@ -490,11 +561,22 @@ SetDrawSound:
 SetDrawKeyPtr:
                 ld      b,5
                 call    SetButton
-                ld      hl,SetSaveLabel
+                ld      a,(SetLattice)
+                ld      hl,SetEmpty
+                or      a
+                jr      z,SetDrawLattice
+                ld      hl,SetDots
+                dec     a
+                jr      z,SetDrawLattice
+                ld      hl,SetDense
+SetDrawLattice:
                 ld      b,6
                 call    SetButton
-                ld      hl,SetDoneLabel
+                ld      hl,SetSaveLabel
                 ld      b,7
+                call    SetButton
+                ld      hl,SetDoneLabel
+                ld      b,8
                 call    SetButton
                 xor     a
                 ld      (PrintInv),a
@@ -528,3 +610,8 @@ SetSaveError:   defb    "COULD NOT SAVE",0
 
 SetSoundLabel:  defb    "SOUND",0
 SetKeyPtrLabel: defb    "KEY PTR",0
+
+SetLatticeLabel: defb   "LATTICE",0
+SetEmpty:       defb    "[NONE]",0
+SetDots:        defb    "[DOTS]",0
+SetDense:       defb    "[GRID]",0
