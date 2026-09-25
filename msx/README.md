@@ -255,6 +255,17 @@ Focused `msx/test.sh --settings` results for lf-1210:
 | Roms_MSX1 + Roms_Disk | 56 passed |
 | Roms_MSX2 | 50 passed |
 
+Changes to shared settings now mark every open SETTINGS buffer and its
+screen rows for repaint, retaining each window's button focus. The
+`settings-two-*` subjects cover keyboard and mouse changes to all three
+values, both cached buffers, ESC exposing the remaining window, and SAVE
+from that window. For lf-1213, both ROM builds assemble: **+53 ROM bytes**,
+**0 added static RAM bytes**, and no additional heap allocation. The normal
+ROM uses **13,066 bytes**; RAM and heap budgets are unchanged. Python syntax
+and diff checks pass. Emulator assertions have not been run in this
+implementation environment (openMSX and xdotool are unavailable); the
+focused subjects and full machine matrix remain to be run by the pipeline.
+
 ## Commander
 
 **FILE > OPEN** opens a single-pane file picker on the active storage

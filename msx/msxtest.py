@@ -1095,14 +1095,18 @@ def settings_checks(syms, fails):
         return [(3, f"key_down {row} {mask}{extra}"), (3, f"key_up {row} {mask}{release}")]
 
     opened = press(20, 4) + press(30, 20)
-    def verify(steps, name, speed, inv, device, focus, closed=False):
-        r = Run(syms, steps + [(10, "")], name)
+    def lines_for(speed, inv, device, focus):
         labels = [b"[SLOW]", b"[MED ]", b"[FAST]"]
         buttons = [labels[speed], b"[ON  ]" if inv else b"[OFF ]",
                    b"[DISK]" if device == 5 else b"[RAM ]", b"[SAVE]", b"[DONE]"]
         lines = [(i + 1, 1, label, False) for i, label in enumerate(
             (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND"))]
         lines += [(i + 1, 16, label, i == focus) for i, label in enumerate(buttons)]
+        return lines
+
+    def verify(steps, name, speed, inv, device, focus, closed=False):
+        r = Run(syms, steps + [(10, "")], name)
+        lines = lines_for(speed, inv, device, focus)
         want = compose(expected_nt(), [] if closed else [(6, 6, 24, 7, b"SETTINGS", lines)])
         check(fails, name, zlib.crc32(r.nt()) == zlib.crc32(want)
               and r.bytes("SetRec", 5) == bytes((0x4d, 1, speed, inv, device))
@@ -1113,8 +1117,8 @@ def settings_checks(syms, fails):
 
     verify(opened, "settings-values", 1, 0, backend, 0)
     # Real mouse button events; pointer placement avoids host acceleration.
-    def click(row):
-        return [(5, f"debug write memory {syms['PtrX']} 180; debug write memory {syms['PtrY']} {(7 + row) * 8 + 2}"),
+    def click(row, x=6, y=6):
+        return [(5, f"debug write memory {syms['PtrX']} {(x + 16) * 8 + 4}; debug write memory {syms['PtrY']} {(y + 1 + row) * 8 + 2}"),
                 (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
     steps = [(5, "plug joyporta mouse")] + opened
     speed, inv, device = 1, 0, backend
@@ -1148,6 +1152,35 @@ def settings_checks(syms, fails):
     def file_bytes(r):
         return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", 5)
     check(fails, "settings-ui-save", file_bytes(r) == saved, "SAVE writes changed record")
+
+    # Two instances share values, including the hidden window's cached buffer,
+    # but retain separate button focus. Exercise both keyboard and mouse paths.
+    for control in ("key", "click"):
+        for row, values in enumerate(((2, 0, backend), (1, 1, backend), (1, 0, 1))):
+            rear_focus = (row + 1) % 3
+            two = [(5, "plug joyporta mouse")] + opened + tap(7, 8) * rear_focus + opened
+            two += tap(7, 8) * row + tap(7, 64) if control == "key" else click(row, 8, 7)
+            name = f"settings-two-{control}-{row}"
+            r = Run(syms, two + [(10, "")], name)
+            expected = bytes((0x4d, 1, *values))
+            check(fails, name + "-record", r.peek("WndCount") == 2
+                  and r.bytes("WndZ", 2) == bytes((1, 0)) and r.bytes("SetRec", 5) == expected,
+                  f"two windows, record {r.bytes('SetRec', 5).hex()}")
+            for slot, focus in ((0, rear_focus), (1, row)):
+                record = syms["WndTab"] + slot * syms["WNDRECSZ"]
+                buf = r.peek16_at(record + syms["WR_BUFP"]) - WORK
+                state = r.peek16_at(record + syms["WR_STATEP"]) - WORK
+                want = window_buffer(24, 7, b"SETTINGS", slot == 1, lines_for(*values, focus))
+                actual = r.ram[buf:buf + len(want)]
+                check(fails, name + f"-buffer-{slot}", actual == want and r.ram[state] == focus,
+                      f"crc32 {zlib.crc32(actual):08x}, expected {zlib.crc32(want):08x}; focus {r.ram[state]}")
+            remaining = two + tap(7, 4)  # ESC must expose the updated rear buffer.
+            verify(remaining, name + "-close", *values, rear_focus)
+            remaining += tap(7, 8) * (3 - rear_focus) + tap(7, 64)
+            r = verify(remaining, name + "-save", *values, 3)
+            check(fails, name + "-file", file_bytes(r) == expected,
+                  f"SAVE from the remaining window writes {expected.hex()}")
+
     # Change after saving, then DONE: the stored bytes must stay identical.
     steps += tap(8, 32, True) + tap(8, 32, True) + tap(7, 64)
     verify(steps, "settings-unsaved", 2, 0, 1, 1)

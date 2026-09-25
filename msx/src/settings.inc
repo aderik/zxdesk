@@ -269,6 +269,40 @@ SetCycleDevice:
                 ld      (SetBackend),a
 SetActivate:
                 call    SetApply
+                ; Values are global, but each window has its own buffer
+                ; and focus. Mark every SETTINGS slot without selecting it.
+                call    WndFlush
+                ld      a,(WndCount)
+                or      a
+                jp      z,SetChanged
+                ld      b,a
+                ld      c,0
+SetTouchSlot:
+                push    bc
+                ld      e,c
+                ld      d,0
+                ld      hl,WndZ
+                add     hl,de
+                ld      a,(hl)
+                ld      c,a
+                call    WndRecAt
+                ld      de,WR_APP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,AppSettings
+                or      a
+                sbc     hl,de
+                jr      nz,SetTouchNext
+                ld      a,c
+                call    WndTouch
+                ld      a,c
+                call    RowsAddSlot
+SetTouchNext:
+                pop     bc
+                inc     c
+                djnz    SetTouchSlot
                 jp      SetChanged
 SetStore:
                 call    SetSave
