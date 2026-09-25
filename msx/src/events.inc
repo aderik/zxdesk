@@ -203,8 +203,13 @@ HbdWindow:
                 ld      de,AppSettings
                 or      a
                 sbc     hl,de
+                jp      z,SetPress
+                ld      hl,(WinApp)
+                ld      de,AppCommander
+                or      a
+                sbc     hl,de
                 ret     nz
-                jp      SetPress
+                jp      CmdPress
 HbdGrab:        jp      WndGrab
 HbdBar:
                 call    MenuHitTitle

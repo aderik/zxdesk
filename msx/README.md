@@ -307,7 +307,8 @@ implementation run.
 
 **FILE > OPEN** opens a single-pane file picker on the active storage
 backend. It lists names and five-digit byte lengths from `StDir`.
-**SHIFT+UP/DOWN** selects a file; **ENTER** closes the picker and loads it
+**SHIFT+UP/DOWN** or a single click on a file row selects it (inverted).
+**ENTER** or a single click on **[OPEN]** closes the picker and loads it
 into the foremost notepad, creating one if none is open. **DELETE** opens
 a modal CANCEL/DELETE confirmation, initially on CANCEL; TAB or
 SHIFT+arrows changes the answer, ENTER chooses it, and ESC cancels.
@@ -663,3 +664,72 @@ Focused lf-1216 verification (`msx/test.sh --settings`):
 | Roms_MSX2 | 107 assertions passed |
 
 Disk KEY PTR OFF save/clear/load has name-table CRC32 **338c5e83**.
+
+
+## lf-1218: opening a saved document
+
+Baseline: commit `c99eb9f`, normal ROM 13,448 bytes. On C-BIOS MSX1 EU,
+`--open-ui` passed both Enter cases before the fix and failed both mouse
+cases. Commander had no mouse handler: clicking a row only focused its
+window. The previous keyboard/fixture PASS therefore did not cover the
+missing mouse selection/open operation. The reported Enter failure is
+**not reproduced**; the reporter's build and exact steps remain unknown.
+Do not infer that the mouse defect explains that part of the report.
+
+Reproduction (`msx/test.sh --open-ui`, RAM or disk, same running session):
+
+1. Click FILE > NEW. Type `H I`, ENTER, `X` using the keyboard matrix.
+2. Click FILE > SAVE (filename `NOTE`, 256 bytes). Type another `X`.
+3. Either leave Notepad open, or click its close box and DISCARD.
+4. Click FILE > OPEN. The picker shows `NOTE` inverted, size `00256`.
+   Click its row once. Press ENTER in the keyboard case; click **[OPEN]**
+   once in the mouse case. Double-click is not required or implemented.
+5. Assert exactly one Notepad, no alert, cleared modified flag and all
+   256 document bytes equal both the independent expected content and
+   the saved RAM payload/disk file: CRC32 **1cc48393**.
+
+Before the fix the mouse left the edited document at CRC32 **69f8980d**;
+with Notepad still open there were two windows (Notepad and picker).
+`--browse` additionally clicks BETA in a multi-file listing and asserts
+both the inverted selection (RAM name-table CRC32 **e2755111**) and loaded
+content (**5a0ad6a7**) with Enter and the OPEN button. Blank rows leave
+selection unchanged. Mouse buttons use xdotool/openMSX joystick input;
+pointer coordinates are placed deterministically, as in SETTINGS tests.
+No load/save routine is directly invoked for these round trips.
+
+`--note-load` also exercises the mouse OPEN button for open, short-read,
+read and close errors: the alert is visible, document CRC32 **c21bbd31**
+and metadata survive, and dismiss/retry succeeds (screen **82f03d3c**).
+
+Tape still takes the sequential branch before Commander. With `TAPE=1`,
+`--tape` records `NOTE`, edits it, rewinds and plays the cassette, then
+uses FILE > OPEN. Its second round trip closes/DISCARDs the edited note,
+uses FILE > NEW to supply the sequential loader's required target, then
+rewinds/plays and opens. Both compare all 256 bytes and independently
+decode the recorded WAV (19-byte header plus payload, CRC32 **0b0601cb**).
+Tape FILE > OPEN without a target Notepad is unchanged; it is not a picker.
+RAM persistence across restart is neither expected nor tested.
+
+The fix adds **103 ROM bytes**, **0 static RAM bytes**, and no heap allocation.
+Normal build: **13,551 ROM bytes**, **3,527 static RAM bytes**;
+heap **8,761** bytes without disk / **3,376** with disk.
+TEST build: **14,724 ROM bytes**, **6,242 static RAM bytes**;
+heap **6,046 / 661** bytes. No timing improvement is claimed.
+
+Focused verification for lf-1218 (all passed):
+
+| Machine | Backend | Subjects run | Assertions |
+|---|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | RAM | `--open-ui`, `--browse`, `--note-load` | 71 |
+| C-BIOS_MSX1_JP, 60 Hz | RAM | `--open-ui`, `--browse`, `--note-load` | 71 |
+| Roms_MSX1 + Roms_Disk | disk | `--open-ui`, `--browse` | 28 |
+| Roms_MSX1 | RAM, tape | `--open-ui`, `--tape` | 15 |
+| Roms_MSX2 | RAM, tape | `--open-ui`, `--tape` | 15 |
+
+Normal ROM SHA256:
+`d948c8c1b27cf89b46022a24c25172122755667df9d08d932a295490ff99e149`.
+`git diff --check` and Python compilation also pass. The full
+`msx/test-all.sh` was **not run here**, because this implementation run
+explicitly permits only focused tests; the pipeline must run the full
+50/60 Hz and real-ROM matrix. The new subjects are included in its default
+suite. The local `msx/roms` symlink is ignored and not committed.
