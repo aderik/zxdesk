@@ -850,6 +850,12 @@ WinRedraw:
                 ret                             ; replacement composed this frame
 WrdReady:
                 ld      a,(RepaintDue)
+                cp      2
+                jr      nz,WrdPaint
+                dec     a
+                ld      (RepaintDue),a
+                ret                             ; SETTINGS open: paint next frame
+WrdPaint:
                 or      a
                 ret     z
                 ld      hl,(Recomposes)

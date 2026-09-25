@@ -223,7 +223,26 @@ SetMouseY:
 
 SetOpen:
                 ld      a,APP_SETTINGS
-                jp      WndOpen
+                call    WndOpen
+                ret     c
+                ; Compose now, then restore the desktop and blit next frame,
+                ; as for resize: doing both while opening misses NTSC frames.
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+SetOpenBit:
+                rlca
+                djnz    SetOpenBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a                  ; new buffer is already composed
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; retain successful open's carry
+                ret
 SetInit:
                 xor     a
                 ld      (SetRow),a

@@ -1167,10 +1167,22 @@ def sound_checks(syms, fails):
                f"debug set_bp {syms['SndPlay']} {{}} {{"
                f"set a [expr {{{records} + [reg A]}}]; "
                "debug write memory $a [expr {[debug read memory $a] + 1}]}")
-    menu = Run(syms, opened + [(5, observe)] + opened, "sound-menu-settings")
+    timing = (f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
+              f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")
+    menu = Run(syms, opened + [(5, observe + "; " + timing)] + opened, "sound-menu-settings")
+    lines = [(i + 1, 1, label, False) for i, label in enumerate(
+        (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR"))]
+    lines += [(i + 1, 16, label, i == 0) for i, label in enumerate(
+        (b"[MED ]", b"[OFF ]", b"[DISK]" if EXT else b"[RAM ]",
+         b"[ON  ]", b"[ON  ]", b"[SAVE]", b"[DONE]"))]
+    expected = compose(expected_nt(), [(6, 6, 24, 9, b"SETTINGS", lines),
+                                       (8, 7, 24, 9, b"SETTINGS", lines)])
+    frame_us = [int(line.split()[-1]) for line in menu.log.splitlines() if line.startswith("frame us")]
     check(fails, "sound-menu-settings", menu.peek("WndCount") == 2 and menu.peek("TapeBusy") == 0
-          and menu.ram[records-WORK] == 1 and menu.peek("Dropped", 2) == 0,
-          "menu selection calls CLICK with SETTINGS open")
+          and menu.ram[records-WORK] == 1 and menu.peek("Dropped", 2) == 0 and menu.nt() == expected,
+          f"windows {menu.peek('WndCount')}, clicks {menu.ram[records-WORK]}, "
+          f"TapeBusy {menu.peek('TapeBusy')}, Dropped {menu.peek('Dropped', 2)}, "
+          f"crc32 {zlib.crc32(menu.nt()):08x}/{zlib.crc32(expected):08x}, max frame {max(frame_us)} us")
     message = syms["SetSaveError"]
     alertcode = bytes((0x21, message & 255, message >> 8, 0x11, 0, 0)) + call("DlgAlert") + bytes((0xaf, 0xc9))
     alertsetup = (observe + f"; debug write_block memory {reader} [binary format H* {alertcode.hex()}]; "
