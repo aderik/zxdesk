@@ -555,29 +555,46 @@ NsShort:
                 scf
                 ret
 
-NoteLoadAs:
-                call    NoteSetName
 NoteLoad:
+                ld      hl,NoteName
+NoteLoadAs:
+                push    hl                      ; commit the name only after success
+                call    NoteLoadNamed
+                pop     hl
+                ret     c
+                call    NoteSetName
+                or      a
+                ret
+NoteLoadNamed:
+                push    hl
                 call    NoteSelectBackend
+                pop     hl
                 call    NoteLoadFile
                 jp      NoteRestoreBackend
 NoteLoadFile:
-                ld      hl,NoteName
                 ld      b,FA_READ
                 call    StOpen
                 jr      c,NlFail
                 ld      (NoteHandle),a
-                ld      hl,NoteBuf
+                ld      hl,CmdBuf                ; shared scratch, before any modal alert
                 ld      bc,NOTESIZE
                 call    StRead
                 ld      (NoteGot),bc
+                push    af                      ; preserve read errors through close
                 ld      a,(NoteHandle)
                 call    StClose
+                jr      c,NlCloseFail
+                pop     af
+                jr      c,NlFail
                 ld      hl,(NoteGot)
                 ld      de,NOTESIZE
                 or      a
                 sbc     hl,de
                 jr      nz,NlFail
+                ld      hl,CmdBuf
+                ld      de,NoteBuf
+                ld      bc,NOTESIZE
+                ldir
                 call    NoteSanitise
                 xor     a
                 ld      (NoteCX),a
@@ -588,8 +605,9 @@ NoteLoadFile:
                 ld      (NoteDirty),a
                 or      a
                 ret
+NlCloseFail:
+                pop     af
 NlFail:
-                call    NoteNew
                 scf
                 ret
 
@@ -678,6 +696,11 @@ NoteSaveAlert:
                 ld      hl,TxtNoteNoSave
                 ld      de,0
                 jp      DlgAlert
+NoteLoadAlert:
+                ld      hl,TxtNoteNoLoad
+                ld      de,0
+                jp      DlgAlert
+TxtNoteNoLoad:  defb    "COULD NOT LOAD",0
 TxtNoteLose:    defb    "UNSAVED WORK",0
 TxtNoteNoSave:  defb    "COULD NOT SAVE",0
 
@@ -721,6 +744,8 @@ NoteMenuOpen:
                 ld      a,1
 NmoOk:
                 ld      (NoteResult),a
+                or      a
+                jp      nz,NoteLoadAlert
                 ld      a,(WndCur)
                 call    WndTouch
                 jp      RowsAddLive

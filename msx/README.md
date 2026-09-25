@@ -521,3 +521,27 @@ restoration. Static RAM grows by **14 bytes** (9 dialogue state bytes and
 5 control-table bytes), with no extra heap allocation. The normal ROM uses
 3,215 static RAM bytes and leaves 3,688 heap bytes with the disk ROM;
 the TEST ROM leaves 973 heap bytes with it.
+
+## Failed notepad loads
+
+A failed load keeps the document, modified flag, caret, viewport, filename
+and storage ownership. Reads use the existing 256-byte Commander scratch
+buffer; the document and name are committed only after a complete read and
+successful close. FILE > OPEN's sequential path and the Commander show
+**COULD NOT LOAD**, and dismissing the alert leaves the document intact.
+
+`msx/test.sh --note-load` injects open, short-read, read and close failures
+through the sequential menu path, the file picker and the two-pane Commander.
+It asserts the preserved document (CRC32 **c21bbd31**), metadata, carry and
+close counts, the alert text, dismissal, and a successful subsequent load
+(name-table CRC32 **82f03d3c**). The two-pane Commander opens a new notepad,
+whose blank document is preserved on failure (CRC32 **20acf377**).
+
+The normal build uses **12,613 ROM bytes**, **3,525 static RAM bytes** and
+leaves **8,763 heap bytes** without a disk ROM, **3,378** with it. This fix
+adds **56 ROM bytes**, **0 static RAM bytes**, and no heap allocations.
+
+For lf-1212, all 32 focused subjects passed on C-BIOS_MSX1_EU (50 Hz),
+C-BIOS_MSX1_JP (60 Hz), Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2.
+The full `msx/test-all.sh` run is left to the pipeline, as required by the
+ticket's implementation-run instructions.
