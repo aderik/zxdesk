@@ -283,6 +283,57 @@ CivStore:
                 ld      (PrintInv),a
                 ret
 
+; Single-pane picker: one click selects a cached row; [OPEN] activates it.
+; The event dispatcher has focused this window and excluded its frame.
+CmdPress:
+                ld      a,(CmdBrowse)
+                or      a
+                ret     z
+                ld      a,(PtrY)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinY
+                sub     (hl)
+                cp      10
+                jr      z,CprOpen
+                sub     2
+                cp      CMDROWS
+                ret     nc
+                ld      b,a
+                ld      hl,CmdCache0
+                ld      de,CMDENT
+                or      a
+                jr      z,CprRow
+CprNext:
+                add     hl,de
+                dec     a
+                jr      nz,CprNext
+CprRow:
+                ld      a,(hl)
+                or      a
+                ret     z                       ; blank rows cannot select a file
+                ld      a,(CmdTop0)
+                add     a,b
+                ld      (CmdSel0),a
+                jr      CprPaint
+CprOpen:
+                ld      a,(PtrX)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinX
+                sub     (hl)
+                dec     a
+                cp      6                       ; [OPEN], columns 1 through 6
+                ret     nc
+                ld      a,KEY_ENTER
+                call    CmdKey
+CprPaint:
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
+
 CmdKey:
                 ld      (CmdKeyCh),a
                 call    StIdent
@@ -707,5 +758,5 @@ TxtCmdDeleted:  defb    "DELETED",0
 TxtCmdNotNote:  defb    "NOT A 256 BYTE DOCUMENT",0
 
 TxtBrowseHelp:  defb    "SHIFT+ARROWS ENTER OPEN",0
-TxtBrowseHelp2: defb    "DELETE REMOVE R LIST",0
+TxtBrowseHelp2: defb    "[OPEN] DELETE REMOVE R LIST",0
 TxtBrowseDelete: defb   "DELETE THIS FILE?",0

@@ -838,6 +838,40 @@ def app_checks(syms, fails, vram0):
           f"{since_set} interrupts since the set, {hms[1] * 60 + hms[2]} s counted, model {clock_model(since_set, hz50)}")
 
 
+def open_ui_checks(syms, fails):
+    """Own NOTE, typed/saved through UI; no directory or document fixtures."""
+    def click(x, y):
+        # Only position is deterministic; buttons go through the MSX mouse.
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
+    def tap(row, mask):
+        return [(5, f"key_down {row} {mask}"), (5, f"key_up {row} {mask}")]
+    def menu(y):
+        return click(88, 3) + click(96, y)
+    document = b"H I".ljust(14) + b"\0\0" + b"X".ljust(14) + b"\0\0" + (b" "*14 + b"\0\0")*14
+    typed = tap(3, 32) + tap(8, 1) + tap(3, 64) + tap(7, 64) + tap(5, 32)
+    base = [(5, "plug joyporta mouse")] + menu(11) + typed + menu(27)
+    for closed in (False, True):
+        edited = base + tap(5, 32)
+        if closed:
+            edited += click(66, 50) + click(60, 98)  # close, DISCARD
+        opened = edited + menu(19)
+        # With a notepad present the picker is clamped to x=2, y=4.
+        x, y = (1, 3) if closed else (2, 4)
+        for action in ("enter", "mouse"):
+            name = f"open-ui-{'closed' if closed else 'existing'}-{action}"
+            selection = click((x+1)*8+2, (y+2)*8+2)
+            activate = tap(7, 64) if action == "enter" else click((x+2)*8+2, (y+10)*8+2)
+            r = Run(syms, opened + selection + activate + [(10, "")], name, files={})
+            stored = read_disk_image(DISK).get("NOTE") if EXT else r.bytes("RamHeap", 256)
+            check(fails, name, r.peek("WndCount") == 1 and r.bytes("NoteBuf", 256) == document
+                  and stored == document and r.peek("NoteModified") == 0
+                  and r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("DgOpenFlag") == 0,
+                  f"NOTE 256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+                  f"expected {zlib.crc32(document):08x}; windows {r.peek('WndCount')}")
+
+
 def commander_checks(syms, fails, vram0, browse_only=False):
     print("commander:")
     nt0 = vram0[NT:NT + COLS * ROWS]
@@ -896,7 +930,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     def browser(names, selection=0, status=b"READY", sizes=None):
         lines = [(1, 1, b"DISK" if EXT else b"RAM", True),
                  (8, 1, status, False), (9, 1, b"SHIFT+ARROWS ENTER OPEN", False),
-                 (10, 1, b"DELETE REMOVE R LIST", False)]
+                 (10, 1, b"[OPEN] DELETE REMOVE R LIST", False)]
         for i, name in enumerate(names or ["(EMPTY)"]):
             lines.append((2+i, 1, name.encode(), i == selection))
             if names:
@@ -919,6 +953,21 @@ def commander_checks(syms, fails, vram0, browse_only=False):
         sizes = {"BIG": b"x" * 12345, "MAX": b"x" * 65535}
         r = pick([], "browse-large-lengths", files=sizes)
         screen(r, "browse-large-lengths", [browser(list(sizes), sizes=[12345, 65535])])
+    def mouse_click(x, y):
+        return press(x, y)[:1] + [(5, "exec xdotool mousedown 1"),
+                                  (5, "exec xdotool mouseup 1")]
+    mouse = [(5, "plug joyporta mouse")]
+    selected = mouse + mouse_click(20, 50)  # BETA: relative row 3
+    r = pick(selected, "browse-mouse-select")
+    screen(r, "browse-mouse-select", [browser(left, 1)])
+    check(fails, "browse-mouse-index", r.peek("CmdSel0") == 1, "single click selects BETA")
+    r = pick(selected + mouse_click(20, 82), "browse-mouse-blank")
+    screen(r, "browse-mouse-blank", [browser(left, 1)])
+    for action, activate in [("enter", enter), ("button", mouse_click(28, 106))]:
+        r = pick(selected + activate, "browse-mouse-" + action)
+        check(fails, "browse-mouse-" + action, r.peek("WndCount") == 1
+              and r.bytes("NoteBuf", 256) == fixtures["BETA"],
+              f"selected BETA crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
     r = pick(down, "browse-select")
     screen(r, "browse-select", [browser(left, 1)])
     r = pick(down + tap(8, 32, True), "browse-up")
@@ -1566,7 +1615,7 @@ def note_load_checks(syms, fails):
                 f"debug write_block memory {syms['RamHeap']} [binary format H* {loaded.hex()}]")]
     scratch = syms['RamHeap'] + 768
     records = scratch + 16
-    for route in ('menu', 'picker', 'commander'):
+    for route in ('menu', 'picker', 'mouse', 'commander'):
         for fault in ('open', 'length', 'read', 'close'):
             # Observe carry before backend restoration and count actual closes.
             hooks = [
@@ -1590,7 +1639,10 @@ def note_load_checks(syms, fails):
                           f"debug write_block memory {syms['RamDir']} [binary format H* {(b'NOTE\0' + directory[5:]).hex()}]"]
             action = file_open if route == 'menu' else (
                 file_open + enter if route == 'picker' else press(140, 3) + press(148, 51) + enter)
-            steps = new + tap(3, 32) + seed + [(5, '; '.join(hooks))] + action
+            if route == 'mouse':
+                action = file_open + press(34, 114)[:1] + [
+                    (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
+            steps = [(5, "plug joyporta mouse")] + new + tap(3, 32) + seed + [(5, '; '.join(hooks))] + action
             for dismissed in (False, True):
                 name = f"note-load-{route}-{fault}" + ("-cancel" if dismissed else "")
                 r = Run(syms, steps + (esc if dismissed else []) + [(15, "")], name, files={})
@@ -1765,18 +1817,23 @@ def tape_checks(syms, fails):
     snapshot = [(5, f'set f [open $::out/document.bin wb]; puts -nonewline $f '
                  f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
     rewind = [(5, 'cassetteplayer rewind; cassetteplayer play')]
-    r = Run(ts, record + new + tap(3, 32) + tap(8, 1) + tap(3, 64)
-            + snapshot + save + tap(5, 32) + tap(5, 32) + rewind + reopen
-            + [(10, 'cassetteplayer eject')], "note-tape", rom=rom)
-    document = open(os.path.join(OUT, "note-tape", "document.bin"), "rb").read()
-    check(fails, "note-tape", r.bytes("NoteBuf", 256) == document
-          and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0,
-          f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
-          f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
-    blocks = read_tape_wav(os.path.join(OUT, "note-tape", "note.wav"))
-    check(fails, "tape-wav", blocks == [b"MSXT" + b"NOTE".ljust(13, b"\0")
-                                       + b"\0\1", document],
-          f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
+    for closed in (False, True):
+        name = "note-tape-closed" if closed else "note-tape"
+        # Sequential tape loading needs a target: after DISCARD, FILE > NEW.
+        target = press(66, 50) + press(60, 98) + new if closed else []
+        r = Run(ts, record + new + tap(3, 32) + tap(8, 1) + tap(3, 64)
+                + snapshot + save + tap(5, 32) + tap(5, 32) + target + rewind + reopen
+                + [(10, 'cassetteplayer eject')], name, rom=rom)
+        document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
+        check(fails, name, r.bytes("NoteBuf", 256) == document
+              and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0
+              and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == ts["AppNote"],
+              f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
+        blocks = read_tape_wav(os.path.join(OUT, name, "note.wav"))
+        check(fails, name + "-wav", blocks == [b"MSXT" + b"NOTE".ljust(13, b"\0")
+                                             + b"\0\1", document],
+              f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
 
     # Carry from byte output and final close must reach the existing
     # save-error dialog; edits must remain marked as unsaved.
@@ -1940,6 +1997,9 @@ def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--open-ui"]:
+        open_ui_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] in (["--browse"], ["--commander"]):
         commander_checks(syms, fails, bytes(NT) + expected_nt(),
                          browse_only=sys.argv[1:] == ["--browse"])
@@ -1988,6 +2048,7 @@ def main():
     arrange_checks(syms, fails)
     settings_checks(syms, fails)
     vram0 = boot_checks(syms, fails)
+    open_ui_checks(syms, fails)
     mouse_checks(syms, fails, vram0)
     key_checks(syms, fails)
     menu_checks(syms, fails, vram0)
