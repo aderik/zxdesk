@@ -38,40 +38,44 @@ NoteCurAddr:
 
 ; Count logical rows and map the chunk cursor to a logical cell.
 NoteMeasure:
+                ; Valid documents contain only 0/1 links. Each link removes
+                ; one hard row; this count needs no cursor work per chunk.
                 ld      hl,NoteBuf+15
+                ld      de,NOTESTRIDE
                 ld      b,NOTEROWS
-                ld      c,0                     ; logical row
-                ld      d,0                     ; logical column of chunk
-                ld      e,0                     ; physical chunk
-NmLoop:
+                ld      a,b
+NmCount:
+                sub     (hl)
+                add     hl,de
+                djnz    NmCount
+                ld      (NoteRows),a
                 ld      a,(NoteCY)
-                cp      e
-                jr      nz,NmNext
-                ld      a,(NoteCX)
-                add     a,d
-                ld      (NoteCursorX),a
-                ld      a,c
                 ld      (NoteCursorY),a
-NmNext:
+                ld      b,a
+                ld      c,0                     ; columns before the cursor chunk
+                or      a
+                jr      z,NmCursor
+                ld      hl,NoteBuf+15
+NmLoop:
                 ld      a,(hl)
                 or      a
-                jr      z,NmBreak
-                ld      a,d
-                add     a,NOTECOLS
-                ld      d,a
-                jr      NmAdvance
-NmBreak:
-                inc     c
-                ld      d,0
-NmAdvance:
-                push    de
-                ld      de,NOTESTRIDE
-                add     hl,de
-                pop     de
-                inc     e
-                djnz    NmLoop
+                jr      nz,NmLink
+                ld      c,0
+                jr      NmNext
+NmLink:
                 ld      a,c
-                ld      (NoteRows),a
+                add     a,NOTECOLS
+                ld      c,a
+                ld      a,(NoteCursorY)
+                dec     a
+                ld      (NoteCursorY),a
+NmNext:
+                add     hl,de
+                djnz    NmLoop
+NmCursor:
+                ld      a,(NoteCX)
+                add     a,c
+                ld      (NoteCursorX),a
                 ret
 
 NoteVisRows:
@@ -126,10 +130,9 @@ NsBelowTop:
 ; Walk chunks, concatenating continuation chunks on the same row.
 ; All text and caret writes go through the same interior clip.
 NoteDraw:
-                call    NoteMeasure
-                call    NoteHScroll
                 ld      a,(NoteTop)
-                call    NoteScrollTo
+                call    NoteScrollTo            ; also measures rows and caret
+                call    NoteHScroll
                 xor     a
                 ld      (NoteDrawX),a
                 ld      (NoteDrawY),a
@@ -981,7 +984,26 @@ TxtNoteNoSave:  defb    "COULD NOT SAVE",0
 ; ---- The FILE menu
 NoteMenuNew:
                 ld      a,APP_NOTE
-                jp      WndOpen
+                call    WndOpen
+                ret     c
+                ; Compose now, then restore the desktop and blit next frame,
+                ; as for SETTINGS. Do not compose the new buffer twice.
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+NmnBit:
+                rlca
+                djnz    NmnBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; successful open
+                ret
 
 ; Z if the front window is a notepad, which is the live one after
 ; the menu's press.

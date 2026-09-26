@@ -2112,7 +2112,11 @@ def resize_scroll_checks(syms, fails):
                    f"{{debug remove_bp $::failbp; reg PC {syms['HpaNone']}}}]")]
     cases.append(("resize-no-room", refuse + drag, 16, 9))
     for name, steps, w, h in cases:
-        r = Run(syms, new + steps + heapstat, name)
+        timing = [(1, f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
+                   f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")]
+        r = Run(syms, timing + new + steps + heapstat, name)
+        import re
+        maximum_us = max(map(int, re.findall(r"frame us (\d+)", r.log)))
         win = note_win(8, 6, [b""] * 16, 0, 0)
         lines = [(i + 1, 1, b" " * 14, False) for i in range(h - 2)] + [(1, 1, b" ", True)]
         want = compose(expected_nt(), [(8, 6, w, h, win[4], lines)])
@@ -2126,7 +2130,7 @@ def resize_scroll_checks(syms, fails):
               and r.peek('HpTotal', 2) == sum(free) and r.peek('HpBiggest', 2) == max(free),
               f"size {r.peek('WinW')}x{r.peek('WinH')}, heap {[b[1] for b in used]}, "
               f"HeapStat={r.peek('HpTotal', 2)}/{r.peek('HpBiggest', 2)}, "
-              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}")
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}, max frame {maximum_us} us")
 
     r = Run(syms, new + drag + minimum + press(8 * 8 + 2, 6 * 8 + 2) + heapstat,
             "resize-close")
