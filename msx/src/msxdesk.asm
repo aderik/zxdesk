@@ -249,13 +249,21 @@ _ram            defl    _ram+size
                 var     NoteEdited, 1
                 var     NoteDirty, 1
                 var     NoteModified, 1
+                var     NoteLeftCol, 1
                 var     NoteBackend, 1
 NOTESTSZ        equ     _ram-NoteState
+                var     NoteCursorX, 1
+                var     NoteCursorY, 1
+                var     NoteRows, 1
+                var     NoteDrawX, 1
+                var     NoteDrawY, 1
+                var     NoteExtendRow, 1
+                var     NoteOldLink, 1
+                var     NoteDeleteCount, 1
                 var     NoteRowIx, 1
                 var     NoteRowDst, 1
                 var     NoteJoinAt, 1
                 var     NoteChar, 1
-                var     NoteLine, 2
                 var     NoteHandle, 1
                 var     NoteGot, 2
                 var     NoteResult, 1

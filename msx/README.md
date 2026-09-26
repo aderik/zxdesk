@@ -770,3 +770,80 @@ Normal ROM SHA256:
 explicitly permits only focused tests; the pipeline must run the full
 50/60 Hz and real-ROM matrix. The new subjects are included in its default
 suite. The local `msx/roms` symlink is ignored and not committed.
+
+## lf-1219: Notepad width and long lines
+
+The UI reproduction on baseline `1193d35` types fourteen H characters,
+drags the resize grip from 16x9 to 18x10, then types six I characters.
+The baseline still puts the I characters on the next document row:
+chunk caret `(6, 1)`, document CRC32 **e4be184b**. This establishes the
+old automatic 14-character line break in this build; the reporter's
+exact build remains unknown.
+
+Notepad now uses the complete window interior, excluding both frame
+columns and the right-hand scrollbar. Long lines scroll horizontally
+with the caret; SHIFT+LEFT/RIGHT reaches hidden text with KEY PTR ON.
+Widening reveals earlier columns again. Resizing changes neither the
+text nor its hard line breaks. Up/down and the vertical scrollbar count
+logical lines, including lines spanning several storage chunks.
+
+The file remains **256 bytes**, with sixteen chunks of fourteen printable
+characters, a zero terminator, and a continuation byte. A continuation
+byte of **1** joins the following chunk to the same logical line; **0**
+ends the line. Legacy files have zero continuation bytes and retain all
+sixteen lines. Loading clears invalid continuation values and forbids a
+link after the final chunk. Older Desk builds do not understand the new
+continuation flag and display the chunks as separate lines.
+
+The existing **224-character document budget** is unchanged. Long lines
+share that budget with other lines, up to a single 224-character line.
+Insertion carries text across chunks; ENTER splits and backspace joins
+logical lines. Empty continuation tails are reclaimed. Insertion/splitting
+that needs a chunk refuses when it would discard existing text. The
+RAM/disk/tape backends, Commander copy limit and atomic load scratch
+remain unchanged; no larger backend buffers are required.
+
+`msx/test.sh --note-width` adds UI subjects for typing after a grip resize,
+shrinking to four visible columns, reaching the hidden prefix, growing
+again, insertion, split/join/backspace, logical up/down, 42-character and
+full-capacity lines, retaining later lines, and ENTER on the final blank
+chunk. Assertions compare all **256 document bytes**, the entire composed
+name table, cursor, logical row count, viewport and window geometry.
+Mouse drags run throttled so host motion arrives before button release.
+
+The 20-character document retains CRC32 **9a0f1306** throughout resizing
+and the RAM/disk/tape save-edit-or-close-reopen UI routes. Its grown
+screen CRC32 is **21936a7a**, shrunk screen **31dd9b61**. The 224-character
+capacity/refusal case has document CRC32 **22b4f361**. Tape's existing
+round trips now use this wide document, including closing/DISCARD and
+creating a target before sequential reopening; independent WAV decoding
+asserts both the 19-byte header and the complete 256-byte payload.
+On both real BIOS machines these tape cases measured **Dropped = 36/37**
+(existing/closed target), outside the zero-drop UI budget.
+
+Compared with the assembled baseline, this adds **420 ROM bytes** and
+**7 static RAM bytes** (eight scratch bytes, one per-instance viewport
+byte, minus two obsolete scratch bytes). Each Notepad state allocation
+grows by **1 byte**, from 276 to 277; there are no additional allocations.
+The normal build uses **14,161 ROM bytes**, **3,535 static RAM bytes**,
+with **8,753 / 3,368** heap bytes without/with disk. The TEST build uses
+**15,337 ROM bytes**, **6,250 static RAM bytes**, with **6,038 / 653** heap
+bytes. Resize tests assert allocator statistics and complete heap recovery.
+
+The full `msx/test-all.sh` is deliberately left to the pipeline: this
+implementation run explicitly permits focused tests only. The new width
+subjects and expanded tape round trips are included in the default suite.
+
+Focused verification (all listed assertions passed):
+
+| Machine | Subjects | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-width`, `--resize-scroll`, `--apps` | 16 + 20 + 7 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-width` | 16 |
+| Roms_MSX1 | `--note-width`, `--tape` | 16 + 11 |
+| Roms_MSX1 + Roms_Disk | `--note-width` (disk UI round trips) | 16 |
+| Roms_MSX2 | `--note-width`, `--tape` | 16 + 11 |
+
+The EU resize subjects measured **Dropped = 0**. Python compilation and
+`git diff --check` pass. The local `msx/roms` symlink is ignored and is
+not part of the commit.
