@@ -1,15 +1,10 @@
 ; ============================================================
 ;  Notepad
-;  The ZX editor as it stands: sixteen lines on a sixteen byte
-;  stride, byte 14 a permanent zero so every row is a null
-;  terminated string, the cursor, a view that scrolls, and the
-;  document saved and loaded as one 256 byte file. What changed
-;  is the painting: the visible rows go into the window buffer
-;  through WinPrint and the cursor is the inverted bank, so the
-;  pixel cursor, the one-line repaint and the clip are gone.
-;
-;  The per instance state is one record, contiguous, so a second
-;  notepad is a second document.
+;  Sixteen 14-character chunks in the existing 256-byte document.
+;  Byte 14 terminates each chunk; byte 15 is 1 when the next chunk
+;  continues the same logical line (0 in legacy documents). Window
+;  width affects only clipping and horizontal scrolling, never text.
+;  Cursor coordinates address chunks; NoteMeasure maps them to lines.
 ; ============================================================
 NOTECOLS        equ     14
 NOTELAST        equ     NOTECOLS-1
@@ -20,7 +15,6 @@ NOTESIZE        equ     NOTEROWS*NOTESTRIDE     ; 256, one RAMCHUNK
 NOTENAMEMAX     equ     12
 NOTEW           equ     NOTECOLS+2
 NOTEH           equ     9               ; seven lines showing
-NOTEREFLOW      equ     2
 
 ; NoteState, NoteBuf, NoteName, NoteCX, NoteCY, NoteTop, NoteEdited,
 ; NoteDirty and NoteModified are contiguous in the var block;
@@ -42,31 +36,78 @@ NoteCurAddr:
                 ld      a,(NoteCY)
                 jp      NoteRowAddr
 
-; How many document rows the window shows.
+; Count logical rows and map the chunk cursor to a logical cell.
+NoteMeasure:
+                ld      hl,NoteBuf+15
+                ld      b,NOTEROWS
+                ld      c,0                     ; logical row
+                ld      d,0                     ; logical column of chunk
+                ld      e,0                     ; physical chunk
+NmLoop:
+                ld      a,(NoteCY)
+                cp      e
+                jr      nz,NmNext
+                ld      a,(NoteCX)
+                add     a,d
+                ld      (NoteCursorX),a
+                ld      a,c
+                ld      (NoteCursorY),a
+NmNext:
+                ld      a,(hl)
+                or      a
+                jr      z,NmBreak
+                ld      a,d
+                add     a,NOTECOLS
+                ld      d,a
+                jr      NmAdvance
+NmBreak:
+                inc     c
+                ld      d,0
+NmAdvance:
+                push    de
+                ld      de,NOTESTRIDE
+                add     hl,de
+                pop     de
+                inc     e
+                djnz    NmLoop
+                ld      a,c
+                ld      (NoteRows),a
+                ret
+
 NoteVisRows:
                 ld      a,(WinH)
                 sub     2
-                jr      z,NvrOne
-                jr      c,NvrOne
-                cp      NOTEROWS
+                ld      b,a
+                ld      a,(NoteRows)
+                cp      b
                 ret     c
-                ld      a,NOTEROWS
-                ret
-NvrOne:
-                ld      a,1
+                ld      a,b
                 ret
 
-; Keep the cursor in view. NZ if the view moved.
+; Follow the caret horizontally, including after a resize. Widening
+; reveals earlier columns again; no document bytes are changed.
+NoteHScroll:
+                ld      a,(WinW)
+                sub     3                       ; final visible caret column
+                ld      b,a
+                ld      a,(NoteCursorX)
+                sub     b
+                jr      nc,NhsSet
+                xor     a
+NhsSet:
+                ld      (NoteLeftCol),a
+                ret
+
 NoteScroll:
-                ld      a,(NoteCY)
+                call    NoteMeasure
+                call    NoteHScroll
+                ld      a,(NoteCursorY)
                 ld      c,a
                 ld      a,(NoteTop)
                 cp      c
-                jr      z,NsSame
                 jr      c,NsBelowTop
                 ld      a,c
                 ld      (NoteTop),a
-                or      1
                 ret
 NsBelowTop:
                 call    NoteVisRows
@@ -75,71 +116,117 @@ NsBelowTop:
                 add     a,b
                 dec     a
                 cp      c
-                jr      nc,NsSame
+                ret     nc
                 ld      a,c
                 sub     b
                 inc     a
                 ld      (NoteTop),a
-                or      1
-                ret
-NsSame:
-                xor     a
                 ret
 
-; The draw vector: the visible rows, then the cursor inverted.
+; Walk chunks, concatenating continuation chunks on the same row.
+; All text and caret writes go through the same interior clip.
 NoteDraw:
+                call    NoteMeasure
+                call    NoteHScroll
                 ld      a,(NoteTop)
-                call    NoteScrollTo            ; resize/TILE may expose more rows
+                call    NoteScrollTo
                 xor     a
-                ld      (PrintInv),a
-                call    NoteVisRows
-                ld      b,a
-                ld      a,(NoteTop)
-                ld      (NoteRowIx),a
-                ld      c,1                     ; the window row
+                ld      (NoteDrawX),a
+                ld      (NoteDrawY),a
+                ld      hl,NoteBuf
+                ld      b,NOTEROWS
 NdRow:
                 push    bc
-                ld      a,(NoteRowIx)
-                cp      NOTEROWS
-                jr      nc,NdNoRow
-                call    NoteRowAddr
-                ld      b,c
-                ld      c,1
-                call    WinPrint
-NdNoRow:
-                ld      hl,NoteRowIx
-                inc     (hl)
+                push    hl
+                call    NotePaintChunk
+                pop     hl
+                ld      de,15
+                add     hl,de
+                ld      a,(hl)                  ; continuation flag
+                inc     hl
+                or      a
+                jr      z,NdBreak
+                ld      a,(NoteDrawX)
+                add     a,NOTECOLS
+                ld      (NoteDrawX),a
+                jr      NdNext
+NdBreak:
+                xor     a
+                ld      (NoteDrawX),a
+                ld      a,(NoteDrawY)
+                inc     a
+                ld      (NoteDrawY),a
+NdNext:
                 pop     bc
-                inc     c
                 djnz    NdRow
-                ld      a,(NoteCY)
-                ld      b,a
-                ld      a,(NoteTop)
-                ld      c,a
-                ld      a,b
-                sub     c
+                ld      a,(NoteCursorX)
+                ld      (NoteDrawX),a
+                ld      a,(NoteCursorY)
+                ld      (NoteDrawY),a
+                call    NotePaintAddr
                 ret     c
-                ld      c,a
-                call    NoteVisRows
-                cp      c
-                ret     z
-                ret     c
-                ld      a,(WinW)
-                sub     2
-                ld      hl,NoteCX
-                cp      (hl)
-                ret     z
-                ret     c
-                ld      a,c
-                inc     a
-                ld      b,a                     ; the cursor's window row
-                ld      a,(NoteCX)
-                inc     a
-                ld      c,a
-                call    WinCell
                 ld      a,(hl)
                 or      INVBANK
                 ld      (hl),a
+                ret
+
+NotePaintChunk:
+                ld      a,(NoteTop)
+                ld      c,a
+                ld      a,(NoteDrawY)
+                sub     c
+                ret     c
+                ld      b,a
+                inc     b
+                ld      a,(NoteLeftCol)
+                ld      c,a
+                ld      a,(NoteDrawX)
+                sub     c
+                jr      nc,NpcColumn
+                neg
+                cp      NOTECOLS
+                ret     nc
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                xor     a
+NpcColumn:
+                ld      c,a
+                inc     c
+                xor     a
+                ld      (PrintInv),a
+                jp      WinPrint
+
+NotePaintAddr:
+                ld      a,(NoteTop)
+                ld      c,a
+                ld      a,(NoteDrawY)
+                sub     c
+                ret     c
+                ld      b,a
+                ld      a,(WinH)
+                sub     2
+                cp      b
+                jr      z,NpaOutside
+                jr      c,NpaOutside
+                inc     b
+                ld      a,(NoteLeftCol)
+                ld      c,a
+                ld      a,(NoteDrawX)
+                sub     c
+                ret     c
+                ld      c,a
+                ld      a,(WinW)
+                sub     2
+                cp      c
+                jr      z,NpaOutside
+                jr      c,NpaOutside
+                inc     c
+                call    WinCell
+                or      a
+                ret
+NpaOutside:
+                scf
                 ret
 
 NoteInit:
@@ -160,61 +247,121 @@ NoteNew:
                 ld      (NoteCX),a
                 ld      (NoteCY),a
                 ld      (NoteTop),a
+                ld      (NoteLeftCol),a
                 ld      (NoteEdited),a
                 ld      (NoteDirty),a
                 ld      (NoteModified),a
                 ret
 
-; A = the character, at the cursor, shifting the rest of the line.
+; Append one continuation chunk after A. Refuse when the final
+; chunk contains text: reaching capacity must not discard another line.
+NoteExtend:
+                ld      (NoteExtendRow),a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                ld      (NoteOldLink),a
+                ld      a,(NoteExtendRow)
+                cp      NOTELASTROW
+                jr      c,NexCapacity
+                scf
+                ret
+NexCapacity:
+                ld      a,NOTELASTROW
+                call    NoteLineLen
+                or      a
+                scf
+                ret     nz
+                ld      a,(NoteExtendRow)
+                inc     a
+                call    NoteOpenRow
+                ld      a,(NoteExtendRow)
+                inc     a
+                call    NoteBlankRow
+                ld      hl,NoteBuf+NOTESIZE-1
+                ld      (hl),0                  ; never link beyond the buffer
+                ld      a,(NoteExtendRow)
+                call    NoteLinkAddr
+                ld      (hl),1
+                or      a
+                ret
+
+NoteLinkAddr:
+                call    NoteRowAddr
+                ld      de,15
+                add     hl,de
+                ret
+
+; Insertion shifts the whole logical line, carrying between chunks.
+; Allocate its tail before modifying text, so a full document is safe.
 NoteInsert:
                 ld      (NoteChar),a
-                call    NoteCurAddr
-                ld      (NoteLine),hl
-                ld      a,NOTELAST
-                ld      c,a
+                ld      a,(NoteCY)
+                ld      (NoteRowIx),a
+NiFindTail:
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      z,NiTail
+                ld      hl,NoteRowIx
+                inc     (hl)
+                ld      a,(hl)
+                jr      NiFindTail
+NiTail:
+                dec     hl
+                dec     hl
+                ld      a,(hl)
+                cp      ' '
+                jr      nz,NiExtend
                 ld      a,(NoteCX)
-                cp      c
-                jr      nc,NiPut
-                ld      b,a
-                ld      a,NOTELAST-1
-                sub     b
-                inc     a
-                ld      c,a
-                ld      b,0
-                ld      hl,(NoteLine)
-                ld      de,NOTELAST-1
-                add     hl,de
-                ld      d,h
-                ld      e,l
-                inc     de
-                lddr
-NiPut:
-                ld      hl,(NoteLine)
+                cp      NOTECOLS
+                jr      nz,NiReady
+                ld      a,(NoteCY)
+                ld      hl,NoteRowIx
+                cp      (hl)
+                jr      nz,NiReady
+NiExtend:
+                ld      a,(NoteRowIx)
+                call    NoteExtend
+                ret     c
+NiReady:
+                ld      a,(NoteCX)
+                cp      NOTECOLS
+                jr      nz,NiStart
+                ld      hl,NoteCY
+                inc     (hl)
+                xor     a
+                ld      (NoteCX),a
+NiStart:
+                call    NoteCurAddr
                 ld      a,(NoteCX)
                 ld      e,a
                 ld      d,0
                 add     hl,de
+                ld      a,NOTECOLS
+                sub     e
+                ld      b,a
                 ld      a,(NoteChar)
+NiShift:
+                ld      c,(hl)
                 ld      (hl),a
+                ld      a,c
+                inc     hl
+                djnz    NiShift
+                inc     hl
+                ld      c,(hl)
+                inc     hl
+                ld      b,NOTECOLS
+                inc     c
+                dec     c
+                jr      nz,NiShift
+                ld      hl,NoteCX
+                inc     (hl)                    ; 14 is an end-of-chunk caret
+                jp      NoteMarkEdited
+
+NoteMarkEdited:
                 ld      a,1
                 ld      (NoteEdited),a
                 ld      (NoteModified),a
-                ld      a,(NoteCX)
-                inc     a
-                cp      NOTECOLS
-                jr      c,NiSetX
-                ld      a,(NoteCY)
-                inc     a
-                cp      NOTEROWS
-                jr      nc,NiEnd
-                ld      (NoteCY),a
-                xor     a
-NiSetX:
-                ld      (NoteCX),a
-                ret
-NiEnd:
-                ld      a,NOTELAST
-                ld      (NoteCX),a
                 ret
 
 NoteBlankRow:
@@ -296,171 +443,290 @@ NcrBlank:
                 ld      a,NOTELASTROW
                 jp      NoteBlankRow
 
-; Backspace: the character before the cursor, or a join with the
-; line above when it fits.
-NoteBack:
-                ld      a,(NoteCX)
-                or      a
-                jr      z,NbEdge
-                dec     a
-                ld      (NoteCX),a
-                ld      c,a
+; Delete at the chunk cursor and pull the following chunks left.
+NoteDeleteAt:
                 call    NoteCurAddr
-                ld      e,c
+                ld      a,(NoteCX)
+                ld      e,a
                 ld      d,0
                 add     hl,de
+                ld      a,NOTECOLS
+                sub     e
+                ld      b,a
+NdaChunk:
+                dec     b
+                jr      z,NdaLast
                 ld      d,h
                 ld      e,l
                 inc     hl
-                ld      a,NOTELAST
-                sub     c
-                ld      c,a
-                ld      b,0
+                ld      a,(hl)
+                ld      (de),a
+                jr      NdaChunk
+NdaLast:
+                push    hl
+                inc     hl
+                inc     hl
+                ld      a,(hl)
+                inc     hl
                 or      a
-                jr      z,NbTail
-                ldir
-NbTail:
-                call    NoteCurAddr
-                ld      de,NOTELAST
-                add     hl,de
+                jr      z,NdaBlank
+                ld      a,(hl)
+                pop     de
+                ld      (de),a
+                ld      b,NOTECOLS
+                jr      NdaChunk
+NdaBlank:
+                pop     hl
                 ld      (hl),' '
-                ld      a,1
-                ld      (NoteEdited),a
-                ld      (NoteModified),a
                 ret
-NbEdge:
+
+NoteBack:
+                ld      a,(NoteCX)
+                or      a
+                jr      nz,NbDelete
                 ld      a,(NoteCY)
                 or      a
                 ret     z
                 dec     a
-                call    NoteLineLen
-                ld      (NoteJoinAt),a
-                ld      a,(NoteCY)
-                call    NoteLineLen
-                ld      c,a
-                ld      a,(NoteJoinAt)
-                add     a,c
-                cp      NOTECOLS+1
-                jr      nc,NbMoveOnly
-                ld      a,c
+                call    NoteLinkAddr
+                ld      a,(hl)
                 or      a
-                jr      z,NbJoinEmpty
-                ld      b,0
-                ld      a,(NoteCY)
-                call    NoteRowAddr
-                push    hl
+                jr      z,NbHard
+                ld      hl,NoteCY
+                dec     (hl)
+                ld      a,NOTECOLS
+NbDelete:
+                dec     a
+                ld      (NoteCX),a
+                call    NoteDeleteAt
+                call    NoteTrimTail
+                jp      NoteMarkEdited
+NbHard:
+                ; Join at a hard newline by linking its chunks. Keeping
+                ; padding here would add spaces, so delete the unused tail.
                 ld      a,(NoteCY)
                 dec     a
-                call    NoteRowAddr
-                ld      a,(NoteJoinAt)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ex      de,hl
-                pop     hl
-                ldir
-NbJoinEmpty:
+                call    NoteLineLen
+                ld      (NoteJoinAt),a
+                ld      a,NOTECOLS
+                ld      hl,NoteJoinAt
+                sub     (hl)
+                ld      (NoteDeleteCount),a
                 ld      a,(NoteCY)
-                call    NoteCloseRow
-                ld      hl,NoteCY
-                dec     (hl)
+                dec     a
+                ld      (NoteCY),a
+                call    NoteLinkAddr
+                ld      (hl),1
                 ld      a,(NoteJoinAt)
                 ld      (NoteCX),a
-                ld      a,NOTEREFLOW
-                ld      (NoteEdited),a
-                ld      a,1
-                ld      (NoteModified),a
-                ret
-NbMoveOnly:
-                ld      hl,NoteCY
-                dec     (hl)
-                ld      a,NOTELAST
-                ld      (NoteCX),a
-                ret
+NbJoinLoop:
+                ld      a,(NoteDeleteCount)
+                or      a
+                jp      z,NbJoined
+                dec     a
+                ld      (NoteDeleteCount),a
+                call    NoteDeleteAt
+                jr      NbJoinLoop
+NbJoined:
+                call    NoteTrimTail
+                jp      NoteMarkEdited
 
-; ENTER: the line splits at the cursor.
+; Reclaim empty continuation chunks after deleting/splitting. Hard
+; blank lines remain intact. A caret on a reclaimed chunk becomes the
+; end-of-chunk caret in its predecessor.
+NoteTrimTail:
+                ld      a,(NoteCY)
+                ld      (NoteRowIx),a
+NttFind:
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      z,NttTail
+                ld      hl,NoteRowIx
+                inc     (hl)
+                ld      a,(hl)
+                jr      NttFind
+NttTail:
+                ld      a,(NoteRowIx)
+                or      a
+                ret     z
+                dec     a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                ret     z                       ; a hard line, keep it
+                ld      a,(NoteRowIx)
+                call    NoteLineLen
+                or      a
+                ret     nz
+                ld      a,(NoteRowIx)
+                call    NoteCloseRow
+                ld      a,(NoteRowIx)
+                ld      hl,NoteCY
+                cp      (hl)
+                jr      nz,NttUnlink
+                dec     (hl)
+                ld      a,NOTECOLS
+                ld      (NoteCX),a
+NttUnlink:
+                ld      a,(NoteRowIx)
+                dec     a
+                call    NoteLinkAddr
+                ld      (hl),0
+                jr      NoteTrimTail
+
+; Split a logical line. The remaining chunks retain their continuation
+; marks; remove the prefix from the new line without dropping its tail.
 NoteEnter:
                 ld      a,(NoteCY)
-                cp      NOTELASTROW
-                ret     nc
-                inc     a
-                call    NoteOpenRow
-                ld      a,(NoteCY)
-                inc     a
-                call    NoteBlankRow
-                ld      a,NOTECOLS
-                ld      c,a
-                ld      a,(NoteCX)
-                neg
-                add     a,c
-                ld      (NoteRowDst),a
-                or      a
-                jr      z,NeNoTail
-                ld      c,a
-                ld      b,0
+                call    NoteExtend            ; also checks capacity
+                ret     c
                 ld      a,(NoteCY)
                 call    NoteRowAddr
-                ld      a,(NoteCX)
-                ld      e,a
-                ld      d,0
-                add     hl,de
                 push    hl
                 ld      a,(NoteCY)
                 inc     a
                 call    NoteRowAddr
                 ex      de,hl
                 pop     hl
+                ld      bc,NOTECOLS
                 ldir
-                ld      a,(NoteCY)
-                call    NoteRowAddr
+                ; NoteExtend inserted a blank chunk. Transfer the link
+                ; that originally followed this chunk (saved below).
+                ld      a,(NoteOldLink)
+                inc     de
+                ld      (de),a
+                call    NoteCurAddr
                 ld      a,(NoteCX)
+                ld      (NoteDeleteCount),a
                 ld      e,a
                 ld      d,0
                 add     hl,de
-                ld      a,(NoteRowDst)
+                ld      a,NOTECOLS
+                sub     e
+                jr      z,NeTerm
                 ld      b,a
-                ld      a,' '
 NeBlank:
-                ld      (hl),a
+                ld      (hl),' '
                 inc     hl
                 djnz    NeBlank
-NeNoTail:
+NeTerm:
+                inc     hl
+                ld      (hl),0
                 ld      hl,NoteCY
                 inc     (hl)
                 xor     a
                 ld      (NoteCX),a
-                ld      a,NOTEREFLOW
-                ld      (NoteEdited),a
-                ld      a,1
-                ld      (NoteModified),a
-                ret
+NeDelete:
+                ld      a,(NoteDeleteCount)
+                or      a
+                jp      z,NbJoined
+                dec     a
+                ld      (NoteDeleteCount),a
+                call    NoteDeleteAt
+                jr      NeDelete
 
 NoteLeft:
                 ld      a,(NoteCX)
                 or      a
+                jr      nz,NleftDec
+                ld      a,(NoteCY)
+                or      a
                 ret     z
+                dec     a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                ret     z
+                ld      hl,NoteCY
+                dec     (hl)
+                ld      a,NOTECOLS
+NleftDec:
                 dec     a
                 ld      (NoteCX),a
                 ret
 NoteRight:
                 ld      a,(NoteCX)
                 cp      NOTELAST
-                ret     nc
-                inc     a
+                jr      c,NrightInc
+                call    NoteCurLink
+                ld      a,(hl)
+                or      a
+                jr      z,NrightEnd
+                ld      hl,NoteCY
+                inc     (hl)
+                ld      a,(NoteCX)
+                sub     NOTELAST
                 ld      (NoteCX),a
                 ret
-NoteUp:
+NrightEnd:
+                ld      a,(NoteCX)
+                cp      NOTECOLS
+                ret     nc
+NrightInc:
+                ld      hl,NoteCX
+                inc     (hl)
+                ret
+NoteCurLink:
                 ld      a,(NoteCY)
+                jp      NoteLinkAddr
+
+NoteUp:
+                call    NoteMeasure
+                ld      a,(NoteCursorY)
                 or      a
                 ret     z
                 dec     a
-                ld      (NoteCY),a
-                ret
+                jr      NoteGotoLine
 NoteDown:
-                ld      a,(NoteCY)
-                cp      NOTELASTROW
-                ret     nc
+                call    NoteMeasure
+                ld      a,(NoteRows)
+                ld      b,a
+                ld      a,(NoteCursorY)
                 inc     a
+                cp      b
+                ret     nc
+NoteGotoLine:
+                ld      c,a                     ; desired logical row
+                ld      b,0                     ; physical chunk
+NglRow:
+                ld      a,c
+                or      a
+                jr      z,NglColumn
+                ld      a,b
+                push    bc
+                call    NoteLinkAddr
+                pop     bc
+                ld      a,(hl)
+                or      a
+                jr      nz,NglNext
+                dec     c
+NglNext:
+                inc     b
+                jr      NglRow
+NglColumn:
+                ld      a,(NoteCursorX)
+                ld      c,a
+NglChunk:
+                ld      a,c
+                cp      NOTECOLS
+                jr      c,NglSet
+                ld      a,b
+                push    bc
+                call    NoteLinkAddr
+                pop     bc
+                ld      a,(hl)
+                or      a
+                ld      a,NOTECOLS
+                jr      z,NglSet
+                ld      a,c
+                sub     NOTECOLS
+                ld      c,a
+                inc     b
+                jr      NglChunk
+NglSet:
+                ld      (NoteCX),a
+                ld      a,b
                 ld      (NoteCY),a
                 ret
 
@@ -663,7 +929,15 @@ NsanOk:
                 djnz    NsanCol
                 ld      (hl),0
                 inc     hl
+                ld      a,(NoteRowIx)
+                cp      NOTELASTROW
+                jr      z,NsanEnd
+                ld      a,(hl)
+                cp      1
+                jr      z,NsanLink
+NsanEnd:
                 ld      (hl),0
+NsanLink:
                 ld      a,(NoteRowIx)
                 inc     a
                 ld      (NoteRowIx),a
@@ -753,11 +1027,13 @@ NmoOk:
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
 
-; Scroll model: sixteen document lines, a cell per visible line.
+; Scroll model: count hard lines, not the chunks of a long line.
 NoteScrollInfo:
+                call    NoteMeasure
                 call    NoteVisRows
                 ld      c,a
-                ld      b,NOTEROWS
+                ld      a,(NoteRows)
+                ld      b,a
                 ld      a,(NoteTop)
                 ret
 
@@ -766,9 +1042,10 @@ NoteScrollInfo:
 ; when a larger window exposes more of the document.
 NoteScrollTo:
                 push    af
+                call    NoteMeasure
                 call    NoteVisRows
                 ld      b,a
-                ld      a,NOTEROWS
+                ld      a,(NoteRows)
                 sub     b
                 ld      b,a
                 pop     af

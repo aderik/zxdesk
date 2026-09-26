@@ -615,9 +615,10 @@ def window_buffer(w, h, title, front, lines):
             continue
         for i, ch in enumerate(text[:w - 1 - col]):
             buf[row * w + col + i] = ch | (0x80 if inv else 0)
-    if title == b"NOTEPAD" and h - 2 < 16:
+    total = next((col for row, col, _, _ in lines if row == -2), 16)
+    if title == b"NOTEPAD" and h - 2 < total:
         top = next((col for row, col, _, _ in lines if row == -1), 0)
-        thumb = 2 + top * max(0, h - 5) // (16 - (h - 2))
+        thumb = 2 + top * max(0, h - 5) // (total - (h - 2))
         for row in range(1, h - 1):
             buf[row * w + w - 1] = (ord('^') if row == 1 else ord('v') if row == h - 2
                                      else 0xA0 if row == thumb else ord('|'))
@@ -1911,11 +1912,13 @@ def tape_checks(syms, fails):
         name = "note-tape-closed" if closed else "note-tape"
         # Sequential tape loading needs a target: after DISCARD, FILE > NEW.
         target = press(66, 50) + press(60, 98) + new if closed else []
-        r = Run(ts, record + new + tap(3, 32) + tap(8, 1) + tap(3, 64)
+        wide_base, wide_grow, _, _, _, wide_tap, _ = note_width_steps(ts)
+        r = Run(ts, record + wide_base + wide_grow + wide_tap(3, 64)*6
                 + snapshot + save + tap(5, 32) + tap(5, 32) + target + rewind + reopen
                 + [(10, 'cassetteplayer eject')], name, rom=rom)
         document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
         check(fails, name, r.bytes("NoteBuf", 256) == document
+              == note_width_document([b'H'*14 + b'I'*6])
               and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0
               and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == ts["AppNote"],
               f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
@@ -1952,6 +1955,126 @@ def tape_checks(syms, fails):
         check(fails, "tape-bad-" + name, rr.peek("NoteResult") != 0
               and rr.peek("TapeLen", 2) == 0 and rr.peek("TapeMode") == 0,
               "bad header rejected, no payload accepted")
+
+
+def note_width_document(lines):
+    """Independent on-disk oracle: legacy chunks plus continuation byte 1."""
+    chunks = []
+    for line in lines:
+        parts = [line[i:i+14] for i in range(0, len(line), 14)] or [b""]
+        chunks += [part.ljust(14) + bytes((0, int(i < len(parts)-1)))
+                   for i, part in enumerate(parts)]
+    assert len(chunks) <= 16
+    return b"".join(chunks) + (b" "*14 + b"\0\0")*(16-len(chunks))
+
+
+def note_width_steps(syms):
+    def point(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")]
+    def click(x, y):
+        return point(x, y) + [(5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
+    def tap(row, mask):
+        return [(5, f"key_down {row} {mask}"), (5, f"key_up {row} {mask}")]
+    def menu(y):
+        return click(88, 3) + click(96, y)
+    def drag(x, y, dx, dy):
+        # Host mouse events must arrive before release even on a fast,
+        # unthrottled host. Keep each delta within the ROM's 64px clamp.
+        moves = ([(5, f"mouse_move {dx} {dy}")] if abs(dx) <= 128 else
+                 [(5, f"mouse_move {dx//2} {dy//2}")]*2)
+        return point(x, y) + [(5, "set ::throttle on"),
+                             (5, "exec xdotool mousedown 1")] + moves + [
+            (5, "exec xdotool mouseup 1"), (10, "set ::throttle off")]
+    init = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
+    # Reach the old limit through the keyboard, then drag the real grip.
+    base = init + menu(11) + tap(3, 32)*14
+    grow = drag(186, 114, 32, 16)       # 16x9 -> 18x10
+    shrink = drag(202, 122, -192, -96)  # -> 6x4
+    regrow = drag(106, 74, 192, 96)     # -> 18x10
+    return base, grow, shrink, regrow, click, tap, menu
+
+
+def note_width_checks(syms, fails):
+    base, grow, shrink, regrow, click, tap, menu = note_width_steps(syms)
+    text = b"H"*14 + b"I"*6
+    document = note_width_document([text])
+    typed = base + grow + tap(3, 64)*6
+    def check_view(name, steps, width, height, x, expected=document, lines=None, y=0):
+        r = Run(syms, steps + [(10, "")], name, files={})
+        logical = lines or [text] + [b""]*14
+        left = max(0, x-(width-3))
+        painted = [(i+1, 1, line[left:], False) for i, line in enumerate(logical)]
+        painted += [(y+1, x-left+1, logical[y][x:x+1] or b" ", True),
+                    (-2, len(logical), b"", False)]
+        want = compose(expected_nt(), [(8, 6, width, height, b"NOTEPAD", painted)])
+        check(fails, name, r.bytes('NoteBuf', 256) == expected and r.nt() == want
+              and r.peek('NoteCursorX') == x and r.peek('NoteCursorY') == y
+              and r.peek('NoteLeftCol') == left and r.peek('WinW') == width
+              and r.peek('WinH') == height and r.peek('NoteRows') == len(logical),
+              f"document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}, "
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"caret {r.peek('NoteCursorX')},{r.peek('NoteCursorY')}, left {r.peek('NoteLeftCol')}, "
+              f"size {r.peek('WinW')}x{r.peek('WinH')}")
+        return r
+    check_view('note-width-grow', typed, 18, 10, 20)
+    check_view('note-width-shrink', typed + shrink, 6, 4, 20)
+    left = [(5, 'key_down 6 1')] + tap(8, 16)*20 + [(5, 'key_up 6 1')]
+    check_view('note-width-left', typed + shrink + left, 6, 4, 0)
+    check_view('note-width-regrow', typed + shrink + regrow, 18, 10, 20)
+    # Insert across a chunk boundary, split, and join using real keys.
+    at_start = typed + left
+    check_view('note-width-insert', at_start + tap(5, 32), 18, 10, 1,
+               note_width_document([b'X'+text]), [b'X'+text]+[b'']*14)
+    right = [(5, 'key_down 6 1')] + tap(8, 128)*10 + [(5, 'key_up 6 1')]
+    split = at_start + right + tap(7, 64)
+    check_view('note-width-split', split, 18, 10, 0,
+               note_width_document([text[:10], text[10:]]),
+               [text[:10], text[10:]]+[b'']*14, y=1)
+    check_view('note-width-join', split + tap(7, 32), 18, 10, 10)
+    # Backspace across the chunk boundary must retain the entire tail.
+    back = typed + tap(7, 32)*7
+    check_view('note-width-back', back, 18, 10, 13,
+               note_width_document([b'H'*13]), [b'H'*13]+[b'']*15)
+    # Each direction is checked separately: a wide line is one logical
+    # row, even when the cursor is in its second physical chunk.
+    up = typed + tap(7, 64) + [(5, 'key_down 6 1')] + tap(8, 32) + [(5, 'key_up 6 1')]
+    check_view('note-width-up', up, 18, 10, 0)
+    down = at_start + [(5, 'key_down 6 1')] + tap(8, 64) + [(5, 'key_up 6 1')]
+    check_view('note-width-down', down, 18, 10, 0, y=1)
+    # Three chunks exceed even the maximum 30-cell screen interior.
+    long_text = b'H'*14 + b'I'*28
+    check_view('note-width-long', typed + tap(3, 64)*22, 18, 10, 42,
+               note_width_document([long_text]), [long_text]+[b'']*13)
+    # All 224 text slots remain usable; overflow and ENTER refuse without
+    # replacing the last character or dropping a later logical line.
+    full = b'H'*14 + b'I'*210
+    check_view('note-width-full', base + grow + tap(3, 64)*210 + tap(5, 32) + tap(7, 64),
+               18, 10, 224, note_width_document([full]), [full])
+    # Extending the first line must shift later lines, not overwrite them.
+    later = base + tap(7, 64) + tap(5, 32)
+    back_up = [(5, 'key_down 6 1')] + tap(8, 32) + tap(8, 128)*13 + [(5, 'key_up 6 1')]
+    check_view('note-width-preserve-next', later + back_up + grow + tap(3, 64)*6,
+               18, 10, 20, note_width_document([text, b'X']), [text, b'X']+[b'']*13)
+    bottom = [(5, 'key_down 6 1')] + tap(8, 64)*15 + [(5, 'key_up 6 1')]
+    r = Run(syms, base + bottom + tap(7, 64) + [(10, '')], 'note-width-last-blank')
+    check(fails, 'note-width-last-blank', r.bytes('NoteBuf', 256) == note_width_document([b'H'*14])
+          and (r.peek('NoteCX'), r.peek('NoteCY')) == (14, 15)
+          and r.bytes('NoteName', 5) == b'NOTE\0',
+          f"last blank row ENTER preserves document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
+    for closed in (False, True):
+        steps = typed + menu(27) + tap(5, 32)
+        if closed:
+            steps += click(66, 50) + click(60, 98)
+        steps += menu(19) + tap(7, 64)
+        name = 'note-width-file-' + ('closed' if closed else 'existing')
+        r = Run(syms, steps + [(10, '')], name, files={})
+        stored = read_disk_image(DISK).get('NOTE') if EXT else r.bytes('RamHeap', 256)
+        check(fails, name, r.bytes('NoteBuf', 256) == document == stored
+              and r.peek('NoteModified') == 0 and r.peek('WndCount') == 1
+              and r.peek('DgOpenFlag') == 0,
+              f"complete UI roundtrip crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"expected {zlib.crc32(document):08x}")
 
 
 def resize_scroll_checks(syms, fails):
@@ -2020,7 +2143,10 @@ def resize_scroll_checks(syms, fails):
                      f"debug write memory {syms['NoteTop']} {top}")]
         r = Run(syms, new + caret + drag + minimum + heapstat, name)
         # The intermediate 18x10 window clamps the origin to at most eight.
-        want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", [(-1, min(top, 8), b"", False)])])
+        lines = [(-1, min(top, 8), b"", False)]
+        if cy == 0:
+            lines.append((1, 4, b" ", True))
+        want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", lines)])
         check(fails, name, r.nt() == want and r.peek('NoteCX') == cx and r.peek('NoteCY') == cy
               and r.peek('NoteTop') == min(top, 8)
               and r.bytes('NoteBuf', 256) == (b" " * 14 + b"\0\0") * 16
@@ -2087,6 +2213,9 @@ def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--note-width"]:
+        note_width_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--open-ui"]:
         open_ui_checks(syms, fails)
         return bool(fails)
@@ -2131,6 +2260,7 @@ def main():
         app_checks(syms, fails, vram0)
         return bool(fails)
     sound_checks(syms, fails)
+    note_width_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)
