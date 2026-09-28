@@ -94,6 +94,64 @@ CbSameYear:
                 ld      (CalSel),a
                 ret
 
+; A month or a year forward or back, C = 1 forward, 0 back, the day
+; kept or cut to the new month's last. The ends of the range stop.
+; Not the ZX's: without them today is thousands of weeks from 1980.
+CalMonthStep:
+                ld      a,c
+                or      a
+                ld      a,(CalMonth)
+                jr      z,CmsBack
+                inc     a
+                cp      12
+                jr      c,CmsSet
+                ld      a,(CalYear)
+                cp      CALYEARS-1
+                ret     nc
+                inc     a
+                ld      (CalYear),a
+                xor     a
+                jr      CmsSet
+CmsBack:
+                sub     1
+                jr      nc,CmsSet
+                ld      a,(CalYear)
+                or      a
+                ret     z
+                dec     a
+                ld      (CalYear),a
+                ld      a,11
+CmsSet:
+                ld      (CalMonth),a
+                jr      CalClampSel
+
+CalYearStep:
+                ld      a,c
+                or      a
+                ld      a,(CalYear)
+                jr      z,CysBack
+                cp      CALYEARS-1
+                ret     nc
+                inc     a
+                jr      CysSet
+CysBack:
+                or      a
+                ret     z
+                dec     a
+CysSet:
+                ld      (CalYear),a
+CalClampSel:
+                call    CalSetLeap
+                ld      a,(CalMonth)
+                call    CalMonthLen
+                ld      b,a
+                ld      a,(CalSel)
+                cp      b
+                ret     c
+                ld      a,b
+                ld      (CalSel),a
+                ret
+
 ; B times, C = 1 forward, 0 back.
 CalMoveB:
                 push    bc
@@ -383,7 +441,8 @@ CalD7Done:
                 ret
 
 ; The key vector. Left and right walk the days, up and down the
-; weeks, ENTER makes the selected day today. Returns A = 1 if the
+; weeks, comma and full stop the months, < and > the years, ENTER
+; makes the selected day today. Returns A = 1 if the
 ; window needs recomposing, 0 if the key meant nothing to it.
 ; Unhandled keys do not require a full grid rebuild.
 CalKey:
@@ -414,6 +473,16 @@ CkyMove:
                 ld      a,1                     ; the grid changed
                 ret
 CkyNotD:
+                ld      c,0
+                cp      ','
+                jr      z,CkyMonth
+                cp      '<'
+                jr      z,CkyYear
+                inc     c
+                cp      '.'
+                jr      z,CkyMonth
+                cp      '>'
+                jr      z,CkyYear
                 cp      KEY_ENTER
                 ld      a,0                     ; anything else meant nothing,
                 ret     nz                      ; and nothing is repainted
@@ -423,6 +492,14 @@ CkyNotD:
                 ld      (TodayM),a
                 ld      a,(CalSel)
                 ld      (TodayD),a
+                ld      a,1
+                ret
+CkyMonth:
+                call    CalMonthStep
+                ld      a,1
+                ret
+CkyYear:
+                call    CalYearStep
                 ld      a,1
                 ret
 

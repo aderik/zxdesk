@@ -334,6 +334,8 @@ IFDEF TEST
                 var     TcMonths, CALYEARS*12*2
                 var     TcGrid, 9+6*21
                 var     TcSel, 9
+                var     TcStep, 15
+                var     TcStepPtr, 2
                 var     TsSrc, 64
                 var     TsDst, 64
                 var     TsHandle, 1

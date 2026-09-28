@@ -320,6 +320,52 @@ TcWeek:
                 ld      de,TcSel+6
                 ld      bc,3
                 ldir
+                ; months and years: 31 Jan 1980, a month on is cut to
+                ; 29 Feb, a year on to 28 Feb 1981, two months back
+                ; is December 1980; both ends of the range stop
+                ld      hl,TcStep
+                ld      (TcStepPtr),hl
+                ld      bc,0
+                ld      a,31
+                call    TcSetCal
+                ld      a,'.'
+                call    TcStepKey
+                ld      a,'>'
+                call    TcStepKey
+                ld      a,','
+                call    CalKey
+                ld      a,','
+                call    TcStepKey
+                ld      bc,0
+                ld      a,5
+                call    TcSetCal
+                ld      a,','
+                call    CalKey
+                ld      a,'<'
+                call    TcStepKey
+                ld      bc,+(CALYEARS-1)*256+11
+                ld      a,31
+                call    TcSetCal
+                ld      a,'.'
+                call    CalKey
+                ld      a,'>'
+                jp      TcStepKey
+; B = year, C = month, A = day
+TcSetCal:
+                ld      (CalSel),a
+                ld      a,b
+                ld      (CalYear),a
+                ld      a,c
+                ld      (CalMonth),a
+                ret
+; A key to the calendar, then its state appended at TcStepPtr
+TcStepKey:
+                call    CalKey
+                ld      hl,CalYear
+                ld      de,(TcStepPtr)
+                ld      bc,3
+                ldir
+                ld      (TcStepPtr),de
                 ret
 
 ; A file written, closed, reopened and read back; then the

@@ -495,6 +495,9 @@ def test_build_checks(tsyms, fails):
     sel = r.ram[tsyms["TcSel"] - WORK:tsyms["TcSel"] - WORK + 9]
     check(fails, "cal-walk", tuple(sel) == (46, 6, 31, 46, 7, 1, 46, 8, 1),
           f"back from 1 Aug {tuple(sel[:3])}, ENTER {tuple(sel[3:6])}, midnight on the 31st {tuple(sel[6:])}")
+    step = tuple(r.ram[tsyms["TcStep"] - WORK:tsyms["TcStep"] - WORK + 15])
+    want = (0, 1, 29, 1, 1, 28, 0, 11, 28, 0, 0, 5, 99, 11, 31)
+    check(fails, "cal-step", step == want, f"month/year steps {step}, expected {want}")
 
     # storage: 64 bytes round trip, four files, a fifth refused, a delete
     st = {k: r.peek(k, n) for k, n in (("TsWrote", 2), ("TsRead", 2), ("TsBad", 1), ("TsErrCode", 1),
@@ -649,8 +652,8 @@ def compose(nt0, windows):
     return bytes(nt)
 
 
-def cal_win(x, y, sel=1):
-    return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(1980, 1, sel))
+def cal_win(x, y, sel=1, year=1980, month=1):
+    return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(year, month, sel))
 
 
 def about_win(x, y):
@@ -716,6 +719,15 @@ def window_checks(syms, fails, vram0):
     today = tuple(r.ram[syms["TodayY"] - WORK:syms["TodayY"] - WORK + 3])
     check(fails, "win-keys", r.peek("CalSel") == 2 and today == (0, 0, 2) and r.nt() == want,
           f"selection {r.peek('CalSel')}, today {today}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # full stop a month on, SHIFT+full stop (>) a year on: February 1981
+    keys = [(5, "key_down 2 0x08"), (3, "key_up 2 0x08"),
+            (5, "key_down 6 0x01; key_down 2 0x08"), (3, "key_up 2 0x08; key_up 6 0x01"), (10, "")]
+    r = Run(syms, open_cal + keys, "win-step")
+    want = compose(nt0, [cal_win(4, 4, year=1981, month=2)])
+    got = tuple(r.ram[syms["CalYear"] - WORK:syms["CalYear"] - WORK + 3])
+    check(fails, "win-step", got == (1, 1, 1) and r.nt() == want,
+          f"calendar {got}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
 # ---- notepad and clock

@@ -97,7 +97,7 @@ ZX TEST build did, with openMSX in place of the Python Z80:
 | subject | what is checked |
 |---|---|
 | heap | three blocks split to size at the expected addresses; a scribbled payload freed returns exactly its bytes; free by owner coalesces into one piece (expected addresses and statistics are calculated from the runtime heap bounds) |
-| calendar | all 1,200 months 1980-2079 agree with Python's calendar on weekday of the 1st and length; August 2026 grid rows; a step back from the 1st lands on 31 July; ENTER sets today; midnight on the 31st rolls the month |
+| calendar | all 1,200 months 1980-2079 agree with Python's calendar on weekday of the 1st and length; August 2026 grid rows; a step back from the 1st lands on 31 July; ENTER sets today; midnight on the 31st rolls the month; a month on from 31 Jan 1980 is 29 Feb, a year on 28 Feb 1981, two months back December 1980, and both ends of the range stop |
 | storage | 64 bytes written, closed, reopened and read back identical through the RAM backend; four files listed; the fifth open fails with STERR_FULL; delete removes the entry |
 | app model | AppAt finds the calendar's descriptor; AppSave then AppLoad through a heap state block restores (46, 7, 30) |
 | hit test | bar, desktop, status band, off the edge and an open menu drop give (4, 5, 0, 0, 6) |
@@ -128,6 +128,12 @@ as the oracle):
 | win-close | the close box closes the front window; the name table is the about window alone |
 | close-heap | the heap holds the about window's buffer (90 bytes, owner $11) and nothing else |
 | win-keys | SHIFT+RIGHT moves the selection to the 2nd, shown inverted; ENTER makes it today (0, 0, 2) |
+| win-step | `.` a month on, SHIFT+`.` (`>`) a year on: February 1981 on the grid, crc32 775c19ea |
+
+Not in the ZX original: the calendar steps a month with `,` and `.` and a
+year with `<` and `>`, because today starts at 1 January 1980 and setting
+it a week at a time took thousands of presses. The day is cut to the
+month's last where needed. 115 ROM bytes, no RAM.
 
 Applications (phase 4 so far: `note.inc`, `clock.inc`):
 
