@@ -34,6 +34,7 @@ APP_NOTE        equ     2
 APP_CLOCK       equ     3
 APP_CMD         equ     4
 APP_SETTINGS    equ     5
+APP_KEYS        equ     6
 
 AppTable:
 AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
@@ -74,6 +75,12 @@ AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
 AppSettings:    defw    1, SetRow, SetInit, SetDraw
                 defw    SetKey, SetTitle
                 defb    6, 6, 24, 10
+                defw    0, 0, 0
+                defb    0
+                ; The shortcut list: nothing to type at and nothing to lose.
+AppKeys:        defw    0, 0, 0, KeysDraw
+                defw    0, TxtKeysTitle
+                defb    16, 3, KEYSW, KEYSH
                 defw    0, 0, 0
                 defb    0
 

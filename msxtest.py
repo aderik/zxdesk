@@ -656,6 +656,15 @@ def cal_win(x, y, sel=1, year=1980, month=1):
     return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(year, month, sel))
 
 
+KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
+             b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT",
+             b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+
+
+def keys_win(x, y):
+    return (x, y, 15, 18, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+
+
 def about_win(x, y):
     return (x, y, ABOUT_W, ABOUT_H, b"ABOUT", [(1 + i, 1, t, False) for i, t in enumerate(ABOUT_TEXT)])
 
@@ -728,6 +737,30 @@ def window_checks(syms, fails, vram0):
     got = tuple(r.ram[syms["CalYear"] - WORK:syms["CalYear"] - WORK + 3])
     check(fails, "win-step", got == (1, 1, 1) and r.nt() == want,
           f"calendar {got}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    # GRAPH shortcuts: L calendar, K clock, X brings the calendar back to
+    # the front, W closes it and leaves the clock
+    def graph(row, bit, hold=3):
+        return [(5, f"key_down 6 0x04; key_down {row} {bit:#04x}"), (hold, f"key_up {row} {bit:#04x}; key_up 6 0x04")]
+    r = Run(syms, graph(4, 0x02) + graph(4, 0x01) + graph(5, 0x20) + [(5, "")], "sc-next")
+    z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + 2])
+    check(fails, "sc-next", r.peek("WndCount") == 2 and z == (0, 1) and r.peek("WinApp", 2) == syms["AppCal"],
+          f"{r.peek('WndCount')} windows, z {z}, front ${r.peek('WinApp', 2):04X}; expected calendar (0, 1)")
+    r = Run(syms, graph(4, 0x02) + graph(4, 0x01) + graph(5, 0x20) + graph(5, 0x10) + [(5, "")], "sc-close")
+    check(fails, "sc-close", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppClock"]
+          and r.peek("StatCol") == 0,
+          f"{r.peek('WndCount')} window, front ${r.peek('WinApp', 2):04X}, status echoes {r.peek('StatCol')}; "
+          f"expected the clock and no echo")
+    # held well past the repeat delay, GRAPH+N opens one notepad
+    r = Run(syms, graph(4, 0x08, hold=60) + [(5, "")], "sc-repeat")
+    check(fails, "sc-repeat", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppNote"],
+          f"{r.peek('WndCount')} windows after holding GRAPH+N 60 frames")
+
+    # HELP, KEYS opens the list
+    r = Run(syms, press_at(196, 3) + press_at(204, 11) + [(10, "")], "keys-win")
+    want = compose(nt0, [keys_win(16, 3)])
+    check(fails, "keys-win", r.peek("WndCount") == 1 and r.nt() == want,
+          f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
 # ---- notepad and clock

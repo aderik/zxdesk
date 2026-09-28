@@ -235,6 +235,9 @@ HdlKey:
                 ld      a,(MenuOpen)            ; an open menu owns the keyboard
                 or      a
                 ret     nz
+                ld      a,b                     ; a shortcut, before any
+                cp      SC_BASE+1               ; application is offered it
+                jp      nc,ScDispatch
                 ; The key goes to the front window's application, through
                 ; its descriptor, and the window is recomposed afterwards.
                 ; With no window it is echoed on the status row instead,

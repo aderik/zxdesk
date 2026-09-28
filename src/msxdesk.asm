@@ -1363,6 +1363,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "dialog.inc"
                 include "note.inc"
                 include "commander.inc"
+                include "shortcut.inc"
                 include "test.inc"
 
 RomEnd:

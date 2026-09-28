@@ -135,6 +135,25 @@ year with `<` and `>`, because today starts at 1 January 1980 and setting
 it a week at a time took thousands of presses. The day is cut to the
 month's last where needed. 115 ROM bytes, no RAM.
 
+Keyboard shortcuts (`shortcut.inc`, after the ZX's): GRAPH and a letter.
+The ZX used both shifts (EXTEND MODE); an MSX has one SHIFT bit and CTRL
+is the pointer's button, so GRAPH, which nothing else reads, is the
+modifier. GRAPH+letter decodes to a code from $81 up that no text table
+produces, and HdlKey dispatches it before any application sees a key;
+an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
+N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
+K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. The ZX's V (SAVE
+AS), R (PRINT) and D (desktop shortcuts) wait for those features.
+HELP > KEYS opens the list, with the calendar's keys, as a window.
+333 ROM bytes, no RAM.
+
+| subject | asserts |
+|---|---|
+| sc-next | GRAPH+L, GRAPH+K, GRAPH+X: two windows, the calendar back in front, z (0, 1) |
+| sc-close | then GRAPH+W: the clock alone, nothing echoed on the status row |
+| sc-repeat | GRAPH+N held 60 frames opens one notepad (4 without the repeat guard) |
+| keys-win | HELP > KEYS: the name table equals the compositor's list window at (16, 3), crc32 8dba7685 |
+
 Applications (phase 4 so far: `note.inc`, `clock.inc`):
 
 | subject | what is checked |

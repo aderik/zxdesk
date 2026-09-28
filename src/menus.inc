@@ -335,6 +335,8 @@ MnActions:
                 defw    WndTile
                 defb    3,5
                 defw    CommanderOpen
+                defb    4,0
+                defw    KeysOpen                ; HELP, KEYS
                 defb    4,1
                 defw    AboutOpen               ; HELP, ABOUT
                 defb    $FF

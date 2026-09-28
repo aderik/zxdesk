@@ -16,8 +16,8 @@
 ;  is reported at a time, as before: a text field has no use for
 ;  chords. The cursor keys move the pointer in ReadInput and are
 ;  nought here, so a key never does two things at once. SHIFT is
-;  the one modifier decoded; CTRL clicks the pointer in ReadInput.
-;  GRAPH is not mapped.
+;  the one modifier for text; CTRL clicks the pointer in ReadInput.
+;  GRAPH and a letter is a shortcut, a code from SC_BASE+1 up.
 ; ============================================================
 KEY_LEFT        equ     1
 KEY_RIGHT       equ     2
@@ -89,25 +89,40 @@ KbfNext:
                 ld      a,$FF
                 ret
 
-; Bit 0 = SHIFT held.
+; Bit 0 = SHIFT held, bit 2 = GRAPH.
 KbdMods:
                 ld      a,(KbdMatrix+6)
-                and     $01
+                and     $05
                 ret
 
-; A = matrix index, KbdModState = the shift key. Returns the code, or
+; A = matrix index, KbdModState = the modifiers. Returns the code, or
 ; zero if that combination is not mapped.
 KbdDecode:
                 ld      l,a
                 ld      h,0
                 ld      de,KbdBase
                 ld      a,(KbdModState)
+                bit     2,a
+                jr      nz,KbdGraph
                 bit     0,a
                 jr      z,KbdLook
                 ld      de,KbdShiftT
 KbdLook:
                 add     hl,de
                 ld      a,(hl)
+                ret
+; GRAPH: the unshifted character looked up in the shortcut letters,
+; the Nth giving SC_BASE+N. Anything else under GRAPH means nothing.
+KbdGraph:
+                add     hl,de
+                ld      a,(hl)
+                ld      hl,ScLetters
+                ld      bc,SCCOUNT
+                cpir
+                ld      a,0
+                ret     nz
+                ld      a,SC_BASE+SCCOUNT
+                sub     c
                 ret
 
 ; Upper case without SHIFT: the desktop's font is upper case, as the
@@ -154,6 +169,9 @@ KbdPoll:
                 ld      a,(KbdLast)
                 cp      c
                 jr      nz,KbpNew
+                ld      a,c                     ; a shortcut does not repeat
+                cp      SC_BASE+1
+                ret     nc
                 ld      a,(KbdTimer)
                 dec     a
                 ld      (KbdTimer),a
