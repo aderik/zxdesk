@@ -426,7 +426,15 @@ def test_build_checks(tsyms, fails):
     heap_checks, calendar_checks and BStoreTest."""
     import datetime
     print("test build:")
-    r = Run(tsyms, [(60, "")], "subjects", rom=TROM)
+    page2_size = max(0, tsyms["RomEnd"] - 0x8000)
+    dump_page2 = (f'set f [open $::out/page2.bin wb]; puts -nonewline $f '
+                  f'[debug read_block memory 32768 {page2_size}]; close $f')
+    r = Run(tsyms, [(60, dump_page2)], "subjects", rom=TROM)
+    page2 = open(os.path.join(OUT, "subjects", "page2.bin"), "rb").read()
+    expected_page2 = open(TROM, "rb").read()[0x4000:0x4000 + page2_size]
+    check(fails, "rom-page2", page2 == expected_page2,
+          f"{page2_size} cartridge bytes at $8000, crc32 {zlib.crc32(page2):08x}, "
+          f"expected {zlib.crc32(expected_page2):08x}")
     check(fails, "subjects-ran", r.peek("TestDone") == 1, "TestDone flag")
     tape_counts = b"".join(bytes((carry,)) + count.to_bytes(2, "little")
                            for carry, count in ((0, 256), (0, 0), (1, 0),

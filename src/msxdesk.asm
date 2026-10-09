@@ -16,6 +16,7 @@
 ; ============================================================
 
 ; ---- BIOS entry points (C-BIOS and the real one agree on these)
+ENASLT          equ     $0024           ; A = slot id, H = page address
 CHGMOD          equ     $005F           ; A = screen mode
 RG1SAV          equ     $F3E0           ; BIOS shadow of VDP register 1
 CGTABL          equ     $0004           ; word: the BIOS font, 256 glyphs of 8 bytes
@@ -449,6 +450,11 @@ Start:
                 or      a
                 sbc     hl,de
                 ld      (HeapEnd),hl
+                ; INIT/CALLF selects only page 1. Map the second half of
+                ; this 32K cartridge too, before code or data crosses $8000.
+                call    GetSlot1
+                ld      h,$80
+                call    ENASLT
                 ld      a,2
                 call    CHGMOD
                 ld      b,$0F           ; white border, as the ZX had
