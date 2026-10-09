@@ -1,14 +1,14 @@
 <?xml version="1.0" ?>
 <!DOCTYPE msxconfig SYSTEM 'msxconfig2.dtd'>
 <msxconfig>
-  <!-- A 50 Hz, 64K MSX1 on the generic MSX.ROM BIOS from msx/roms/ (the
+  <!-- A 50 Hz, 64K MSX1 on the generic MSX.ROM BIOS from roms/ (the
        Philips VG 8020 config with the ROM swapped: openMSX knows no
        machine with this dump, so it gets a config of its own). -->
   <info>
     <manufacturer>MSX Desk</manufacturer>
     <code>Roms MSX1</code>
     <release_year>1985</release_year>
-    <description>Generic European MSX1, 64kB, on the BIOS in msx/roms.</description>
+    <description>Generic European MSX1, 64kB, on the BIOS in roms.</description>
     <type>MSX</type>
     <region>eu</region>
   </info>

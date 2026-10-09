@@ -1,665 +1,855 @@
-# ZX Desk
+# MSX Desk
 
-A graphical desktop for the ZX Spectrum 48K, written in Z80 assembly.
+ZX Desk, Damian Cooper's desktop for the Spectrum, ported to the MSX1
+and renamed for the machine it runs on. The original ZX source is no longer in this tree; it lives
+upstream (github.com/mindbox77/zxdesk) and in this repository's first commit.
 
-Overlapping windows with a z order and focus, pull down menus, a heap,
-an event queue, a storage layer with swappable backends, dialogues,
-controls, a notepad, a clock, a calendar, a two pane file manager, and
-a settings panel that actually changes things. It all fits in 48K on a
-machine from 1982, and it can drag a window inside a single 69,888 T
-state frame.
+    ./test.sh             build the toolchain image once, assemble, run every subject, assert
+    ./test.sh --shell     a shell inside the image
+    REBUILD=1 ./test.sh   rebuild the image after a Dockerfile change
+    ./run.sh              build and run it in a visible openMSX: the host's
+                            (dnf install openmsx cbios) or the image on the
+                            host display with the GPU passed in
 
-It runs on the real thing, not just an emulator.
+Everything runs in `docker`: Debian trixie with openMSX 20.0,
+C-BIOS 0.29a, pasmo 0.5.5 built from source, Xvfb and xdotool. Nothing
+needs to be installed on the host but Docker.
 
-![The desktop](images/zxdesk-desktop.png)
+## Toolchain notes, measured
 
----
+- **pasmo 0.5.3 (Debian) does not assemble the ZX source**: it has no
+  `IFDEF` and fails on line 88 of zxdesk.asm. 0.5.5 from
+  pasmo.speccy.org assembles it (22,961 byte TEST build), so the image
+  builds 0.5.5 from the tarball, checked against its sha256.
+- **openMSX 19.1 is packaged nowhere current**; trixie ships 20.0,
+  bookworm 18.0. 20.0 it is.
+- The Debian `cbios` package links only some of its ROMs into openMSX's
+  systemroms; `C-BIOS_MSX1_EU` (the 50 Hz machine) is missing its main
+  ROM until the Dockerfile links the rest.
+- openMSX's SDL init asserts under `SDL_VIDEODRIVER=dummy`, so it runs
+  under Xvfb. It also segfaults when `getpwuid()` finds no entry for the
+  calling uid, which is why `test.sh --shell` mounts `/etc/passwd` read-only. The test run itself streams the tree in and `build` out with tar, so it also works from a container that only has the docker socket.
+- `after boot` in openMSX fires at power-on, not when C-BIOS has finished
+  its logo (about 3.1 s emulated). The driver script waits for the ROM's
+  marker in work RAM instead of a fixed delay.
+- Tcl `puts` inside openMSX goes to its own console, not stdout, and an
+  error inside an `after` callback is swallowed and the emulator runs
+  forever. The driver writes a log file and has a realtime guard.
+- With the throttle off the renderer skips frames and a screenshot is
+  black. The driver switches the throttle on for ten frames before the
+  capture; inside a proc that must be `set ::throttle`, a bare `set`
+  makes a local variable.
+- The VDP address latch is reset by a status-register read, and the
+  BIOS interrupt handler does one every frame. An interrupt between the
+  two control writes of `SetWrt` sends the data elsewhere: on the 60 Hz
+  machine that hit desktop row 6 on every boot (name table crc32
+  d4ebe497 instead of b905ed57). `SetWrt` holds DI across the pair.
+- C-BIOS's CHGMOD 2 leaves the pattern table clear where the real BIOS
+  loads its font, so the ROM copies glyphs 32-127 from the BIOS's
+  CGTABL pointer itself and the harness asserts that copy against the
+  BIOS ROM it read back.
 
-## Why
+## The harness
 
-Back in the eighties I wanted an Atari ST and couldn't afford one.
-What I really wanted was
-[GEM](https://en.wikipedia.org/wiki/GEM_(desktop_environment)): the
-desktop, the windows, the menu bar that was always there, the feeling
-that the machine was a place rather than a prompt. I had a Spectrum
-instead, and I spent a long time wondering how much of that you could
-do on it. I started writing bits of it, and never finished.
+`msxtest.py` (the model was `zxtest.py` in the original ZX Desk) assembles
+`src/msxdesk.asm` into a padded 32K `page12` ROM, boots it in
+`C-BIOS_MSX1_EU` with the throttle off, runs a step list through
+`harness/run.tcl`, and reads VRAM (16K) and work RAM ($C000-$FFFF)
+back through `debug read_block`. Checksums are the assertion; the
+screenshot in `build/out/<subject>/shot.png` is for people.
 
-So this is that, finished. It isn't a port of GEM and doesn't pretend
-to be. It's what the idea turns into when you push it up against a
-3.5 MHz Z80, 48K of RAM, a one bit display with attribute clash, and a
-video chip that steals cycles from the CPU while it paints. A lot of
-the answers turned out to be more interesting than the question, and
-nearly all of them came from measuring the machine rather than
-reasoning about it.
+Input injection:
 
-It's a fun project and a labour of love, and the reason it's written
-up at this length is that the measurements are the useful bit. If
-you're building something on this hardware, the numbers below cost me
-a lot of evenings. They're yours.
+- keys go through `keymatrixdown <row> <mask>`, the PPI matrix;
+- the mouse is `plug joyporta mouse` plus `xdotool` moving the Xvfb
+  pointer, which openMSX turns into the joystick-port strobe protocol.
+  Measured on openMSX 20.0: a host move of n pixels arrives as -n/2
+  (openMSX halves host motion; an MSX mouse reports the negative of
+  the movement), so the ROM subtracts the deltas. openMSX resets the
+  strobe phase after 1.5 ms without a strobe, which is what makes a
+  once-a-frame read see fresh deltas. The buttons ride on bits 4 and 5
+  of the same byte, and ApplyDelta clobbers E: read them first.
 
----
+Steps are timed on the ROM's own frame counter (`Frames` at $C008),
+polled every emulated frame. That was meant to make a held key's frame
+count exact; measured, injection still lands a frame either way (the
+60 Hz machine saw 21 frames for a 20 frame hold once the frame had
+more work in it). So the ROM counts the frames it saw each key held
+(`HeldX`, `HeldY`, `KbdHeld`) and the harness recomputes the ramp and
+the repeat count for that number: the arithmetic is asserted exactly,
+the hold length is read.
 
-## What it does today
+Subjects, all asserted (phase 1):
 
-| | |
+| subject | what is checked |
 |---|---|
-| **Windows** | Overlapping, z ordered, movable, resizable, with title bar, close box and grip. Focus is the front of the z order, so raising and focusing are one action. |
-| **Menus** | A permanent menu bar with pull downs, save under, and hit testing. |
-| **Input** | Kempston mouse, Kempston joystick, and the full keyboard matrix decoded across three tables with repeat. All of it arrives as events. |
-| **Events** | A sixteen slot ring. The main loop contains no window specific code. |
-| **Storage** | A registry of backends behind six vectors. RAM, tape (via the real ROM loader), and the 128K's spare banks as a RAM disk. [esxDOS](https://esxdos.org/) has a reserved id. |
-| **Memory** | A real heap with an owner byte, 8,112 bytes, allocating window buffers sized to their windows. |
-| **Applications** | A descriptor with init, event and paint, plus per instance state swapped in and out. Notepad, clock, calendar, commander, about. |
-| **Persistence** | Settings written to storage with a magic byte and a version, and read back at boot. |
+| boot | VDP R1 $E2 (16x16 sprites; CHGMOD leaves 8x8 and the arrow lost its tail), R7 white border; name table = the Python oracle (bar text, rule row, lattice, status band), crc32 b905ed57; the BIOS font (crc32 897a8dfc on C-BIOS) and the two tiles in all three thirds of the PGT; sprite shape at $3800 and attributes (89,120,0,1) + end marker; H.TIMI: interrupts == frames, 0 dropped; pointer idle, no events |
+| mouse | host (+20, -30) → pointer (130, 75), sprite follows, exactly 2 EV_PTRMOVE and no button events |
+| cursor | RIGHT held 20 frames, DOWN 10 → (158, 103), the ramp recomputed in Python; 30 moves, no key events |
+| keys | A, SHIFT+1, SPACE → 3 EV_KEY, no button events, status row echoes `A! ` |
+| repeat | C held 30 frames → 5 EV_KEY (1 + 1 at 20 + 3 more every 3), `CCCCC` on the status row |
 
-Screenshots:
 
-| | |
+Phase 2, the portable layers, run as a TEST=1 build (`msxtest.rom`)
+whose subjects execute at boot and leave records in RAM, the way the
+ZX TEST build did, with openMSX in place of the Python Z80:
+
+| subject | what is checked |
 |---|---|
-| ![Two windows](images/zxdesk-two-windows.png) | ![Notepad](images/zxdesk-notepad.png) |
-| Two windows, z ordered | The notepad, with the Sinclair style shift-reporting cursor |
-| ![Commander](images/zxdesk-commander.png) | ![Clock and calendar](images/zxdesk-clock-calendar.png) |
-| Two pane commander, over devices rather than directories | Clock and calendar |
+| heap | three blocks split to size at the expected addresses; a scribbled payload freed returns exactly its bytes; free by owner coalesces into one piece (expected addresses and statistics are calculated from the runtime heap bounds) |
+| calendar | all 1,200 months 1980-2079 agree with Python's calendar on weekday of the 1st and length; August 2026 grid rows; a step back from the 1st lands on 31 July; ENTER sets today; midnight on the 31st rolls the month; a month on from 31 Jan 1980 is 29 Feb, a year on 28 Feb 1981, two months back December 1980, and both ends of the range stop |
+| storage | 64 bytes written, closed, reopened and read back identical through the RAM backend; four files listed; the fifth open fails with STERR_FULL; delete removes the entry |
+| app model | AppAt finds the calendar's descriptor; AppSave then AppLoad through a heap state block restores (46, 7, 30) |
+| hit test | bar, desktop, status band, off the edge and an open menu drop give (4, 5, 0, 0, 6) |
 
----
+In the normal build a CTRL press at (130, 75) records CTL_DESKTOP.
 
-## Running it
+Menus (`menus.inc`, the ZX pull downs on the cell grid, one row per
+item, save-under out of the shadow):
 
-The toolchain is local and small: [pasmo](https://pasmo.speccy.org/)
-0.5.5, built from source into `tools/`.
+| subject | what is checked |
+|---|---|
+| menu-open | a press on FILE opens menu 2: the name table equals the oracle built from the MenuDefs read out of the ROM, title inverted, six item rows |
+| menu-open-1/4 | ZX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
+| menu-pick | FILE then a press on row 3 picks SAVE (item 2 of menu 2), the menu closes |
+| menu-restore | after the pick the name table is byte for byte the boot one again |
+| menu-away | VIEW then a press on the desktop: no pick, closed, restored |
 
-    ./build.sh                  assemble src/zxdesk.asm to build/zxdesk.tap
-    ./run.sh                    build and load onto the machine
-    MACHINE=128 ./run.sh        the same on a 128K, and put the setting back
+Windows (`windows.inc`, phase 3: the ZX window model on the cell grid,
+buffers of W x H name table codes from the heap, a Python compositor
+as the oracle):
 
-esxDOS runs here too, on an emulated DivMMC with a 64MB card image.
-`tools/` isn't in the repository because pasmo, the emulators and the
-esxDOS ROM aren't mine to redistribute, so you'll need to build the
-image yourself from an esxDOS release and a DivMMC card image. Once
-it exists, launch `tools/esxdos/esxdos.szx` and esxDOS is already
-resident; `Machine > NMI` gets you its file browser.
+| subject | what is checked |
+|---|---|
+| win-cal | VIEW > CALENDAR opens a calendar at (4, 4): the name table equals the compositor's desktop + frame + January 1980 from Python's `calendar`, crc32 656f02da |
+| win-two | MSX DESK > ABOUT in front of it: two windows, z order (1, 0), the front title inverted |
+| win-drag | a press on the calendar's title raises it; a mouse move of (+32, +16) with the button held drags it to (6, 5); z (0, 1) |
+| drag-frames | across the whole scenario (two opens, a raise, a drag) not one frame is dropped, on both machines |
+| win-close | the close box closes the front window; the name table is the about window alone |
+| close-heap | the heap holds the about window's buffer (90 bytes, owner $11) and nothing else |
+| win-keys | SHIFT+RIGHT moves the selection to the 2nd, shown inverted; ENTER makes it today (0, 0, 2) |
+| win-step | `.` a month on, SHIFT+`.` (`>`) a year on: February 1981 on the grid, crc32 775c19ea |
 
-Build flags, all passed through `--equ`:
+Not in the ZX original: the calendar steps a month with `,` and `.` and a
+year with `<` and `>`, because today starts at 1 January 1980 and setting
+it a week at a time took thousands of presses. The day is cut to the
+month's last where needed. 115 ROM bytes, no RAM.
 
-    DEMO=1 ./build.sh           a self dragging build, for reproducible captures
-    NOWAIT=1                    with DEMO, the same drag with no beam scheduler
-    SCRIPT=1 ./build.sh         drive the desktop from synthetic input
-    MOUSETEST=1 ./build.sh      the raw Kempston mouse diagnostic
+Applications (phase 4 so far: `note.inc`, `clock.inc`):
 
-`build.sh` must pass `--name` explicitly, because pasmo takes the tape
-header name from the output path exactly as written and would
-otherwise put `build/zxde` in the header. It also refuses to build a
-tape if the code has grown into the buffer region, because that overrun
-is silent otherwise: the first window grab writes over the program and
-a few seconds later the machine drops into BASIC with an unrelated
-error.
+| subject | what is checked |
+|---|---|
+| note-type | FILE > NEW, then H, I, ENTER, X, backspace: the document reads `HI` on row 0, cursor at (0, 1), the window shows the seven rows and the inverted cursor |
+| note-file | H SPACE I, FILE > SAVE, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `H I` again |
+| note-space | H SPACE I with the pointer over the note body gives `H I`, cursor 3, name-table crc32 85d6c290 on C-BIOS; holding SPACE repeats text without button events |
+| clock-face | VIEW > CLOCK, SHIFT+UP, 3100 frames: 13:01:01 on the 50 Hz machine, 13:00:51 on the 60 Hz one, the face as composed |
+| clock-rate | the ROM's second counting run in Python for an hour of true PAL (180,572) or NTSC (215,722) interrupts: 3599 s and 3600 s |
+| clock-count | the seconds the ROM counted since the set equal the Python model for the same number of interrupts |
 
-**Dragging a window under Fuse needs the space bar, not the mouse
-button.** Fuse for macOS, 1.9.2, stops delivering Kempston mouse
-movement while a button is held, so the pointer freezes at the moment a
-drag begins and the window never follows. Point at the title bar, hold
-SPACE, move, release. The mouse is fine for everything else and the
-buttons themselves register correctly; it is only movement that stops.
+The clock's rate comes from bit 7 of the BIOS's $002B: 50 interrupts a
+second and every so often 51 (50.16 Hz), or 59 and every so often 60
+(59.92 Hz), the ZX hundredths accumulator with MSX numbers. SPACE types
+a space in notepad, including while the pointer is over a window. CTRL is the keyboard equivalent of the left mouse button; cursor
+keys move the pointer, and SHIFT+cursor keys go to the application.
 
-This is the emulator, not the desktop, and `MOUSETEST=1` is how I
-proved it: it reads the mouse ports once each with nothing between the
-port and the screen, and the counters still stand still while a button
-is down. `RiBtn` in `ReadInput` is what makes SPACE work, and it's
-there so the desktop is usable on a machine with no mouse at all. A
-real Kempston mouse drags normally.
+Both C-BIOS_MSX1_EU (50 Hz) and C-BIOS_MSX1_JP (60 Hz) pass.
 
-`SCRIPT=1` is the one worth knowing about. It drives the desktop from a
-list of synthetic input events instead of the mouse, so an interaction
-(open a menu, pick an item, drag the window over another one, type
-into the field, save) runs the same way every time and can be compared
-against the last run rather than watched.
+## Arranging windows
 
----
+**VIEW > CASCADE** places windows back to front starting at cell (1, 2),
+stepping two columns and one row, clamped to the desktop. Sizes and z order
+are preserved. **VIEW > TILE** divides rows 1–22 into a whole desktop,
+left/right halves, a full-height left cell plus two right cells, or four
+quarters, for one through four windows. Cells are assigned front to back.
+Application text is clipped to the resized interior; each window keeps its
+own state. If a replacement buffer cannot be allocated, that window keeps
+its previous buffer and geometry.
 
-## How it is built
+`./test.sh --arrange` checks zero through four windows, CASCADE then TILE,
+repeated arrangements, allocator failure, compositor bytes and complete
+heap recovery after closing. It also runs the window and notepad/clock
+regressions. Arrangement scratch adds **3 bytes** of static RAM. A tile
+temporarily holds one replacement buffer before freeing the old one (up to
+704 payload bytes plus a four-byte heap header).
 
-From the bottom up.
+## Resizing and scrolling
 
-**Device layer.** `DevFillRect`, `DevFillDesk`, `DeskFillCol`,
-`AddrAt`, `BlitRect`, `RectGrab`. Everything above works in byte
-columns and pixel rows and never touches the screen's third and
-interleave layout directly. This is the boundary a port swaps out, and
-I drew it on day one for exactly that reason.
+Drag the bottom-right grip and release to resize in cells, with a minimum
+of 6 columns by 4 rows and the desktop as the outer limit. The pointer
+hotspot reaches column 31 and row 22 so every grip remains accessible.
+The old buffer is freed through `WndAllocBuf`; allocation failure restores
+the old dimensions and buffer size. Buffer composition and desktop repaint
+use successive frames, keeping large resizes within the tested frame budget.
 
-**Frame discipline.** The main loop halts on the interrupt, does all
-pointer work in the top border, waits for the beam if the window
-moved, redraws, then reads input and dispatches at the end of the
-frame. Input goes last so that the cost before the beam wait is
-constant, which is what makes the scheduler exact.
+Notepad's right frame column contains up/down arrows, a track and a position
+marker. Arrows move the view by one line; clicking above/below the marker
+moves a page. `APP_SCROLL` reports total/visible/first units and `APP_SCROLLTO`
+sets the view. The 16-line document initially shows seven lines. Scrolling
+leaves the caret in place; SHIFT+DOWN past the viewport scrolls to follow it.
+A caret outside the visible interior is not painted.
 
-**Event queue.** A sixteen slot ring of four byte events. `EvPoll`
-turns raw input into pointer moves, button presses and keys; `EvDispatch`
-drains it through a handler table.
+`./test.sh --resize-scroll` asserts real mouse growth, the 6x4 minimum,
+24x17 screen-edge growth, a grip press at that edge, allocation failure,
+heap recovery on close, `HeapStat`, compositor bytes, arrow/page scrolling,
+clamping and SHIFT+DOWN. On C-BIOS EU and JP, growth to 18x10 has name-table
+CRC32 **739b7584**, minimum size **fb3bbc3a**, and screen-edge size
+**6bb44a63**, with **Dropped = 0** in the resize subjects. The same focused subjects also
+pass on Roms_MSX1, Roms_MSX1 with Roms_Disk, and Roms_MSX2.
 
-**Hit testing.** A five byte row per control, front to back in z
-order, `$FF` terminated, refilled from the model before every search so
-there is no second copy of the window position to go stale. A closed
-menu gets a height of zero, which can never match, so `HitTest` has no
-special case for it.
+Static RAM increases by **4 bytes**, to **3,518 bytes**. The normal build
+leaves **3,385 bytes** for the heap with the disk ROM (8,770 without it);
+the TEST build leaves **670 bytes** with the disk ROM. Resize uses one
+window buffer, with no extra temporary heap allocation.
 
-**Transient surfaces.** A four deep arena, each surface up to 16 by 96,
-pushed and popped. Two stacks rather than one, because the pixels under
-a menu are pushed by something that has no panel record at all.
+Resizing or TILE also clamps the notepad's viewport to the last valid
+first line, without moving the caret. A clock dragged to row 20 moves up
+to row 19 when resized to the 6x4 minimum; a failed allocation preserves
+its original 8x3 geometry. The resize/scroll subjects cover these cases
+with memory and full name-table assertions. These fixes add **0 bytes**
+of static RAM.
 
-**Windows.** A record swapped into a live copy, the same trick as the
-panel record, because the window position is referenced ninety three
-times across six files. The z order is also the paint order reversed
-and the hit test order.
+## Settings
 
-**Storage.** A registry of backends, each a fourteen byte row of id,
-capability bits and six entry points. The six operations are hand laid
-`JP` instructions whose operands are patched on selection, so dispatch
-costs ten T states and clobbers no registers.
+**MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
+inversion (OFF/ON), application storage (RAM/DISK), SOUND (OFF/ON),
+KEY PTR (OFF/ON), and LATTICE (NONE/DOTS/GRID). LATTICE defaults to
+DOTS; it updates the desktop and menu rule patterns in all three screen
+banks without changing name-table cells. KEY PTR defaults to ON: cursor
+keys move the pointer
+unless SHIFT is held. OFF disables cursor pointer movement and clears its
+acceleration counters; the mouse and CTRL button remain active. DISK is offered
+only when `DskPresent` detects it. Click a bracketed value to cycle it;
+TAB or SHIFT+UP/DOWN selects a row, SHIFT+LEFT/RIGHT decrements/increments,
+and ENTER or SPACE activates the selected button. Changes apply immediately.
+SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
+SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
-**Controls.** A panel is a stack of rows and every control is a row, so
-a row's index is three shifts rather than a search. Four types, of
-which the useful one is a cycle: a checkbox is a cycle whose limit is
-two, and a radio group is a cycle whose limit is N. The settings panel,
-the file list and the save box are all the same code with different
-tables.
+`SetSave` writes `SETTINGS` through the storage layer; boot calls
+`SetLoad` then `SetApply`. The eight bytes are `4D 04 rr yy bb ss kk ll`: MSX
+magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
+`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), and lattice (0 NONE, 1 DOTS,
+2 GRID).
+The MSX magic is distinct from ZX settings. Defaults are ramp 1,
+inversion 0, sound 1, key pointer 1, lattice 1 and the detected boot backend. Missing
+files, I/O failures, incorrect magic/version and incorrect lengths give defaults. Version 1
+five-byte records migrate with sound and key pointer ON; version 2 six-byte
+records retain sound and migrate with key pointer ON; version 3 seven-byte
+records retain both fields and migrate with lattice
+DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 requires
+eight bytes.
+`SetApply` clamps invalid fields and rejects disk selection without BDOS.
+Preferences stay on the detected boot device even if the application
+backend is changed to RAM, so the next boot can still find them.
 
-### The memory map
+Run `./test.sh --settings` for the focused subjects. The TEST ROM
+asserts save/clear/load, invalid headers, all three ramps, both mouse Y
+signs, field validation and backend restoration. The normal ROM asserts
+the menu contents and actual inverted mouse movement; on disk it also
+boots seeded valid, invalid and truncated/oversized files. The TEST image
+contains `SETTINGS` bytes `4D 04 02 00 01 01 01 01` after saving with RAM selected.
+The persistence implementation added 12 static RAM bytes; TEST records
+reuse commander scratch space.
+In lf-1210, the settings window used 177 heap bytes: a 168-byte cell buffer,
+one byte of row focus, and two four-byte allocation headers (+73 bytes).
+The old two-byte digit scratch is replaced by one focus byte, reducing
+static RAM by one byte to 3,524. The normal ROM uses 13,013 bytes
+(TEST: 14,180). The heap budget is 8,764 bytes without
+a disk ROM and 3,379 with one (TEST: 6,049 and 664).
 
-    $6000-$727C   the slow region: panels, the calendar, the file
-                  panels, the desktop setup, the commander
-    $727D-$7FFF   free, 3,460 bytes, contended
-    $8000-$B1B7   the fast region: everything else
-    $B1B8-$BCFF   free, 2,889 bytes
-    $BD00         stack top
-    $BDBD         interrupt handler
-    $BE00-$BEFF   interrupt vector table
-    $C000-$C63F   the RAM disk, its directory, and the tape buffer
-    $C640-$C74F   the live notepad state
-    $C750-$DF4F   four transient surfaces
-    $DF50-$FEFF   the heap, 8,112 bytes
-    $FF00-$FFFF   deliberately unused
+The lf-1210 SETTINGS UI subjects asserted a composed name-table CRC32 and all five
+record bytes after each mouse click and keyboard change, including ramp
+wrap (CRC32 `049f8dfa`), SAVE, DONE without writing, and clearing/reloading
+the saved record (`4D 01 02 01 01`, screen CRC32 `0574f7ad` on C-BIOS).
+They also check the active ramp pointer/backend and unavailable-disk fallback.
+The full `test-all.sh` suite remains the pipeline's responsibility for lf-1210,
+as required by the implementation-run instructions.
 
-Two things in that map are worth explaining.
+Focused `./test.sh --settings` results for lf-1210:
 
-The slow region exists because the ULA steals cycles below `$8000`
-while the display is being painted, so code there runs perhaps a third
-slower. The rule for it is one line: nothing in it may run inside a
-frame. Nothing there is on the drag path, the pointer path or in the
-interrupt, and the timings were unchanged to the T state across
-the move. It starts at `$6000` rather than at the top of the system
-variables because the tape loader indexes the system variable area
-through IY and the BASIC loader itself lives just above it, and a CODE
-block that overwrote the program doing the loading would be a novel way
-to fail.
+| Configuration | Assertions |
+|---|---|
+| C-BIOS_MSX1_EU (50 Hz) | 50 passed |
+| C-BIOS_MSX1_JP (60 Hz) | 50 passed |
+| Roms_MSX1 | 50 passed |
+| Roms_MSX1 + Roms_Disk | 56 passed |
+| Roms_MSX2 | 50 passed |
 
-The heap stops a page short of the top of memory rather than at
-`$FFFF`. Every walk computes the next block as address plus header plus
-size, and a block ending at `$10000` would wrap to nought and compare
-as below the base of the heap. Stopping at `$FF00` costs 256 bytes of
-8,272 and removes the entire class of failure.
+Changes to shared settings now mark every open SETTINGS buffer and its
+screen rows for repaint, retaining each window's button focus. The
+`settings-two-*` subjects cover keyboard and mouse changes to all three
+values, both cached buffers, ESC exposing the remaining window, and SAVE
+from that window. For lf-1213, both ROM builds assemble: **+53 ROM bytes**,
+**0 added static RAM bytes**, and no additional heap allocation. The normal
+ROM uses **13,066 bytes**; RAM and heap budgets are unchanged. Python syntax
+and diff checks pass. Emulator assertions have not been run in this
+implementation environment (openMSX and xdotool are unavailable); the
+focused subjects and full machine matrix remain to be run by the pipeline.
 
----
+## PSG sound
 
-## What was measured
+SOUND defaults to ON. Menu selections and dialogue answers click; opening a
+dialogue beeps. Channel A uses a single falling AY envelope: seven register
+writes, with no delay loop or later frame callback. The mixer retains its
+I/O direction bits, register 15 is untouched, and the address latch returns
+to register 14. Tape owns the PSG from the start of a BIOS transfer until
+its success or error return; sound requests in that interval are ignored.
 
-This is the part I'd want if I were reading someone else's repo.
-Every figure below was measured by running the code and timing it
-against the machine's own clock. None of it comes from counting
-instructions, and the few claims that are derived say so.
+`./test.sh --sound` checks PSG readback through Z80 IN instructions,
+both sound tables, OFF and tape suppression, pointer movement after a beep,
+UI call sites with SETTINGS open, frame drops, and the SETTINGS UI and
+persistence subjects. Breakpoints measure entry through return using
+`machine_info time`; the subject prints cycles and requires fewer than 1000.
+The SETTINGS format is now version 2; its sixth byte is SOUND.
 
-![Timings, on the machine](images/zxdesk-timings.png)
+This change adds **2 static RAM bytes** (SetSound and TapeBusy), for
+**3,526 bytes** total. The normal ROM uses **13,312 bytes**, leaving
+**8,762 heap bytes** without disk and **3,377** with disk. SETTINGS grows
+by one 24-cell row: **201 heap bytes** per window, up **24 bytes**.
+Sound itself allocates no heap memory.
 
-### The clock you can trust
+Measured on C-BIOS EU/JP and the real MSX1 BIOS: CLICK/BEEP take **850
+cycles**, OFF takes **140**, and tape suppression takes **167**, from
+SndPlay entry through return (breakpoints + machine_info time). The sound
+subjects report **Dropped = 0**. SOUND OFF save/reload has name-table CRC32
+**24174bd9** on C-BIOS; five-byte v1 migration has **fe9a6441**.
+The full test-all.sh matrix remains for the pipeline, as required by this
+implementation run.
 
-The 48K interrupt period is exactly 69,888 T states and nothing a
-program does can move it, so it is the only usable clock on the
-machine. So a timing run syncs on `HALT`, optionally delays a known
-number of T states to place the routine at a chosen point in the frame,
-calls it, then counts turns of a sixteen T loop until the next
-interrupt. Comparing against an empty calibration run cancels every
-fixed overhead:
+## Commander
 
-    cost = (K - K0) * (69888 - 118) - 16 * (C - C0) - delay
+**FILE > OPEN** opens a single-pane file picker on the active storage
+backend. It lists names and five-digit byte lengths from `StDir`.
+**SHIFT+UP/DOWN** or a single click on a file row selects it (inverted).
+**ENTER** or a single click on **[OPEN]** closes the picker and loads it
+into the foremost notepad, creating one if none is open. **DELETE** opens
+a modal CANCEL/DELETE confirmation, initially on CANCEL; TAB or
+SHIFT+arrows changes the answer, ENTER chooses it, and ESC cancels.
+**R** refreshes the directory. Tape has no directory and retains its
+sequential FILE > OPEN load operation.
 
-118 T is the exact cost of the returning interrupt path, counted
-instruction by instruction. It is exact rather than estimated because
-the handler, its variables, the counting loop and the stack all live
-above `$8000`, where the ULA never steals a cycle. Only the routine
-being timed touches contended memory.
+`./test.sh --browse` checks the single pane against the Python compositor,
+selection, empty and variable-length listings, loading into the foremost
+of two notepads, creating a notepad, a storage-open error, confirmation,
+cancellation, deletion and heap recovery. On disk, `read_disk_image`
+checks that deletion removes only the selected file and preserves every
+other payload. `--apps` runs the notepad/clock subjects, including the
+updated save/edit/picker/ENTER round trip; `--commander` includes both
+picker and existing two-pane subjects.
 
-Measured blind against three delays of known length:
+The picker reuses Commander's buffer and cache. Static RAM grows by
+**7 bytes** (one mode byte and six decimal-formatting bytes); each
+Commander state grows by **1 byte**, to 203. A Commander window now uses
+**571 heap bytes** including its two allocation headers. The modal
+confirmation reuses the existing save-under and adds no heap allocation.
+The normal build uses **12,557 ROM bytes** and **3,525 static RAM bytes**,
+leaving **8,763 heap bytes** without a disk ROM and **3,378** with it.
+The TEST build uses 13,724 ROM bytes, 6,240 static RAM bytes and leaves
+663 heap bytes on the disk machine.
 
-| nominal | measured | error |
+Measured picker name-table CRC32: RAM listing **6151d015**, disk listing
+**c49b1ad1**; after confirmed deletion **47497a3a** (RAM) and **e283b0fe**
+(disk). Loading BETA into the foremost notepad gives document CRC32
+**5a0ad6a7** and composed screen CRC32 **c1fdf0cf** on both backends.
+
+Open **VIEW > COMMANDER**. The two panes show DISK and RAM when a disk
+interface is present; on C-BIOS both panes show the same RAM store.
+The active pane and selected name are inverted.
+
+- **TAB** or **SHIFT+LEFT/RIGHT**: choose a pane.
+- **SHIFT+UP/DOWN**: select a file; the six-row listing scrolls.
+- **ENTER**: open a 256-byte MSX Desk document in a new notepad.
+- **C**: copy to the other device, up to 256 bytes. Existing targets are
+  refused, not overwritten. RAM holds four files.
+- **D**, then **Y**: delete the selected file. **N** or **ESC** cancels.
+- **R**: refresh both listings and reset the selection.
+
+Names use **8.3**, including the dot in the displayed name: `NOTES.TXT`
+and `NOTES.BAK` are distinct. The disk parser uppercases names and
+rejects overlong names, wildcards and paths instead of truncating them.
+Folders and volume labels are excluded: this version browses the root
+of drive A, without subdirectory navigation. Opening expects MSX Desk's
+fixed 256-byte document layout, even when a file has a `.TXT` extension.
+
+The notepad remembers the device it was opened from. Saving a document
+opened from RAM writes back to RAM, even when the desktop defaults to disk.
+Commander restores the global storage selection after each operation.
+Directory pages are cached per window; repainting performs no disk I/O.
+Before an operation, Commander resolves the displayed filename again so
+a stale index cannot select a different file after another window deletes one.
+Listings can be refreshed with R after changes made in another window.
+Disk operations are synchronous; their latency is not covered by the
+zero-dropped-frame assertion for the existing calendar drag scenario.
+
+The harness seeds real FAT12 images and asserts the name table against
+its Python compositor. It checks empty/populated panes, selection,
+scrolling, separate window state, window-limit errors, close/heap recovery,
+copying in both directions, full RAM/disk stores, close-error injection,
+cleanup of failed new copies, no overwrite, delete/cancel,
+notepad device ownership and file bytes after save. 257-byte and 64KB
+copies are refused; full 8.3 names survive listing/copy/open/save. The
+TEST ROM also exercises valid and invalid FCB names without a disk ROM.
+
+## Frame budget, measured
+
+`WinRedraw` repaints by row range: every change says which rows it
+touched and which windows need recomposing (a fresh window, a key the
+application acted on, a focus change flips two title rows only), and
+one repaint per frame paints the desktop for those rows, recomposes the
+dirty buffers and blits every window's rows within the range, back to
+front. A drag recomposes nothing. Measured with breakpoints on the
+loop (`machine_info time` at wake and at the next HALT), the calendar
+open through the menu is the longest iteration:
+
+| version | open frame | note |
 |---|---|---|
-| 2,599 T | 2,592 T | −7 T |
-| 51,999 T | 52,000 T | +1 T |
-| 103,999 T | 103,994 T | −5 T |
+| full recompose, 22 rows | ~30 ms | dropped two frames per open |
+| row range, dirty slots | 19.3 ms | dropped one at 50 Hz |
+| + MarkRow table, grid by running day, cap-only focus | 17.3 ms | |
+| + PUSH desktop fill, rows marked once, incremental blit | 16.0 ms | |
+| + APPF_FULL, no blank under an app that paints it all | 14.9 ms | 0 dropped at 50 and 60 Hz |
 
-Worst error is 7 T in 104,000, or 0.007%. The third crosses a frame
-boundary, which is what confirms the 118 T figure.
+The flush of the resulting rows lands in the next frame: OUTI, NOP,
+JP NZ at 30 cycles a cell, 16 rows about 5.6 ms. `drag-frames` asserts
+zero dropped frames on both machines, so this is a guarded number.
 
-### Contention costs 14.7%, not 50%
+## Real BIOS ROMs
 
-Every budget in the project started from a pessimistic 50% penalty on
-screen writes, taken from the folklore. Sweeping a 1,024 byte fill
-across the frame:
+C-BIOS has no cassette and no BASIC, so the tape backend and anything
+that wants a real machine run on real BIOS ROMs, which are not ours to
+distribute. Put them in `roms/` (gitignored, any file names:
+openMSX matches ROMs by sha1) and name the machine. Two configs in
+`harness/machines/` are built on the dumps of a common ROM set:
 
-| start | cost |
+| machine | ROMs | what it is |
+|---|---|---|
+| `Roms_MSX1` | MSX.ROM (sha1 409e82ad...) | a 50 Hz 64K MSX1 on the generic BIOS, the VG 8020 config with the ROM swapped |
+| `Roms_MSX2` | MSX2.ROM, MSX2EXT.ROM (the NMS 8245/8250/8255 dumps) | a Philips NMS 8250 without its drive: V9938, 128K mapper, RTC |
+
+    MSX_MACHINE=Roms_MSX1 ./test.sh
+    MSX_MACHINE=Roms_MSX2 ./run.sh
+
+Both pass every subject; on the V9938 register 1 reads back without
+the TMS9918's 4K/16K bit, which the assertion masks.
+
+The DISK.ROM of the same set (Disk BASIC 2.2, a dump openMSX has no
+config for) works as a WD2793 in the Philips connection style:
+`harness/extensions/Roms_Disk.xml`.
+
+    MSX_MACHINE=Roms_MSX1 MSX_EXT=Roms_Disk ./test.sh
+
+## The disk backend
+
+`disk.inc` is a storage backend on MSX-DOS 1's BDOS ($F37D): open,
+create, delete, close, random block read and write with a record size
+of one byte, search first/next for the directory. Names use uppercase 8.3 syntax. `StInit` selects it when the BDOS
+jump is there, explicitly enabled tape next, and the RAM backend otherwise, so the notepad's SAVE
+lands on a real MSX-DOS file that a PC can read.
+
+Getting there took three measurements:
+
+- A disk ROM initialises in two halves. Its INIT, which runs first
+  because the extension sits in slot 1 and the cartridge in slot 2,
+  takes a driver work area (HIMEM $F195) and hooks H.RUNC with an
+  inter-slot call; the DOS kernel, the BDOS jump and the rest of the
+  work area only arrive when BASIC's cold start calls that hook, and
+  that handler does not return, it carries on into BASIC. So with a
+  disk ROM present the cartridge's INIT hooks H.MAIN, the top of
+  BASIC's main loop, returns to the BIOS, and the desktop starts from
+  there with HIMEM at $DE77 and 3,717 bytes of heap. Without one
+  (C-BIOS, a bare machine) INIT starts the desktop directly.
+- BASIC calls hooks with page 1 on its own ROM, so the hook must be an
+  inter-slot call (RST $30, the cartridge's slot id from the slot
+  register, EXPTBL and SLTTBL): a plain JP was measured to land in
+  BASIC at the same address.
+- The disk ROM loads sector 0 of the disk to $C000 and calls offset
+  $1E. The harness builds its own 720K FAT12 image (`make_disk_image`),
+  and with zeros there the ROM ran them as code and asked "Drive
+  name?"; a RET says there is no DOS to boot. The date prompt on a
+  machine with no clock is answered by a return planted in the
+  keyboard buffer at INIT.
+
+The stack and the heap's end come from HIMEM at run time, STACKRES
+($380) apart, not from an equate. The TEST build's records leave
+986 usable bytes of heap under a disk ROM, so its heap subject allocates
+256, 200 and 128 bytes (reduced for the tape buffer).
+
+Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
+the image with the document's bytes; `store-disk` finds SETTINGS (five
+bytes, `4D 01 02 00 01`, after the settings subject), NOTE1, NOTE3 and NOTE4 after NOTE2 was
+deleted; `store-dir` expects the fifth file to be created rather than
+refused. All five configurations pass: C-BIOS EU and JP, Roms_MSX1,
+Roms_MSX1 with Roms_Disk, Roms_MSX2. `./test.sh`
+links the ROM directory and the configs in as openMSX's user share
+inside the image; `run.sh` does the same for the host's openMSX. Any
+other machine from `/usr/share/openmsx/machines/` works the same way
+once its ROMs are present; a missing one is reported by name and sha1
+when the machine starts.
+
+## The tape backend
+
+`ST_TAPE` uses the main BIOS cassette entries: TAPOON/TAPOUT/TAPOOF
+for writing and TAPION/TAPIN/TAPIOF for reading. Enable it explicitly
+with pasmo `--equ TAPE=1` (default `TAPE=0`), for example:
+
+    pasmo -I src --equ TAPE=1 --bin src/msxdesk.asm build/msxtape.rom build/msxtape.sym
+
+Boot still prefers BDOS when present. Otherwise the opt-in selects tape,
+and without it boot selects RAM. C-BIOS has no cassette implementation;
+use Roms_MSX1 or Roms_MSX2 for transfers. SETTINGS displays TAPE and
+uses defaults at boot on that device, without waiting for a cassette.
+
+Like the ZX backend, writes are buffered until close and reads load a
+file at open. One handle holds at most 256 bytes; short writes/reads
+report the actual count, EOF returns zero, and directory/delete are
+unsupported. The MSX-specific format consists of two BIOS blocks:
+
+- Long leader, `MSXT`, a 13-byte zero-padded name including terminator,
+  and a two-byte little-endian length (19 header bytes).
+- Short leader and exactly that many payload bytes (0–256).
+
+This is a Desk format, not BASIC's cassette format or a ZX tape image.
+Position the cassette at the desired file: an unexpected name, magic or
+length fails the open. BIOS carry failures propagate through storage;
+a save failure leaves the document marked as unsaved.
+
+`MSX_MACHINE=Roms_MSX1 ./test.sh --tape` records a real WAV using
+`cassetteplayer new`, saves the notepad, edits it, rewinds and plays the
+cassette, and uses FILE > OPEN. All 256 restored bytes match the snapshot;
+Python independently decodes the WAV's FSK pulses into a 19-byte header
+and the identical 256-byte document, CRC32 **0b0601cb** on both real
+machines. The subject also checks backend precedence, invalid headers,
+and injected TAPOUT/TAPOOF failures. The TEST ROM checks buffering,
+partial reads, full writes, EOF and invalid handles on C-BIOS too.
+These subjects are included in the normal suite.
+
+Tape traffic masks interrupts in the BIOS. The notepad round trip
+measured **Dropped = 34** on both real machines; this operation is outside
+the zero-drop UI budget. The clock retains its existing IrqCnt accounting.
+
+Static RAM grows by **299 bytes**: a 256-byte buffer, two 19-byte headers,
+two 2-byte counters and one mode byte. Normal static RAM is **3,514 bytes**,
+with **3,389 bytes** left for the heap behind the disk ROM; the TEST build
+leaves **674 bytes**. Tape adds no heap allocation. The TEST heap subject
+now uses 256/200/128-byte allocations to fit this smaller budget.
+
+## Memory budget
+
+The build prints it and fails past the line:
+
+    msxdesk.rom: code $4000-$6A23, 10787 bytes, 21981 free; RAM $C000-$CC81, 3201 bytes, heap 9087 to $F000 without a disk ROM, 3702 with one
+
+Work RAM is handed out by the `var` macro in msxdesk.asm from $C000 up;
+the heap takes everything from `RamEnd` to `HeapEnd`, which is HIMEM
+minus $380 for the stack, read at Init: $F000 on a bare machine, $DAF7
+behind this disk ROM. The RAM storage
+backend's four 256 byte files and directory occupy 1,088 bytes;
+the name table shadow occupies 768. Commander adds a 360-byte window
+buffer and 203-byte state per instance, plus two four-byte heap headers
+(571 bytes total). Its 256-byte transfer buffer is shared static RAM.
+
+The ZX storage layer dispatched through the operands of JP
+instructions it patched at run time; a ROM cannot be patched, so the
+six vectors are a table in RAM and each entry point jumps through IX
+(HL carries the name or the buffer). The hit test table is copied to
+RAM for the same reason.
+
+## Screen model
+
+Everything paints into a shadow of the name table in RAM (`ShadowNT`,
+768 bytes) and marks the row dirty; `NtFlush` copies the dirty rows to
+VRAM right after the interrupt, 32 OUTs a row at 41 cycles apart. A
+save-under is an LDIR out of the shadow and a read-modify-write is a
+byte, which is what the ZX code did to its screen and what VRAM behind
+a port cannot do.
+
+Screen 2's colour table is one colour byte per pattern row per third,
+so the font is loaded twice: at $20-$7F black on white and at $A0-$FF
+white on black, the same bytes with the colours swapped, in all three
+thirds. Inverted text is a code with bit 7 set, anywhere on the
+screen; the status band is inverted spaces and a front window's title
+row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
+
+The stack is set from HIMEM at startup ($F380 without a disk ROM): the BIOS called the cartridge on
+its own stack, and C-BIOS and a real BIOS need not agree where that
+was. VDP register writes go through `WrtVdp`, under DI like `SetWrt`.
+
+The display is switched off (R1 bit 6) right after CHGMOD and on again
+after the first flush: CHGMOD leaves the BIOS font table on the screen
+and it showed for the fraction of a second the tiles, colours and
+desktop took to load. The SETTINGS byte "mouse Y invert" is 0 for a pointer that
+follows the hand (the MSX mouse's negative delta negated) and 1 for
+upside down; the first version had 0 mean "no negation" and a file the
+harness left on the disk image turned the axis over on a real screen.
+A byte that is neither is a damaged file and reads as 0. The mouse's four nibbles are read under DI, one
+strobe sequence that an interrupt handler touching PSG register 15
+would shuffle, and the per-frame clamp is 64 as on the ZX: at 16, a
+fast host move of 100 pixels lost 34 of its 50 counts (`ptr-fast`
+asserts (170, 120) for +100, +60).
+
+## Unsaved-work dialogues
+
+Closing a modified notepad opens **UNSAVED WORK** with **CANCEL**, **DISCARD**
+and **SAVE**. CANCEL is initially selected; ENTER chooses it, TAB or
+SHIFT+arrows moves the focus, ESC cancels, and a click chooses an answer.
+Clicks outside the panel and other typing are ignored. A failed open,
+write, short write or close during saving keeps the document modified and
+opens **COULD NOT SAVE**, dismissed with OK, ENTER or ESC. FILE > SAVE
+also reports failures with this alert.
+
+`./test.sh --dialogs` checks the panel and focus against a cell oracle,
+modal input, unchanged document bytes on cancel/error, heap recovery on
+discard and all 256 saved bytes in RAM or on the disk image. It injects
+storage open/write/close errors, including a write error with a full byte
+count. The arrangement close subjects now explicitly discard their edited
+notepad; `./test.sh --arrange-only` runs that group alone.
+
+The panel saves 140 shadow cells in the existing 256-byte Commander
+transfer buffer: modal input prevents Commander operations until restoration.
+Window redraws wait while the dialogue is open; pending updates repaint after
+restoration. Static RAM grows by **14 bytes** (9 dialogue state bytes and
+5 control-table bytes), with no extra heap allocation. The normal ROM uses
+3,215 static RAM bytes and leaves 3,688 heap bytes with the disk ROM;
+the TEST ROM leaves 973 heap bytes with it.
+
+## Failed notepad loads
+
+A failed load keeps the document, modified flag, caret, viewport, filename
+and storage ownership. Reads use the existing 256-byte Commander scratch
+buffer; the document and name are committed only after a complete read and
+successful close. FILE > OPEN's sequential path and the Commander show
+**COULD NOT LOAD**, and dismissing the alert leaves the document intact.
+
+`./test.sh --note-load` injects open, short-read, read and close failures
+through the sequential menu path, the file picker and the two-pane Commander.
+It asserts the preserved document (CRC32 **c21bbd31**), metadata, carry and
+close counts, the alert text, dismissal, and a successful subsequent load
+(name-table CRC32 **82f03d3c**). The two-pane Commander opens a new notepad,
+whose blank document is preserved on failure (CRC32 **20acf377**).
+
+The normal build uses **12,613 ROM bytes**, **3,525 static RAM bytes** and
+leaves **8,763 heap bytes** without a disk ROM, **3,378** with it. This fix
+adds **56 ROM bytes**, **0 static RAM bytes**, and no heap allocations.
+
+For lf-1212, all 32 focused subjects passed on C-BIOS_MSX1_EU (50 Hz),
+C-BIOS_MSX1_JP (60 Hz), Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2.
+The full `./test-all.sh` run is left to the pipeline, as required by the
+ticket's implementation-run instructions.
+
+Focused lf-1215 verification (the complete suite was not run here):
+
+| Configuration | Result |
 |---|---|
-| top border | 11,744 T |
-| 10,399 T | 12,913 T |
-| 20,799 T | 13,441 T |
-| 31,199 T | 13,473 T |
-| 41,599 T | 13,441 T |
-| 51,999 T | 12,369 T |
-| bottom border | 11,745 T |
+| C-BIOS MSX1 EU, 50 Hz | 11 sound assertions; 73 SETTINGS UI/persistence assertions passed |
+| C-BIOS MSX1 JP, 60 Hz | 103 assertions with --sound (TEST ROM, sound, SETTINGS); final sound recheck passed |
+| Roms_MSX1 | 11 assertions with --sound-only passed |
+| Roms_MSX1 + Roms_Disk | 111 assertions with --sound passed |
+| Roms_MSX2 | 11 assertions with --sound-only passed |
 
-The two border figures agree to 1 T, which is the uncontended cost. The
-worst case inside the display is 13,473 T. That is 14.7%, or about
-1.7 T per contended byte written. Budgets built on the 50% figure are
-roughly a third too conservative, and mine were.
+Disk SOUND OFF save/reload name-table CRC32 is **fc73ad4c**. The BIOS
+transfer probes use stubbed BIOS returns to assert PSG ownership during
+success and failure; actual cassette waveform round trips remain in the
+pipeline's existing tape subjects.
 
-### Half the cost of drawing a window is three short strings
+For lf-1216, KEY PTR adds **100 ROM bytes** and **1 static RAM byte**.
+The normal build uses **13,412 ROM bytes**, **3,527 static RAM bytes**,
+and leaves **8,761 heap bytes** without disk or **3,376** with disk.
+The TEST build uses **14,585 ROM bytes**, **6,242 static RAM bytes**,
+and leaves **6,046 / 661 heap bytes** respectively. Each SETTINGS window
+now uses **225 heap bytes**, up **24**, for its extra row.
 
-`WinDraw` split into its four phases and each timed separately. The
-phases sum to within 330 T of the whole, which is the four call and
-return pairs plus the sixteen T counting granularity.
+The `--settings` subjects include KEY PTR ON/OFF with and without SHIFT,
+the measured acceleration ramp, disabling during a held direction,
+mouse movement and CTRL while OFF, mouse/keyboard cycling, OFF persistence,
+and v1/v2 migration. On C-BIOS, OFF save/clear/load has name-table CRC32
+**ebe8b816**; v2 migration preserving SOUND OFF has **43f72adc** and
+returns carry clear. The complete `test-all.sh` suite is left to the
+pipeline, as required by this implementation run.
 
-| phase | top of frame | mid display | share |
-|---|---|---|---|
-| text | 35,872 T | 35,969 T | 50% |
-| edges | 19,552 T | 19,841 T | 27% |
-| fills | 14,688 T | 16,641 T | 21% |
-| close box | 832 T | 849 T | 1% |
-| **whole** | **71,274 T** | **73,099 T** | |
+Focused lf-1216 verification (`./test.sh --settings`):
 
-Twenty seven characters of title and body text, at roughly 1,330 T
-each. The fills, which I had assumed were the problem, are a fifth of
-it. Optimising the fill would have bought a few per cent of a drag
-frame and I'd have spent a week on it.
-
-### A benchmark that measured the wrong thing
-
-An earlier note recorded the cell aware push fill at 7.4 T per byte.
-The real routine costs 11.5 T per byte, 54% more. The benchmark had
-measured the technique; the routine carries per row address arithmetic
-the benchmark never paid. Of the 183 T a row costs, 88 T is the push
-chain actually writing pixels and 95 T is the register exchange, the
-address step, the cell boundary test and the loop.
-
-Over half the cost of the fastest fill on the machine is not writing
-pixels. That generalises: on this processor, per row overhead is the
-thing to attack, not per byte throughput.
-
-### Interrupts are lost, not deferred
-
-This is the one I'd most like other people on this hardware to know
-about, because it produces a fault that looks like anything except its
-cause.
-
-The fills held `DI` for their whole run, because SP walks through
-screen memory and stops being a stack. The received wisdom is that this
-delays the interrupt. It does not. The Spectrum asserts INT for only
-32 T states and then withdraws it, so a `DI` window that covers those
-32 T destroys the interrupt rather than postponing it.
-
-It was observed before it was understood. A fill placed at 62,399 T
-into the frame reported crossing no frame boundary when it plainly
-crossed one. Rescoring it as a lost interrupt gives 11,745 T against
-11,744 T for the same fill in the top border, and the two agreeing to
-1 T is what confirmed the diagnosis.
-
-Then it was measured properly. With an interrupt injected after every
-single instruction of an 8 by 24 fill, the interrupt was refused at 458
-of 500 instruction boundaries in one fill routine and 710 of 752 in the
-other.
-
-**The obvious fix does not work.** Re-enabling interrupts between rows
-sounds right and fails, because the interrupt is not pending, it is
-gone. An `EI` window a few T states wide, once every 236 T, catches it
-about one row in thirty. Making the `DI` region short is not the same
-as making it absent, and only absent is a fix.
-
-**What works is owing the last push.** The fills now run with
-interrupts enabled throughout. What `DI` was protecting was SP, so the
-fix is to guarantee that the two bytes of return address always land
-somewhere that is about to be overwritten anyway. SP takes two kinds of
-value: inside the rectangle, where a push writes exactly what the
-chain's next push will write, and the low point after the last push of
-a row, which the chain never returns to. So the chain is made one push
-shorter than the row, and the leftmost two bytes are **owed** — paid one
-iteration later, once SP has moved into the next row and can no longer
-reach them.
-
-Afterwards: 0 of 607 and 0 of 904 instruction boundaries destroy the
-interrupt, the rectangle is byte for byte identical every time, nothing
-outside it is touched, and the screen checksums are unchanged
-either side of the change.
-
-| | before | after | |
-|---|---|---|---|
-| 16×96 rectangle fill | 17,414 T | 22,068 T | +48 T a row |
-| 16×96 desktop fill | 25,351 T | 30,125 T | +50 T a row |
-
-That's a real cost, and it's worth it. The drag path is mostly the
-column fill, which writes through HL, never touched SP and was never at
-risk.
-
-### The watchdog that was caught by the thing it was built to catch
-
-A frame watchdog counts interrupts in the handler and frames in the
-main loop; the difference is frames dropped. The handler is the awkward
-half, because it fires inside a fill where the stack is not a stack.
-
-The first version borrowed IX and counted with `INC (IX+0)`, and the
-interrupt sweep above failed on its first run. That instruction sets
-the flags, and a fill holds a live carry across the address step that
-finds the end of a row and the branch that decides whether the row
-crossed a boundary. An interrupt in that gap stole the carry and the
-row stepped to the wrong address.
-
-`INC IX` is a sixteen bit increment and sixteen bit increments leave
-the flags alone. So the counter is a word, the handler is transparent,
-and it costs 104 T fifty times a second with not one flag or register
-altered. The roadmap had predicted that a watchdog would have caught
-the interrupt bug earlier. What actually happened is that the interrupt
-test caught the watchdog.
-
-**Letting the handler push is also a dead end.** A handler that pushes
-AF uses four bytes below SP rather than two, so the owed region has to
-double and every row pays another 22 T.
-
-### Getting a drag inside one frame
-
-The starting position was hopeless: a full erase and redraw of a window
-cost 96,010 T against a frame of 69,888 T. That is 137% of a frame, and
-it is why dragging ran at 25 Hz. Four changes, in order, each measured:
-
-| change | effect |
+| Configuration | Result |
 |---|---|
-| **Off screen buffer.** Compose once into a buffer, blit per frame. The expensive work is composition, not transfer. | redraw 71,274 T → 26,048 T |
-| **Faster text.** Rewriting the pixel text renderer. | 1,307 T → 622 T a character, 2.10× |
-| **Damage rectangles.** Erase only the strip the window has vacated, not the whole window. | erase 19,664 T → 1,456 T |
-| **A narrow desktop fill.** Two bytes straight through HL with the pattern held in registers, unrolled four ways so no row works out its phase. | single column strip 14,256 T → 5,712 T |
-| **Chasing the beam** rather than waiting for it to clear the whole window. | a further 16,128 T |
+| C-BIOS_MSX1_EU, 50 Hz | 107 assertions passed |
+| C-BIOS_MSX1_JP, 60 Hz | 107 assertions passed |
+| Roms_MSX1 | 107 assertions passed |
+| Roms_MSX1 + Roms_Disk | 116 assertions passed |
+| Roms_MSX2 | 107 assertions passed |
 
-A drag frame now ends at **59,858 T**, inside the frame, and dragging
-runs at 50 Hz.
+Disk KEY PTR OFF save/clear/load has name-table CRC32 **338c5e83**.
 
-The beam scheduler counts scan lines rather than T states, because one
-line is exactly 224 T and the top border is exactly 64 lines, so the
-target is an eight bit addition rather than a division. It measured
-36,576 T for 163 lines against 36,353 T counted by hand.
+For lf-1217, LATTICE adds **226 ROM bytes** and **1 static RAM byte**.
+The normal build uses **13,638 ROM bytes**, **3,528 static RAM bytes**,
+and leaves **8,760 / 3,375 heap bytes** without/with disk. The TEST build
+uses **14,814 ROM bytes**, **6,243 static RAM bytes**, and leaves
+**6,045 / 660 heap bytes**. Each SETTINGS window uses **249 heap bytes**
+including allocation headers, up **24** for the extra row. Pattern updates
+allocate no heap memory.
 
-The text rewrite is worth a note because measuring it proved both of
-my guesses wrong. The address routine was called once per character, not
-once per pixel row, and crossing a cell boundary cost nothing. The real
-costs were 232 T re-testing an inversion flag on every pixel row, 344 T
-on eight calls to a row stepping routine, and 126 T recomputing an
-address that was one byte to the right of the previous one. The
-replacement makes the inversion a self modified `XOR` operand set once
-per string, walks one address across the whole string, and splits the
-eight pixel rows either side of the single cell boundary they can
-cross.
+`--settings` asserts all eight bytes of both tiles in all three pattern
+banks for NONE, DOTS and GRID, plus invalid-value fallback. The isolated
+pattern update preserves the full VRAM name table and RAM shadow byte for
+byte: C-BIOS CRC32 **add5ac78** with no window, **240fbe30** with SETTINGS,
+and **b8b1f0d6** with two SETTINGS windows, for every pattern. UI tests
+assert mouse/keyboard wrap, both cached window buffers and their distinct
+focus, closing the front window, SAVE/clear/SetLoad (GRID CRC32
+**6d26cc98**), and carry-clear v3 migration with DOTS (**0cefb18a**).
+The displayed LATTICE value itself changes during UI interaction; the
+isolated update checks that changing the background does not repaint cells.
 
-**Damage aware blitting does not follow.** When a window moves
-vertically every row still has to be written, because the pixels
-underneath are the same window at the wrong offset. Damage shrinks the
-erase only. A per row signature built at grab time would let uniform
-interiors be skipped, worth perhaps 9,700 T on this window, but it only
-pays for windows with large flat areas. Held in reserve rather than
-rejected.
+Focused verification: C-BIOS EU (50 Hz), **151 assertions** with
+`--settings`; C-BIOS JP (60 Hz), **162 assertions** with `--sound`
+(including SETTINGS). The JP two-SETTINGS sound/menu probe reports
+**Dropped = 0**, maximum measured frame **12,276 us**. The complete
+`test-all.sh` matrix remains for the pipeline, as required by this run.
 
-**The stack based blit does not follow either.** Popping eight register
-pairs from the buffer and pushing them to the screen costs about 212 T
-a row against `LDI`'s 256, but the pointer bookkeeping needs `LD (nn),SP`
-and a reload each row, which puts it back at roughly 304 T against the
-current 327. It also needs `DI`, which reintroduces the lost interrupt
-hazard, and running it with interrupts on via the owed push technique
-costs 48 T a row, which makes the arithmetic worse rather than better.
+Roms_MSX1 + Roms_Disk passes **162 assertions** with `--settings`,
+including seeded v1/v2/v3 migration, v4 GRID at boot, invalid fields and
+short/oversized records. Its unchanged name-table CRC32 values with one
+and two SETTINGS windows are **fc6b58a5** and **ea011005**; GRID
+SAVE/clear/load is **b5422a0d**. Standalone Roms_MSX1 and Roms_MSX2 are
+left to the pipeline's full machine matrix.
 
-### The interrupt is not 50 Hz
+## lf-1218: opening a saved document
 
-The 48K frame is exactly 69,888 T at 3.5 MHz, so the rate is 50.0801 Hz.
-Ticking a second every fifty interrupts gains 0.16%, which is two
-minutes eighteen seconds a day. The clock instead makes a second fifty
-interrupts and, every so often, fifty one, decided by accumulating a
-hundredth each second and demanding an extra interrupt when it carries.
-Driven for an hour it takes 180,287 interrupts against a true
-180,288, which is half a second a day.
+Baseline: commit `c99eb9f`, normal ROM 13,448 bytes. On C-BIOS MSX1 EU,
+`--open-ui` passed both Enter cases before the fix and failed both mouse
+cases. Commander had no mouse handler: clicking a row only focused its
+window. The previous keyboard/fixture PASS therefore did not cover the
+missing mouse selection/open operation. The reported Enter failure is
+**not reproduced**; the reporter's build and exact steps remain unknown.
+Do not infer that the mouse defect explains that part of the report.
 
-On a 128K the frame is 70,908 T at 3.5469 MHz, so the rate is 50.0211 Hz
-and the addend differs. Machine detection has already run by the time
-the clock initialises.
+Reproduction (`./test.sh --open-ui`, RAM or disk, same running session):
 
-What the clock counts is the interrupt counter that the watchdog built
-to notice dropped frames, read as a difference since the last look, so
-a frame the main loop missed still advances the time — because the
-interrupt happened whether or not anything was listening.
+1. Click FILE > NEW. Type `H I`, ENTER, `X` using the keyboard matrix.
+2. Click FILE > SAVE (filename `NOTE`, 256 bytes). Type another `X`.
+3. Either leave Notepad open, or click its close box and DISCARD.
+4. Click FILE > OPEN. The picker shows `NOTE` inverted, size `00256`.
+   Click its row once. Press ENTER in the keyboard case; click **[OPEN]**
+   once in the mouse case. Double-click is not required or implemented.
+5. Assert exactly one Notepad, no alert, cleared modified flag and all
+   256 document bytes equal both the independent expected content and
+   the saved RAM payload/disk file: CRC32 **1cc48393**.
 
-### A calendar with no division
+Before the fix the mouse left the edited document at CRC32 **69f8980d**;
+with Notepad still open there were two windows (Notepad and picker).
+`--browse` additionally clicks BETA in a multi-file listing and asserts
+both the inverted selection (RAM name-table CRC32 **e2755111**) and loaded
+content (**5a0ad6a7**) with Enter and the OPEN button. Blank rows leave
+selection unchanged. Mouse buttons use xdotool/openMSX joystick input;
+pointer coordinates are placed deterministically, as in SETTINGS tests.
+No load/save routine is directly invoked for these round trips.
 
-Day of the week is counted forward from 1 January 1980, a Tuesday,
-rather than by [Zeller](https://en.wikipedia.org/wiki/Zeller%27s_congruence)
-or [Sakamoto](https://en.wikipedia.org/wiki/Determination_of_the_day_of_the_week#Sakamoto%27s_methods),
-because both of those want division
-by 4, 100 and 400 and this machine has no divide instruction. A year is
-1 modulo 7, or 2 in a leap year, so walking a century is at most a
-hundred additions, and it happens once per repaint.
+`--note-load` also exercises the mouse OPEN button for open, short-read,
+read and close errors: the alert is visible, document CRC32 **c21bbd31**
+and metadata survive, and dismiss/retry succeeds (screen **82f03d3c**).
 
-The century rule never fires, and that is a property of the range
-rather than a corner being cut: 1980 to 2079 contains one century year
-and 2000 is a leap year, so within that range a leap year is exactly a
-year divisible by four. All 1,200 months it can display are checked
-against Python's `datetime` for both the first weekday and the length.
+Tape still takes the sequential branch before Commander. With `TAPE=1`,
+`--tape` records `NOTE`, edits it, rewinds and plays the cassette, then
+uses FILE > OPEN. Its second round trip closes/DISCARDs the edited note,
+uses FILE > NEW to supply the sequential loader's required target, then
+rewinds/plays and opens. Both compare all 256 bytes and independently
+decode the recorded WAV (19-byte header plus payload, CRC32 **0b0601cb**).
+Tape FILE > OPEN without a target Notepad is unchanged; it is not a picker.
+RAM persistence across restart is neither expected nor tested.
 
----
+The fix adds **103 ROM bytes**, **0 static RAM bytes**, and no heap allocation.
+Normal build: **13,551 ROM bytes**, **3,527 static RAM bytes**;
+heap **8,761** bytes without disk / **3,376** with disk.
+TEST build: **14,724 ROM bytes**, **6,242 static RAM bytes**;
+heap **6,046 / 661** bytes. No timing improvement is claimed.
 
-## Bugs worth writing down
+Focused verification for lf-1218 (all passed):
 
-Every real discovery in this project came from running code, not from
-reading it. These are the ones that generalise.
+| Machine | Backend | Subjects run | Assertions |
+|---|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | RAM | `--open-ui`, `--browse`, `--note-load` | 71 |
+| C-BIOS_MSX1_JP, 60 Hz | RAM | `--open-ui`, `--browse`, `--note-load` | 71 |
+| Roms_MSX1 + Roms_Disk | disk | `--open-ui`, `--browse` | 28 |
+| Roms_MSX1 | RAM, tape | `--open-ui`, `--tape` | 15 |
+| Roms_MSX2 | RAM, tape | `--open-ui`, `--tape` | 15 |
 
-**A bug that repaired itself in front of me.** The heap's free routine
-had one `DEC HL` too many, so it cleared the used flag and then wrote a
-nought into the high byte of the block's size. The heap should have
-been ruined on the first free. It was not, because the coalescer then
-found a short free block, looked past it into a payload that happened
-to be all zeros, read those zeros as an empty free block, and absorbed
-them four bytes at a time until it arrived back at exactly the true
-total. Every number agreed. It only surfaced when a freed block held
-something other than zeros — the first block big enough to have held
-window pixels — and then the walk went into the pixels and the heap
-came back 2,619 bytes short.
+Normal ROM SHA256:
+`d948c8c1b27cf89b46022a24c25172122755667df9d08d932a295490ff99e149`.
+`git diff --check` and Python compilation also pass. The full
+`./test-all.sh` was **not run here**, because this implementation run
+explicitly permits only focused tests; the pipeline must run the full
+50/60 Hz and real-ROM matrix. The new subjects are included in its default
+suite. The local `roms` symlink is ignored and not committed.
 
-The lesson is about the test rather than the allocator. A heap test
-that frees blocks it never wrote to is testing a zero fill. It writes
-`$A5` over the payload before freeing now, and asserts on the header
-directly rather than through a total that can heal.
+## lf-1219: Notepad width and long lines
 
-**The register that carries the answer must not be the register that
-carries the argument.** This family accounted for five separate bugs.
-A search routine held its index in `AF` across the compare that decided
-whether it had found anything, so the `POP AF` restored the flags from
-before the compare and it never matched. A digit printer used B to
-count tens and was called twice with the other digit in B, so the
-calendar's year came out as 2050. Two routines ending in `LDIR` return
-with A clobbered and BC zero, which produced a second window that was
-an exact copy of the first and a panel whose row count was nought.
-Loading a `DJNZ` counter before calling a routine that uses B as a row
-counter makes the loop run 256 times, which has now happened twice.
+The UI reproduction on baseline `1193d35` types fourteen H characters,
+drags the resize grip from 16x9 to 18x10, then types six I characters.
+The baseline still puts the I characters on the next document row:
+chunk caret `(6, 1)`, document CRC32 **e4be184b**. This establishes the
+old automatic 14-character line break in this build; the reporter's
+exact build remains unknown.
 
-On the Z80 the flags are a register too. If a value must survive a
-call, it goes in memory or on the stack. That rule is not learnable as
-"watch out for B".
+Notepad now uses the complete window interior, excluding both frame
+columns and the right-hand scrollbar. Long lines scroll horizontally
+with the caret; SHIFT+LEFT/RIGHT reaches hidden text with KEY PTR ON.
+Widening reveals earlier columns again. Resizing changes neither the
+text nor its hard line breaks. Up/down and the vertical scrollbar count
+logical lines, including lines spanning several storage chunks.
 
-**A row step that subtracts only from E.** The blit did this from the
-day it was written. The `LDI`s advance DE sixteen bits, so when a
-rectangle's row start plus its width crosses 256, D has already been
-incremented and incrementing it again puts the next row a page too
-high. The only window in the system lived at column 8 and was eight
-bytes short of crossing, so it never showed until a second window moved
-to column 16. Anything walking a rectangle a row at a time has to
-handle the borrow.
+The file remains **256 bytes**, with sixteen chunks of fourteen printable
+characters, a zero terminator, and a continuation byte. A continuation
+byte of **1** joins the following chunk to the same logical line; **0**
+ends the line. Legacy files have zero continuation bytes and retain all
+sixteen lines. Loading clears invalid continuation values and forbids a
+link after the final chunk. Older Desk builds do not understand the new
+continuation flag and display the chunks as separate lines.
 
-**A number that reads backwards.** Timings are taken by counting a
-sixteen T loop until the next interrupt, so a slower routine leaves
-*fewer* turns. That was misread twice in one session, once reporting a
-16 T saving as a 1 T loss, and once reporting a 1,216 T cost as a 76 T
-saving — which meant a real regression went unnoticed for being
-displayed as an improvement. Anything that reports a derived quantity
-should report it in the units people will reason in.
+The existing **224-character document budget** is unchanged. Long lines
+share that budget with other lines, up to a single 224-character line.
+Insertion carries text across chunks; ENTER splits and backspace joins
+logical lines. Empty continuation tails are reclaimed. Insertion/splitting
+that needs a chunk refuses when it would discard existing text. The
+RAM/disk/tape backends, Commander copy limit and atomic load scratch
+remain unchanged; no larger backend buffers are required.
 
-**A corrupt block size hangs the machine rather than failing.** Every
-heap walk computes the next block as address plus header plus size, and
-a garbage size wraps past `$FFFF`, lands below the base and compares as
-still inside the heap, so the walk loops forever. Nothing can produce a
-garbage size now, so no guard was added, but it is the shape of the
-next failure and it is worth knowing it presents as a freeze.
+`./test.sh --note-width` adds UI subjects for typing after a grip resize,
+shrinking to four visible columns, reaching the hidden prefix, growing
+again, insertion, split/join/backspace, logical up/down, 42-character and
+full-capacity lines, retaining later lines, and ENTER on the final blank
+chunk. Assertions compare all **256 document bytes**, the entire composed
+name table, cursor, logical row count, viewport and window geometry.
+Mouse drags run throttled so host motion arrives before button release.
 
-**Earlier, and in the same spirit:** an LFSR shifting the wrong
-direction gave a period of 71 instead of 65,535; a register clobber
-rendered the wrong card in the patience game that was this project's
-proving ground; a raster timing bug made the pointer invisible in the
-upper half of the display on real hardware but not in the emulator; and
-a sign bit underflow teleported windows to the top of the screen the
-moment Y exceeded 127.
+The 20-character document retains CRC32 **9a0f1306** throughout resizing
+and the RAM/disk/tape save-edit-or-close-reopen UI routes. Its grown
+screen CRC32 is **21936a7a**, shrunk screen **31dd9b61**. The 224-character
+capacity/refusal case has document CRC32 **22b4f361**. Tape's existing
+round trips now use this wide document, including closing/DISCARD and
+creating a target before sequential reopening; independent WAV decoding
+asserts both the 19-byte header and the complete 256-byte payload.
+On both real BIOS machines these tape cases measured **Dropped = 36/37**
+(existing/closed target), outside the zero-drop UI budget.
 
----
+Compared with the assembled baseline, this adds **420 ROM bytes** and
+**7 static RAM bytes** (eight scratch bytes, one per-instance viewport
+byte, minus two obsolete scratch bytes). Each Notepad state allocation
+grows by **1 byte**, from 276 to 277; there are no additional allocations.
+The normal build uses **14,161 ROM bytes**, **3,535 static RAM bytes**,
+with **8,753 / 3,368** heap bytes without/with disk. The TEST build uses
+**15,337 ROM bytes**, **6,250 static RAM bytes**, with **6,038 / 653** heap
+bytes. Resize tests assert allocator statistics and complete heap recovery.
 
-## How the work was done
+The full `./test-all.sh` is deliberately left to the pipeline: this
+implementation run explicitly permits focused tests only. The new width
+subjects and expanded tape round trips are included in the default suite.
 
-Every piece of work went through the same three passes, in one
-sitting.
+Focused verification (all listed assertions passed):
 
-1. **Research.** Find the prior art before writing anything. The
-   Spectrum demoscene, the ULA and floating bus documentation, the
-   esxDOS API notes, the Next register list. Half of these problems
-   were solved by somebody in 1987, and the demoscene answer is usually
-   faster than the textbook one.
-2. **Build.** The smallest thing that can be measured, with the way to
-   measure it committed alongside the routine.
-3. **Critique.** Argue against the result before accepting it. Look for
-   the clobbered register, the boundary case at the screen edge, and
-   the figure from a previous session that's no longer true.
+| Machine | Subjects | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-width`, `--resize-scroll`, `--apps` | 16 + 20 + 7 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-width` | 16 |
+| Roms_MSX1 | `--note-width`, `--tape` | 16 + 11 |
+| Roms_MSX1 + Roms_Disk | `--note-width` (disk UI round trips) | 16 |
+| Roms_MSX2 | `--note-width`, `--tape` | 16 + 11 |
 
-I tried to play three parts in every session: the critic who argues
-the change is wrong, the researcher who goes looking for the 1987
-answer, and the measurer who won't accept a performance claim without
-a timing or a correctness claim without a screen checksum.
-
-Three rules that earned their place:
-
-- **It isn't done because it looks right on screen.** The pointer that
-  vanished in the upper half of the display looked right on screen.
-- **Anything that couldn't be observed directly is labelled derived,
-  not measured.** Raster behaviour especially, which is why every
-  raster derived claim in this repository says so. That distinction is
-  what eventually explained the invisible pointer.
-- **One commit per verified piece of work, with the acceptance numbers
-  in the commit message.** The numbers in this document are the ones
-  from those commits.
-
----
-
-## What is not finished
-
-**esxDOS is written and passes.** For a long time it couldn't be,
-because I had no DivMMC and I don't commit code I haven't run. An
-emulated DivMMC with esxDOS resident unblocked it in September 2026,
-after three dead ends.
-
-**The Next didn't turn into a port.** It became its own system, in its
-own repository, because the window model is different: it tiles rather
-than overlaps, so the compositor, the save under arena and most of the
-damage machinery have nothing to do there. Everything below the window
-model carried across. It isn't published yet.
-
-**Known gaps.** A clock behind another window holds its last time
-until it's raised, because window buffers are grabbed from the screen
-rather than composed into. An application can't refuse to close,
-because there's no teardown vector that can say no, and adding one
-before anything needed it would have been guessing. Every notepad is
-titled from its application rather than its document. The notepad has
-no selection, clipboard, undo or word wrap. Mouse presence detection
-is still a heuristic, and I can't test it because I don't have a
-machine without a mouse.
-
-**No known live bugs.** The last one closed with the interrupt safe
-fills and nothing since has opened another.
-
----
-
-## The [ZX Spectrum Next](https://www.specnext.com/)
-
-The 48K system was built with a port in mind from the first commit,
-and the bet was that the device layer boundary would hold. It held for
-storage, esxDOS, the application model and the settings record. It
-didn't hold for the window model, which is why ZX Desk Next is a second
-system rather than a port: on a 28 MHz Z80 with Layer 2, a tilemap,
-hardware sprites and a DMA, the right desktop tiles, and a tiling
-desktop has no use for a compositor built to sort out overlap.
-
-It lives in its own repository and will be published separately. I
-don't have a Next yet, only 48K and 128K machines, and I'm not going to
-build it blind on an emulator, so it waits until one arrives.
-
----
-
-## Repository layout
-
-    build.sh, run.sh            assemble, and load onto the machine
-    tstates.py, taplant.py      timing arithmetic, and tape block planting
-
-    src/zxdesk.asm              the desktop
-    src/damage.inc              damage rectangles and the narrow desktop fill
-    src/saveunder.inc           transient surfaces
-    src/events.inc              the event ring and dispatch
-    src/kbd.inc                 the keyboard matrix and decode
-    src/hittest.inc             the region table, z order, what was hit
-    src/menus.inc               the menu bar and pull downs
-    src/panel.inc               panels and their rows
-    src/dialog.inc              the alert and the confirm
-    src/storage.inc             the storage layer and the RAM backend
-    src/tape.inc                the tape backend, via the real ROM loader
-    src/bank.inc                the 128K's spare banks as a RAM disk
-    src/heap.inc                the heap and its owner byte
-    src/app.inc                 application descriptors and the state swap
-    src/resize.inc              the grip, the outline drag, the realloc
-    src/note.inc                the notepad
-    src/clock.inc               the clock
-    src/calendar.inc            the calendar
-    src/commander.inc           the two pane file manager
-    src/desktop.inc             desktop shortcuts
-    src/filemgr.inc             the file panels
-    src/settings.inc            the settings record
-    src/script.inc              scripted input, for end to end verification
-    images/                     the screenshots above
-
----
-
-## Thanks
-
-To [Fuse](https://fuse-emulator.sourceforge.net/) and to César
-Hernández Baño's [ZEsarUX](https://github.com/chernandezba/zesarux),
-which are how this was developed before it ever ran on the real thing.
-To Julián Albo's [pasmo](https://pasmo.speccy.org/), which is small and
-does exactly what it says.
-To the Spectrum community, whose thirty years of documentation about
-contention, the floating bus and the ROM entry points is the reason
-this took months rather than years. And to whoever wrote the ULA timing
-notes I kept going back to: your figures were right and my assumptions
-were not.
-
-To [Inkbox](https://github.com/InkboxSoftware)'s NES-OS, which is the
-proof that this kind of thing is worth doing.
-
-And to a machine that was never meant to do any of this, and does.
-
----
-
-## Licence
-
-MIT, see `LICENSE`. Nothing here is derived from anyone else's code.
-The toolchain, emulators and ROMs it uses aren't distributed with it.
+The EU resize subjects measured **Dropped = 0**. Python compilation and
+`git diff --check` pass. The local `roms` symlink is ignored and is
+not part of the commit.

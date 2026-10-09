@@ -1,67 +1,33 @@
 ; ============================================================
 ;  Clock
-;  There is no real time clock on a 48K and there is no battery,
-;  so this is not a clock that knows the time. It is a clock that
-;  counts, set by hand, and the thing it counts is the only
-;  reliable interval the machine has: the ULA interrupt.
+;  The ZX clock, which counts interrupts because there is no
+;  clock chip, ported with one change: the rate. A PAL MSX frame
+;  is 313 lines of 228 cycles at 3.579545 MHz, 50.159 Hz, and an
+;  NTSC one 262 lines, 59.923 Hz. So a second is 50 interrupts
+;  and every so often 51, or 59 and every so often 60: the ZX's
+;  hundredths accumulator with the base and the addend chosen by
+;  bit 7 of the BIOS's $002B, which says which video the machine
+;  has. The harness runs the same arithmetic in Python against
+;  the true rate for an hour and asserts the drift.
 ;
-;  It counts IrqCnt rather than its own frames, which is A3's
-;  counter and was built to notice dropped frames. Reading the
-;  difference since the last look means a frame the main loop
-;  missed still advances the clock, because the interrupt
-;  happened whether or not anything was listening. A clock that
-;  loses time whenever a window is dragged would be a worse clock
-;  than one that is merely set by hand.
-;
-;  THE INTERRUPT IS NOT 50 HZ. The 48K frame is exactly 69,888 T
-;  and the clock is 3.5 MHz, so the rate is 3500000/69888 =
-;  50.0801 Hz. Ticking a second every fifty interrupts makes the
-;  clock gain 0.16%, which is 2 minutes 18 seconds a day, and
-;  that is bad enough to notice within a week.
-;
-;  So a second is fifty interrupts, and every so often fifty one.
-;  A hundredth is accumulated each second and an extra interrupt
-;  is demanded when it carries: 0.08 against a true 0.08013 on a
-;  48K. On a 128K the frame is 70,908 T at 3.5469 MHz, so the
-;  rate is 50.0211 Hz and the addend is 2 rather than 8.
-;
-;  Driven for an hour in the headless harness, this clock takes
-;  180,287 interrupts to reach 13:00 from 12:00. The true figure
-;  is 3600 x 3500000 / 69888 = 180,288, so it gains one interrupt
-;  an hour, which is half a second a day. A naive fifty would
-;  take 180,000 and gain two minutes eighteen. That is measured
-;  rather than derived, which is the difference between this
-;  paragraph and the one above it.
-;
-;  Both figures are arithmetic from the frame period, and the
-;  frame period is the one number on this machine that has been
-;  measured rather than assumed: docs/measured-2026-08-29.md.
-;  The crystal itself is nominal, so the real error on real
-;  hardware is whatever the crystal is, and no software here can
-;  know that.
+;  It counts IrqCnt rather than its own frames, so a frame the
+;  main loop missed still advances the clock. Hours and minutes
+;  are shown; seconds are counted, because a minute cannot roll
+;  without them, and not painted.
 ;
 ;  The time is the machine's rather than the window's, so the
 ;  application keeps no per instance state and two clock windows
-;  show the same time. That is not a limitation worked around, it
-;  is what a clock is.
+;  show the same time.
 ; ============================================================
-; Hours and minutes. Seconds were shown at first and they were
-; uneconomical in the exact sense: the display changed sixty times a
-; minute, and every change is a PrintStrPx2 and a WinGrab, about
-; 31,000 T. That is 0.9% of the machine spent telling you something
-; you were not reading. The seconds are still counted, because a
-; minute cannot roll without them; they are simply not painted, and
-; the window repaints sixty times less often.
 CLKW            equ     8
-CLKH            equ     30
-CLKFRAC48       equ     8               ; hundredths of an interrupt a second
-CLKFRAC128      equ     2
+CLKH            equ     3
+CLKBASE50       equ     50
+CLKADD50        equ     16              ; hundredths: 50.16 a second
+CLKBASE60       equ     59
+CLKADD60        equ     92              ; 59.92
+BIOSVIDEO       equ     $002B           ; bit 7 set: 50 Hz
 
-; ------------------------------------------------------------
-;  ClkInit
-;  Noon, because midnight is indistinguishable from unset and a
-;  clock reading 00:00:00 looks broken rather than unset.
-; ------------------------------------------------------------
+; Noon, because midnight is indistinguishable from unset.
 ClkInit:
                 ld      a,12
                 ld      (ClkH),a
@@ -71,37 +37,33 @@ ClkInit:
                 ld      (ClkFrames),a
                 ld      (ClkFrac),a
                 ld      (ClkField),a
-                ld      a,50
-                ld      (ClkNeed),a
+                ld      (ClkDirty),a
                 ld      hl,(IrqCnt)
                 ld      (ClkLast),hl
-                ; DetectMachine has already run, so which machine this is
-                ; is known and the correction is the right one from the
-                ; first second rather than after a fix up
-                ld      a,(Is128)
-                or      a
-                ld      a,CLKFRAC48
-                jr      z,ClkInitFrac
-                ld      a,CLKFRAC128
-ClkInitFrac:
+                ld      (ClkSetAt),hl
+                ld      a,(BIOSVIDEO)
+                ld      b,CLKBASE60
+                ld      c,CLKADD60
+                bit     7,a
+                jr      z,ClkRate
+                ld      b,CLKBASE50
+                ld      c,CLKADD50
+ClkRate:
+                ld      a,b
+                ld      (ClkBase),a
+                ld      (ClkNeed),a
+                ld      a,c
                 ld      (ClkFracAdd),a
                 ret
 
-; ------------------------------------------------------------
-;  ClkTick
-;  Called once a frame. Advances by however many interrupts have
-;  happened since the last look, which is normally one.
-; ------------------------------------------------------------
+; Called once a frame. Advances by however many interrupts have
+; happened since the last look, which is normally one.
 ClkTick:
                 ld      hl,(IrqCnt)
                 ld      de,(ClkLast)
                 or      a
                 sbc     hl,de
-                ret     z                       ; the common case on a machine
-                                                ; whose loop is keeping up is
-                                                ; that this is one, not nought,
-                                                ; but nought happens the first
-                                                ; time round
+                ret     z
                 ld      (ClkDelta),hl
                 ld      hl,(IrqCnt)
                 ld      (ClkLast),hl
@@ -124,9 +86,6 @@ ClkNoSec:
                 jr      nz,ClkAccum
                 ret
 
-; One second. Works out how many interrupts the next one needs before
-; it advances anything, because the correction belongs to the second
-; that is starting rather than the one that has ended.
 ClkSecond:
                 xor     a
                 ld      (ClkFrames),a
@@ -138,23 +97,23 @@ ClkSecond:
                 jr      c,ClkNoExtra
                 sub     100
                 ld      (ClkFrac),a
-                ld      a,51
+                ld      a,(ClkBase)
+                inc     a
                 ld      (ClkNeed),a
                 jr      ClkBump
 ClkNoExtra:
                 ld      (ClkFrac),a
-                ld      a,50
+                ld      a,(ClkBase)
                 ld      (ClkNeed),a
 ClkBump:
                 ld      hl,ClkS
                 inc     (hl)
                 ld      a,(hl)
                 cp      60
-                ret     c                       ; no repaint: the seconds are
-                                                ; counted and not shown
+                ret     c
                 ld      (hl),0
-                ld      a,1                     ; the minute is what the face
-                ld      (ClkDirty),a            ; actually says
+                ld      a,1
+                ld      (ClkDirty),a
                 ld      hl,ClkM
                 inc     (hl)
                 ld      a,(hl)
@@ -168,21 +127,9 @@ ClkBump:
                 ret     c
                 ld      (hl),0
                 jp      CalNextDay              ; midnight is the one moment
-                                                ; the date is not the user's
-                                                ; to remember
 
-; ------------------------------------------------------------
-;  ClkService
-;  Called from the main loop. Ticks, and repaints if a second has
-;  passed and a clock is the window in front.
-;
-;  Only when it is in front, and that is a real limitation rather
-;  than an oversight: WinGrab reads the screen, so re-grabbing a
-;  window that something else overlaps would copy the other
-;  window's pixels into this one's buffer. A clock behind another
-;  window therefore stops until it is raised, and raising it
-;  repaints it with the time it is by then.
-; ------------------------------------------------------------
+; Once a frame: tick, and when the minute changed, every clock window
+; is recomposed at the end of the frame.
 ClkService:
                 call    ClkTick
                 ld      a,(ClkDirty)
@@ -190,28 +137,45 @@ ClkService:
                 ret     z
                 xor     a
                 ld      (ClkDirty),a
-                ld      hl,(WinApp)
-                ld      de,AppClock
+                ld      a,(WndCount)
+                or      a
+                ret     z
+                call    WndFlush
+                ld      b,a
+                ld      c,0
+CsSlot:
+                push    bc
+                ld      e,c
+                ld      d,0
+                ld      hl,WndZ
+                add     hl,de
+                ld      a,(hl)
+                ld      c,a
+                call    WndRecAt
+                ld      de,WR_APP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,AppClock
                 or      a
                 sbc     hl,de
-                ret     nz                      ; the front window is not one
-                call    WndIsFront
-                ret     nz
-                call    PtrRestore
-                call    ClkDraw
-                call    WinGrab
-                call    PtrSaveBg
-                jp      PtrDraw
+                jr      nz,CsNext
+                ld      a,c
+                call    WndTouch
+                ld      a,c
+                call    RowsAddSlot
+CsNext:
+                pop     bc
+                inc     c
+                djnz    CsSlot
+                ret
 
-; ------------------------------------------------------------
-;  ClkDraw
-;  F2's draw vector. The whole time in one PrintStrPx2, then the
-;  field the keys would change printed again inverted, because in
-;  a one bit display inversion is the only emphasis there is and
-;  the system already spends it on chrome.
-; ------------------------------------------------------------
+; The draw vector: " HH:MM" with the field the keys are on inverted.
 ClkDraw:
                 ld      hl,ClkText
+                ld      (hl),' '
+                inc     hl
                 ld      a,(ClkH)
                 call    ClkPut2
                 ld      (hl),':'
@@ -219,44 +183,29 @@ ClkDraw:
                 ld      a,(ClkM)
                 call    ClkPut2
                 ld      (hl),0
-                ld      a,(WinY)
-                add     a,WinCapH+4
-                ld      (PxRow),a
-                ld      a,(WinX)
-                inc     a
-                ld      c,a
-                ld      hl,ClkText
-                xor     a
-                ld      (PrintInv),a
-                call    PrintStrPx2
-                ; and the selected field over the top of itself
                 ld      a,(ClkField)
                 ld      b,a
                 add     a,a
                 add     a,b                     ; three columns to a field
+                inc     a
                 ld      e,a
                 ld      d,0
                 ld      hl,ClkText
                 add     hl,de
                 ld      a,(hl)
-                ld      (ClkPair),a
+                or      INVBANK
+                ld      (hl),a
                 inc     hl
                 ld      a,(hl)
-                ld      (ClkPair+1),a
-                ld      a,(WinX)
-                inc     a
-                add     a,e
-                ld      c,a
-                ld      hl,ClkPair
-                ld      a,1
-                ld      (PrintInv),a
-                call    PrintStrPx2
+                or      INVBANK
+                ld      (hl),a
                 xor     a
                 ld      (PrintInv),a
-                ret
+                ld      hl,ClkText
+                ld      b,1
+                ld      c,1
+                jp      WinPrint
 
-; A = a value below 100, HL = where its two digits go, and HL is left
-; after them.
 ClkPut2:
                 ld      b,'0'-1
 ClkP2T:
@@ -271,12 +220,8 @@ ClkP2T:
                 inc     hl
                 ret
 
-; ------------------------------------------------------------
-;  ClkKey
-;  F2's key vector. Left and right choose a field, up and down
-;  change it. There is nothing else a clock with no radio and no
-;  battery can be asked.
-; ------------------------------------------------------------
+; The key vector: left and right pick the field, up and down set it.
+; Returns A = 1 when the face changed.
 ClkKey:
                 cp      KEY_LEFT
                 jr      nz,CkNotL
@@ -303,26 +248,18 @@ CkNotR:
                 jr      CkPaint
 CkNotU:
                 cp      KEY_DOWN
+                ld      a,0
                 ret     nz
                 ld      c,0
                 call    ClkAdjust
 CkPaint:
-                call    PtrRestore
-                call    ClkDraw
-                call    WinGrab
-                call    PtrSaveBg
-                jp      PtrDraw
+                ld      a,1
+                ret
 
-; C = 1 up, 0 down. Wraps within the field rather than carrying into
-; the next one: setting the minutes should not move the hour under
-; the hand of whoever is setting it.
 ClkAdjust:
                 ld      a,(ClkField)
                 ld      hl,ClkH
                 or      a
-                jr      z,CkaGot
-                inc     hl
-                dec     a
                 jr      z,CkaGot
                 inc     hl
 CkaGot:
@@ -351,23 +288,15 @@ CkaDec:
 CkaSet:
                 ld      (hl),a
                 xor     a                       ; the minute restarts from the
-                ld      (ClkFrames),a           ; moment it was set, which is
-                ld      (ClkS),a                ; what setting a clock means
+                ld      (ClkFrames),a           ; moment it was set
+                ld      (ClkS),a
+                ld      (ClkFrac),a
+                ld      hl,(IrqCnt)             ; for the harness: which
+                ld      (ClkSetAt),hl           ; interrupt the count began at
                 ret
 
-ClkText:        defs    6
-ClkPair:        defb    0,0,0
+ClockOpen:
+                ld      a,APP_CLOCK
+                jp      WndOpen
 
-ClkH:           defb    12
-ClkM:           defb    0
-ClkS:           defb    0
-ClkField:       defb    0
-ClkFrames:      defb    0
-ClkNeed:        defb    50
-ClkFrac:        defb    0
-ClkFracAdd:     defb    CLKFRAC48
-ClkDirty:       defb    0
-ClkVal:         defb    0
-ClkCol:         defb    0
-ClkLast:        defw    0
-ClkDelta:       defw    0
+TxtClockTitle:  defb    "CLOCK",0

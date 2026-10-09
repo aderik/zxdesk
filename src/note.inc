@@ -1,493 +1,372 @@
 ; ============================================================
-;  G2: notepad
-;  The first consumer of the C3 keyboard, which until now posted
-;  EV_KEY into a handler slot wired to EvIgnore. It is also the
-;  package that drags a text field into existence by demand
-;  rather than building a control library against no application.
-;
-;  Seven rows on a sixteen byte stride. The stride is sixteen
-;  rather than fourteen so a row address is a shift instead of a
-;  multiply, and the two spare bytes are not waste: byte 14 is a
-;  permanent zero, so every row is already a null terminated
-;  string that PrintStrPx2 can print in place with no fixed
-;  length variant and no copy into scratch.
-;
-;  Geometry is derived from the window model on every use rather
-;  than kept in step by hand. A second copy of WinX that has to
-;  be updated separately is exactly what CtlSync exists to avoid.
+;  Notepad
+;  Sixteen 14-character chunks in the existing 256-byte document.
+;  Byte 14 terminates each chunk; byte 15 is 1 when the next chunk
+;  continues the same logical line (0 in legacy documents). Window
+;  width affects only clipping and horizontal scrolling, never text.
+;  Cursor coordinates address chunks; NoteMeasure maps them to lines.
 ; ============================================================
-NOTECOLS        equ     14              ; characters across, indices 0..13
+NOTECOLS        equ     14
 NOTELAST        equ     NOTECOLS-1
-; The document is sixteen lines and the window shows as many of them
-; as it is tall. It was seven, which was however many the window
-; happened to fit, so the document and the view were the same thing
-; and there was nothing to scroll.
-;
-; Sixteen rather than a rounder number because sixteen rows on a
-; sixteen byte stride is 256 bytes, which is exactly RAMCHUNK. The
-; document is one file and no backend has to grow to hold it. Twenty
-; four was tried first and it does not fit: a save kept the first 256
-; bytes and said nothing, which is the kind of quiet that this project
-; has learned to distrust.
 NOTEROWS        equ     16
 NOTELASTROW     equ     NOTEROWS-1
 NOTESTRIDE      equ     16
-NOTESIZE        equ     NOTEROWS*NOTESTRIDE     ; 384 bytes
-NOTEIND         equ     1               ; text starts one column in from WinX
-; The interior is 61 pixel rows and seven lines need 56, so five are
-; spare. Two above and three below is the closest to balanced that an
-; odd number allows, and text hard against the title bar reads as an
-; overflow.
-NOTETOP         equ     WinCapH+2
+NOTESIZE        equ     NOTEROWS*NOTESTRIDE     ; 256, one RAMCHUNK
+NOTENAMEMAX     equ     12
+NOTEW           equ     NOTECOLS+2
+NOTEH           equ     9               ; seven lines showing
 
-; ------------------------------------------------------------
-;  F2: the per instance state, as one record
-;  Everything a second notepad would need its own copy of lives
-;  here and nowhere else, contiguous so that swapping it is one
-;  LDIR. What is left below in the code is scratch: it is written
-;  and read inside a single call and no window owns it.
-;
-;  The name is in the record rather than assembled as "NOTE",
-;  because a name that is assembled is one name for every
-;  instance. NoteInit writes it, which is also more honest: a
-;  fresh document is called NOTE because something decided so,
-;  not because the assembler happened to put it there.
-; ------------------------------------------------------------
-NOTENAMEMAX     equ     10              ; RamNorm refuses anything longer
-NoteState       equ     TAPEBUF + TAPEMAX
-NoteBuf         equ     NoteState                       ; NOTESIZE bytes
-NoteName        equ     NoteBuf + NOTESIZE              ; and a terminator
-NoteCX          equ     NoteName + NOTENAMEMAX + 1
-NoteCY          equ     NoteCX + 1
-NoteTop         equ     NoteCY + 1      ; the first document row on screen
-NoteEdited      equ     NoteTop + 1
-NoteDirty       equ     NoteEdited + 1
-; Whether this document differs from the last thing written to or read
-; from a file. NoteEdited is about the last key and NoteDirty about the
-; last WinGrab; this one is about the last save, which is the only one
-; of the three worth stopping a person over.
-NoteModified    equ     NoteDirty + 1
-NOTESTSZ        equ     NoteModified + 1 - NoteState
+; NoteState, NoteBuf, NoteName, NoteCX, NoteCY, NoteTop, NoteEdited,
+; NoteDirty and NoteModified are contiguous in the var block;
+; NOTESTSZ is their total.
 
-; NOTEREFLOW is set by anything that moved more than one line: a
-; scroll, a split or a join. NoteKeyPaint repaints the whole interior
-; when it is set and one line when it is not, which is the difference
-; between 1,500 T and 20,000 T on an ordinary keystroke.
-NOTEREFLOW      equ     2
-
-; ------------------------------------------------------------
-;  Addressing
-; ------------------------------------------------------------
-; A = row index. Returns HL = the start of that row's text.
+; A = row. Returns HL = its address in the document.
 NoteRowAddr:
                 ld      l,a
                 ld      h,0
                 add     hl,hl
                 add     hl,hl
                 add     hl,hl
-                add     hl,hl                   ; *16
+                add     hl,hl
                 ld      de,NoteBuf
                 add     hl,de
                 ret
 
-; Returns HL = the start of the cursor's row.
 NoteCurAddr:
                 ld      a,(NoteCY)
                 jp      NoteRowAddr
 
-; A = document row. Returns A = the pixel row of that line's top, and
-; carry set if the row is not on screen at all. Every painter checks
-; the carry, so a document longer than its window cannot paint outside
-; it: that is the whole of what scrolling has to be careful about.
-NoteRowPx:
-                ld      c,a
-                ld      a,(NoteTop)
+; Count logical rows and map the chunk cursor to a logical cell.
+NoteMeasure:
+                ; Valid documents contain only 0/1 links. Each link removes
+                ; one hard row; this count needs no cursor work per chunk.
+                ld      hl,NoteBuf+15
+                ld      de,NOTESTRIDE
+                ld      b,NOTEROWS
+                ld      a,b
+NmCount:
+                sub     (hl)
+                add     hl,de
+                djnz    NmCount
+                ld      (NoteRows),a
+                ld      a,(NoteCY)
+                ld      (NoteCursorY),a
                 ld      b,a
+                ld      c,0                     ; columns before the cursor chunk
+                or      a
+                jr      z,NmCursor
+                ld      hl,NoteBuf+15
+NmLoop:
+                ld      a,(hl)
+                or      a
+                jr      nz,NmLink
+                ld      c,0
+                jr      NmNext
+NmLink:
                 ld      a,c
-                sub     b
-                ret     c                       ; above the top of the view
-                push    af
-                call    NoteVisRows
-                ld      b,a
-                pop     af
-                cp      b
-                ccf
-                ret     c                       ; below the bottom of it
-                add     a,a
-                add     a,a
-                add     a,a                     ; *8
+                add     a,NOTECOLS
                 ld      c,a
-                ld      a,(WinY)
-                add     a,NOTETOP
+                ld      a,(NoteCursorY)
+                dec     a
+                ld      (NoteCursorY),a
+NmNext:
+                add     hl,de
+                djnz    NmLoop
+NmCursor:
+                ld      a,(NoteCX)
                 add     a,c
-                or      a                       ; and no carry: it is visible
+                ld      (NoteCursorX),a
                 ret
 
-; ------------------------------------------------------------
-;  How much of the document the window shows
-;  Derived from WinH on every use rather than kept in step by
-;  hand, which is the same rule the rest of this file already
-;  follows for WinX and WinY. It is also what makes a resizable
-;  window cost the notepad nothing: the view is a function of the
-;  window and there is no second copy to update.
-; ------------------------------------------------------------
-; out: A = visible text rows, at least one and at most the document
 NoteVisRows:
                 ld      a,(WinH)
-                sub     NOTETOP+3               ; the cap, the inset and the
-                                                ; bottom border
-                jr      c,NvrOne
-                srl     a                       ; /8, and SRL rather than RRA
-                srl     a                       ; because RRA rotates bit 0
-                srl     a                       ; back in through bit 7
-                jr      z,NvrOne
-                cp      NOTEROWS
+                sub     2
+                ld      b,a
+                ld      a,(NoteRows)
+                cp      b
                 ret     c
-                ld      a,NOTEROWS
-                ret
-NvrOne:
-                ld      a,1
+                ld      a,b
                 ret
 
-; ------------------------------------------------------------
-;  NoteScroll
-;  Brings the cursor's row into view and reports whether the view
-;  moved. Called after every cursor movement, so the cursor can
-;  never be somewhere the window is not showing.
-; ------------------------------------------------------------
-; out: Z set if nothing moved
+; Follow the caret horizontally, including after a resize. Widening
+; reveals earlier columns again; no document bytes are changed.
+NoteHScroll:
+                ld      a,(WinW)
+                sub     3                       ; final visible caret column
+                ld      b,a
+                ld      a,(NoteCursorX)
+                sub     b
+                jr      nc,NhsSet
+                xor     a
+NhsSet:
+                ld      (NoteLeftCol),a
+                ret
+
 NoteScroll:
-                ld      a,(NoteCY)
+                call    NoteMeasure
+                call    NoteHScroll
+                ld      a,(NoteCursorY)
                 ld      c,a
                 ld      a,(NoteTop)
                 cp      c
-                jr      z,NsSame
                 jr      c,NsBelowTop
-                ld      a,c                     ; the cursor is above the view
+                ld      a,c
                 ld      (NoteTop),a
-                or      1                       ; NZ: the view moved
                 ret
 NsBelowTop:
                 call    NoteVisRows
                 ld      b,a
                 ld      a,(NoteTop)
                 add     a,b
-                dec     a                       ; the last visible row
+                dec     a
                 cp      c
-                jr      nc,NsSame
-                ld      a,c                     ; the cursor is below the view
+                ret     nc
+                ld      a,c
                 sub     b
                 inc     a
                 ld      (NoteTop),a
-                or      1
-                ret
-NsSame:
-                xor     a
                 ret
 
-; Returns C = the byte column of text column A.
-NoteColByte:
-                ld      c,a
-                ld      a,(WinX)
-                add     a,NOTEIND
-                add     a,c
-                ld      c,a
-                ret
-
-; ------------------------------------------------------------
-;  Painting
-;  Every entry point here leaves PrintInv clear, because leaving
-;  it set would silently invert whatever the next caller printed
-;  and the settings panel has already been bitten by shared state
-;  of exactly this kind.
-; ------------------------------------------------------------
-; A = document row. Paints the whole line, cursor not included. A row
-; the window is not currently showing paints nothing rather than
-; painting outside the window, which is what scrolling asks of every
-; painter in this file.
-NoteDrawLine:
-                push    af
-                call    NoteRowPx
-                jr      c,NdlOff
-                ld      (PxRow),a
-                xor     a
-                call    NoteColByte
-                pop     af
-                call    NoteRowAddr
-                xor     a
-                ld      (PrintInv),a
-                jp      WinPrintClip
-NdlOff:
-                pop     af
-                ret
-
-; F2's draw vector: the interior of a notepad window, which is the
-; document and the cursor. WinDraw used to call the two in sequence
-; itself, after an IF on the kind.
-NoteDrawInterior:
-                call    NoteDrawAll
-                jp      NoteCurDraw
-
-; The visible rows, and only those. Walking all twenty four and
-; letting NoteDrawLine reject seventeen of them would be correct and
-; would cost seventeen calls to work that out.
-; ------------------------------------------------------------
-;  NoteClampTop
-;  The view must not sit further down than the document reaches.
-;  A window that grows would otherwise keep the top it had and
-;  fill the new space with blank rows under the text, which reads
-;  as the document having ended when it has not.
-;
-;  It does not end by scrolling to the cursor, and it used to.
-;  Doing that made the view a function of the cursor on every
-;  single draw, so anything that moved the view on its own, which
-;  since the scroll bar is a thing that happens, was undone
-;  before it could be seen. The cursor pulls the view in
-;  NoteScroll, which runs on a key, and that is the only place
-;  it should.
-; ------------------------------------------------------------
-; out: A = the last row the view has any business reaching, which is
-; the last row with text on it or the row the cursor is on, whichever
-; is further down. The cursor sits on the blank row after the last
-; line as often as not, and a view that could not reach it would fight
-; whatever put it there.
-NoteReach:
-                ld      a,NOTELASTROW
-                ld      (NoteRowIx),a
-NrhFind:
-                ld      a,(NoteRowIx)
-                call    NoteLineLen
-                or      a
-                jr      nz,NrhGot
-                ld      a,(NoteRowIx)
-                or      a
-                jr      z,NrhGot
-                dec     a
-                ld      (NoteRowIx),a
-                jr      NrhFind
-NrhGot:
-                ld      a,(NoteCY)
-                ld      b,a
-                ld      a,(NoteRowIx)
-                cp      b
-                ret     nc
-                ld      a,b
-                ret
-
-NoteClampTop:
-                call    NoteReach
-                ld      (NoteRowIx),a
-                call    NoteVisRows
-                ld      b,a
-                ld      a,(NoteRowIx)
-                inc     a                       ; the rows it uses
-                sub     b
-                jr      c,NctTop                ; the whole document fits
-                ld      b,a
+; Walk chunks, concatenating continuation chunks on the same row.
+; All text and caret writes go through the same interior clip.
+NoteDraw:
                 ld      a,(NoteTop)
-                cp      b
-                ret     c
-                ld      a,b
-                ld      (NoteTop),a
-                ret
-NctTop:
+                call    NoteScrollTo            ; also measures rows and caret
+                call    NoteHScroll
                 xor     a
-                ld      (NoteTop),a
-                ret
-
-NoteDrawAll:
-                call    NoteClampTop
-                call    NoteVisRows
-                ld      b,a
-                ld      a,(NoteTop)
-                ld      c,a
-NdaLoop:
+                ld      (NoteDrawX),a
+                ld      (NoteDrawY),a
+                ld      hl,NoteBuf
+                ld      b,NOTEROWS
+NdRow:
                 push    bc
-                ld      a,c
-                call    NoteDrawLine
+                push    hl
+                call    NotePaintChunk
+                pop     hl
+                ld      de,15
+                add     hl,de
+                ld      a,(hl)                  ; continuation flag
+                inc     hl
+                or      a
+                jr      z,NdBreak
+                ld      a,(NoteDrawX)
+                add     a,NOTECOLS
+                ld      (NoteDrawX),a
+                jr      NdNext
+NdBreak:
+                xor     a
+                ld      (NoteDrawX),a
+                ld      a,(NoteDrawY)
+                inc     a
+                ld      (NoteDrawY),a
+NdNext:
                 pop     bc
+                djnz    NdRow
+                ld      a,(NoteCursorX)
+                ld      (NoteDrawX),a
+                ld      a,(NoteCursorY)
+                ld      (NoteDrawY),a
+                call    NotePaintAddr
+                ret     c
+                ld      a,(hl)
+                or      INVBANK
+                ld      (hl),a
+                ret
+
+NotePaintChunk:
+                ld      a,(NoteTop)
+                ld      c,a
+                ld      a,(NoteDrawY)
+                sub     c
+                ret     c
+                ld      b,a
+                inc     b
+                ld      a,(NoteLeftCol)
+                ld      c,a
+                ld      a,(NoteDrawX)
+                sub     c
+                jr      nc,NpcColumn
+                neg
+                cp      NOTECOLS
+                ret     nc
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                xor     a
+NpcColumn:
+                ld      c,a
                 inc     c
-                ld      a,c
-                cp      NOTEROWS
-                jr      nc,NdaDone              ; the document ran out first
-                djnz    NdaLoop
-                ret
-NdaDone:
-                ret
-
-; Repaint the single character under the cursor, uninverted. This is
-; how the cursor is lifted: there is no save under for one cell and
-; there does not need to be, because the character that belongs there
-; is in the buffer.
-NoteCurErase:
-                ld      a,(NoteCY)
-                call    NoteRowPx
-                ld      (PxRow),a
-                ld      a,(NoteCX)
-                call    NoteColByte
-                call    NoteCurAddr
-                ld      a,(NoteCX)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ld      a,(hl)
-                ld      (NoteCell),a
-                ld      hl,NoteCell
                 xor     a
                 ld      (PrintInv),a
-                jp      PrintStrPx2
+                jp      WinPrint
 
-; Draw the cursor: an inverted cell reporting the shift state. No
-; shift knocks out the character underneath, CAPS shows a C and
-; SYMBOL SHIFT an S, which is Sinclair BASIC's idea and the answer to
-; a real problem, since this keyboard hides its punctuation.
-NoteCurDraw:
-                ld      a,(NoteCY)
-                call    NoteRowPx
-                ld      (PxRow),a
-                ld      a,(NoteCX)
-                call    NoteColByte
-                call    NoteCurAddr
-                ld      a,(NoteCX)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ld      a,(hl)
-                ld      (NoteCell),a
-                ld      a,(KbdModState)
-                bit     1,a
-                jr      nz,NcdSym
-                bit     0,a
-                jr      nz,NcdCaps
-                jr      NcdGo
-NcdCaps:
-                ld      a,'C'
-                ld      (NoteCell),a
-                jr      NcdGo
-NcdSym:
-                ld      a,'S'
-                ld      (NoteCell),a
-NcdGo:
-                ld      hl,NoteCell
-                ld      a,1
-                ld      (PrintInv),a
-                call    PrintStrPx2
-                xor     a
-                ld      (PrintInv),a
+NotePaintAddr:
+                ld      a,(NoteTop)
+                ld      c,a
+                ld      a,(NoteDrawY)
+                sub     c
+                ret     c
+                ld      b,a
+                ld      a,(WinH)
+                sub     2
+                cp      b
+                jr      z,NpaOutside
+                jr      c,NpaOutside
+                inc     b
+                ld      a,(NoteLeftCol)
+                ld      c,a
+                ld      a,(NoteDrawX)
+                sub     c
+                ret     c
+                ld      c,a
+                ld      a,(WinW)
+                sub     2
+                cp      c
+                jr      z,NpaOutside
+                jr      c,NpaOutside
+                inc     c
+                call    WinCell
+                or      a
+                ret
+NpaOutside:
+                scf
                 ret
 
-NoteCell:       defb    ' ',0
-
-; ------------------------------------------------------------
-;  Editing
-;  Every routine here works on the buffer only. Painting is the
-;  caller's business, so the bench can drive the whole editor
-;  with no screen involved and still check the result.
-; ------------------------------------------------------------
-; F2's init vector. A fresh instance is a blank document called NOTE.
 NoteInit:
+                call    StIdent
+                ld      (NoteBackend),a
                 ld      hl,TxtNoteName
                 call    NoteSetName
-                ; fall through, because a new instance and NEW are the
-                ; same thing done at different moments
-
-; Blank the buffer and put the cursor home.
 NoteNew:
+                ; Build one blank row, then spread it through the document.
                 xor     a
-                ld      (NoteRowIx),a
-                ld      b,NOTEROWS
-NnRow:
-                push    bc
-                ld      a,(NoteRowIx)
                 call    NoteBlankRow
-                ld      a,(NoteRowIx)
-                inc     a
-                ld      (NoteRowIx),a
-                pop     bc
-                djnz    NnRow
+                ld      hl,NoteBuf
+                ld      de,NoteBuf+NOTESTRIDE
+                ld      bc,NOTESIZE-NOTESTRIDE
+                ldir
                 xor     a
+                ld      (NoteRowIx),a
                 ld      (NoteCX),a
                 ld      (NoteCY),a
                 ld      (NoteTop),a
+                ld      (NoteLeftCol),a
                 ld      (NoteEdited),a
                 ld      (NoteDirty),a
                 ld      (NoteModified),a
                 ret
 
-NoteRowIx:      defb    0
+; Append one continuation chunk after A. Refuse when the final
+; chunk contains text: reaching capacity must not discard another line.
+NoteExtend:
+                ld      (NoteExtendRow),a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                ld      (NoteOldLink),a
+                ld      a,(NoteExtendRow)
+                cp      NOTELASTROW
+                jr      c,NexCapacity
+                scf
+                ret
+NexCapacity:
+                ld      a,NOTELASTROW
+                call    NoteLineLen
+                or      a
+                scf
+                ret     nz
+                ld      a,(NoteExtendRow)
+                inc     a
+                call    NoteOpenRow
+                ld      a,(NoteExtendRow)
+                inc     a
+                call    NoteBlankRow
+                ld      hl,NoteBuf+NOTESIZE-1
+                ld      (hl),0                  ; never link beyond the buffer
+                ld      a,(NoteExtendRow)
+                call    NoteLinkAddr
+                ld      (hl),1
+                or      a
+                ret
 
-; A = character. Inserts at the cursor, pushing the rest of the line
-; right, and the character falling off column thirteen is gone. The
-; cursor then advances, wrapping to the next line rather than sitting
-; past the end, because a cursor at column fourteen has nowhere to be
-; drawn.
+NoteLinkAddr:
+                call    NoteRowAddr
+                ld      de,15
+                add     hl,de
+                ret
+
+; Insertion shifts the whole logical line, carrying between chunks.
+; Allocate its tail before modifying text, so a full document is safe.
 NoteInsert:
                 ld      (NoteChar),a
-                call    NoteCurAddr
-                ld      (NoteLine),hl
-                ld      a,NOTELAST
-                ld      c,a
+                ld      a,(NoteCY)
+                ld      (NoteRowIx),a
+NiFindTail:
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      z,NiTail
+                ld      hl,NoteRowIx
+                inc     (hl)
+                ld      a,(hl)
+                jr      NiFindTail
+NiTail:
+                dec     hl
+                dec     hl
+                ld      a,(hl)
+                cp      ' '
+                jr      nz,NiExtend
                 ld      a,(NoteCX)
-                cp      c
-                jr      nc,NiPut                ; at the last column, no shift
-                ; shift NOTELAST-1-CX+1 bytes right by one, from the top down
-                ld      b,a
-                ld      a,NOTELAST-1
-                sub     b
-                inc     a
-                ld      c,a
-                ld      b,0
-                ld      hl,(NoteLine)
-                ld      de,NOTELAST-1
-                add     hl,de
-                ld      d,h
-                ld      e,l
-                inc     de                      ; DE = HL + 1
-                lddr
-NiPut:
-                ld      hl,(NoteLine)
+                cp      NOTECOLS
+                jr      nz,NiReady
+                ld      a,(NoteCY)
+                ld      hl,NoteRowIx
+                cp      (hl)
+                jr      nz,NiReady
+NiExtend:
+                ld      a,(NoteRowIx)
+                call    NoteExtend
+                ret     c
+NiReady:
+                ld      a,(NoteCX)
+                cp      NOTECOLS
+                jr      nz,NiStart
+                ld      hl,NoteCY
+                inc     (hl)
+                xor     a
+                ld      (NoteCX),a
+NiStart:
+                call    NoteCurAddr
                 ld      a,(NoteCX)
                 ld      e,a
                 ld      d,0
                 add     hl,de
+                ld      a,NOTECOLS
+                sub     e
+                ld      b,a
                 ld      a,(NoteChar)
+NiShift:
+                ld      c,(hl)
                 ld      (hl),a
+                ld      a,c
+                inc     hl
+                djnz    NiShift
+                inc     hl
+                ld      c,(hl)
+                inc     hl
+                ld      b,NOTECOLS
+                inc     c
+                dec     c
+                jr      nz,NiShift
+                ld      hl,NoteCX
+                inc     (hl)                    ; 14 is an end-of-chunk caret
+                jp      NoteMarkEdited
+
+NoteMarkEdited:
                 ld      a,1
                 ld      (NoteEdited),a
                 ld      (NoteModified),a
-                ; advance
-                ld      a,(NoteCX)
-                inc     a
-                cp      NOTECOLS
-                jr      c,NiSetX
-                ld      a,(NoteCY)
-                inc     a
-                cp      NOTEROWS
-                jr      nc,NiEnd                ; last line of the document
-                ld      (NoteCY),a
-                xor     a
-NiSetX:
-                ld      (NoteCX),a
-                ret
-NiEnd:
-                ld      a,NOTELAST
-                ld      (NoteCX),a
                 ret
 
-; ------------------------------------------------------------
-;  Moving whole lines
-;  A split and a join both shift every line below the cursor by
-;  one, in opposite directions, and both walk from the end that
-;  cannot overwrite what it has not read yet: opening a row copies
-;  upwards from the bottom, closing one copies downwards from the
-;  top. Getting that backwards does not spoil one line, it smears
-;  one line over all the rest.
-;
-;  The row being worked on is held in memory rather than a
-;  register because both loops end in LDIR, and this project has
-;  paid for that lesson twice already.
-; ------------------------------------------------------------
-; A = row. Blanks it, terminator and all.
 NoteBlankRow:
                 call    NoteRowAddr
                 ld      b,NOTECOLS
@@ -496,13 +375,12 @@ NbrLoop:
                 ld      (hl),a
                 inc     hl
                 djnz    NbrLoop
-                ld      (hl),0                  ; the permanent terminator
+                ld      (hl),0
                 inc     hl
                 ld      (hl),0
                 ret
 
-; A = row. Returns A = characters up to and including the last one
-; that is not a space, so a blank line is nought.
+; A = row. Returns A = its length without trailing spaces.
 NoteLineLen:
                 call    NoteRowAddr
                 ld      de,NOTELAST
@@ -520,9 +398,7 @@ NllGot:
                 ld      a,b
                 ret
 
-; A = the row to open up. Everything from there down moves one line
-; later and the document's last line falls off the end. The opened
-; row is left holding a copy and the caller blanks or fills it.
+; A = row: the rows from it down move down one, the last is lost.
 NoteOpenRow:
                 ld      (NoteRowIx),a
                 ld      a,NOTELASTROW
@@ -531,13 +407,13 @@ NorLoop:
                 ld      a,(NoteRowDst)
                 ld      hl,NoteRowIx
                 cp      (hl)
-                ret     z                       ; arrived at the opened row
+                ret     z
                 dec     a
-                call    NoteRowAddr             ; the source, one row earlier
+                call    NoteRowAddr
                 push    hl
                 ld      a,(NoteRowDst)
                 call    NoteRowAddr
-                ex      de,hl                   ; DE destination, HL source
+                ex      de,hl
                 pop     hl
                 ld      bc,NOTESTRIDE
                 ldir
@@ -546,8 +422,7 @@ NorLoop:
                 ld      (NoteRowDst),a
                 jr      NorLoop
 
-; A = the row to close up. Everything below it moves one line earlier
-; and the document's last line becomes blank.
+; A = row: removed, the rows below move up, the last is blanked.
 NoteCloseRow:
                 ld      (NoteRowDst),a
 NcrLoop:
@@ -555,7 +430,7 @@ NcrLoop:
                 cp      NOTELASTROW
                 jr      nc,NcrBlank
                 inc     a
-                call    NoteRowAddr             ; the source, one row later
+                call    NoteRowAddr
                 push    hl
                 ld      a,(NoteRowDst)
                 call    NoteRowAddr
@@ -571,191 +446,295 @@ NcrBlank:
                 ld      a,NOTELASTROW
                 jp      NoteBlankRow
 
-NoteRowDst:     defb    0
-NoteJoinAt:     defb    0
+; Delete at the chunk cursor and pull the following chunks left.
+NoteDeleteAt:
+                call    NoteCurAddr
+                ld      a,(NoteCX)
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      a,NOTECOLS
+                sub     e
+                ld      b,a
+NdaChunk:
+                dec     b
+                jr      z,NdaLast
+                ld      d,h
+                ld      e,l
+                inc     hl
+                ld      a,(hl)
+                ld      (de),a
+                jr      NdaChunk
+NdaLast:
+                push    hl
+                inc     hl
+                inc     hl
+                ld      a,(hl)
+                inc     hl
+                or      a
+                jr      z,NdaBlank
+                ld      a,(hl)
+                pop     de
+                ld      (de),a
+                ld      b,NOTECOLS
+                jr      NdaChunk
+NdaBlank:
+                pop     hl
+                ld      (hl),' '
+                ret
 
-; Backspace. At column nought it joins this line onto the end of the
-; previous one, which is what it could not do while the document was
-; the same seven lines as the view.
 NoteBack:
                 ld      a,(NoteCX)
                 or      a
-                jr      z,NbEdge
-                dec     a
-                ld      (NoteCX),a
-                ld      c,a
-                call    NoteCurAddr
-                ld      e,c
-                ld      d,0
-                add     hl,de
-                ld      d,h
-                ld      e,l
-                inc     hl                      ; HL = DE + 1
-                ld      a,NOTELAST
-                sub     c
-                ld      c,a
-                ld      b,0
-                or      a
-                jr      z,NbTail
-                ldir
-NbTail:
-                call    NoteCurAddr
-                ld      de,NOTELAST
-                add     hl,de
-                ld      (hl),' '
-                ld      a,1
-                ld      (NoteEdited),a
-                ret
-; The join. It happens only when the whole of this line fits on the
-; end of the previous one. A join that dropped the overflow would be
-; a backspace that silently deletes a line, so when it does not fit
-; the cursor moves and the text stays where it is.
-NbEdge:
+                jr      nz,NbDelete
                 ld      a,(NoteCY)
                 or      a
                 ret     z
                 dec     a
-                call    NoteLineLen
-                ld      (NoteJoinAt),a
-                ld      a,(NoteCY)
-                call    NoteLineLen
-                ld      c,a                     ; what this line carries
-                ld      a,(NoteJoinAt)
-                add     a,c
-                cp      NOTECOLS+1
-                jr      nc,NbMoveOnly
-                ld      a,c
+                call    NoteLinkAddr
+                ld      a,(hl)
                 or      a
-                jr      z,NbJoinEmpty           ; nothing to carry over
-                ld      b,0
-                ld      a,(NoteCY)
-                call    NoteRowAddr
-                push    hl                      ; this line, from column nought
+                jr      z,NbHard
+                ld      hl,NoteCY
+                dec     (hl)
+                ld      a,NOTECOLS
+NbDelete:
+                dec     a
+                ld      (NoteCX),a
+                call    NoteDeleteAt
+                call    NoteTrimTail
+                jp      NoteMarkEdited
+NbHard:
+                ; Join at a hard newline by linking its chunks. Keeping
+                ; padding here would add spaces, so delete the unused tail.
                 ld      a,(NoteCY)
                 dec     a
-                call    NoteRowAddr
-                ld      a,(NoteJoinAt)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ex      de,hl                   ; DE = where it lands
-                pop     hl
-                ldir
-NbJoinEmpty:
+                call    NoteLineLen
+                ld      (NoteJoinAt),a
+                ld      a,NOTECOLS
+                ld      hl,NoteJoinAt
+                sub     (hl)
+                ld      (NoteDeleteCount),a
                 ld      a,(NoteCY)
-                call    NoteCloseRow
-                ld      hl,NoteCY
-                dec     (hl)
+                dec     a
+                ld      (NoteCY),a
+                call    NoteLinkAddr
+                ld      (hl),1
                 ld      a,(NoteJoinAt)
                 ld      (NoteCX),a
-                ld      a,NOTEREFLOW
-                ld      (NoteEdited),a
-                ld      a,1
-                ld      (NoteModified),a
-                ret
-NbMoveOnly:
-                ld      hl,NoteCY
-                dec     (hl)
-                ld      a,NOTELAST
-                ld      (NoteCX),a
-                ret
+NbJoinLoop:
+                ld      a,(NoteDeleteCount)
+                or      a
+                jp      z,NbJoined
+                dec     a
+                ld      (NoteDeleteCount),a
+                call    NoteDeleteAt
+                jr      NbJoinLoop
+NbJoined:
+                call    NoteTrimTail
+                jp      NoteMarkEdited
 
-; ENTER splits the line at the cursor. What was to the right of it
-; becomes the next line and everything below moves down. It used to
-; move down and home without carrying anything, because with the
-; document and the view the same seven lines there was nowhere for
-; the rest of the document to go.
+; Reclaim empty continuation chunks after deleting/splitting. Hard
+; blank lines remain intact. A caret on a reclaimed chunk becomes the
+; end-of-chunk caret in its predecessor.
+NoteTrimTail:
+                ld      a,(NoteCY)
+                ld      (NoteRowIx),a
+NttFind:
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      z,NttTail
+                ld      hl,NoteRowIx
+                inc     (hl)
+                ld      a,(hl)
+                jr      NttFind
+NttTail:
+                ld      a,(NoteRowIx)
+                or      a
+                ret     z
+                dec     a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                ret     z                       ; a hard line, keep it
+                ld      a,(NoteRowIx)
+                call    NoteLineLen
+                or      a
+                ret     nz
+                ld      a,(NoteRowIx)
+                call    NoteCloseRow
+                ld      a,(NoteRowIx)
+                ld      hl,NoteCY
+                cp      (hl)
+                jr      nz,NttUnlink
+                dec     (hl)
+                ld      a,NOTECOLS
+                ld      (NoteCX),a
+NttUnlink:
+                ld      a,(NoteRowIx)
+                dec     a
+                call    NoteLinkAddr
+                ld      (hl),0
+                jr      NoteTrimTail
+
+; Split a logical line. The remaining chunks retain their continuation
+; marks; remove the prefix from the new line without dropping its tail.
 NoteEnter:
                 ld      a,(NoteCY)
-                cp      NOTELASTROW
-                ret     nc                      ; no row below to open
-                inc     a
-                call    NoteOpenRow
-                ld      a,(NoteCY)
-                inc     a
-                call    NoteBlankRow
-                ld      a,NOTECOLS
-                ld      c,a
-                ld      a,(NoteCX)
-                neg
-                add     a,c                     ; how much is to the right
-                ld      (NoteRowDst),a
-                or      a
-                jr      z,NeNoTail
-                ld      c,a
-                ld      b,0
+                call    NoteExtend            ; also checks capacity
+                ret     c
                 ld      a,(NoteCY)
                 call    NoteRowAddr
-                ld      a,(NoteCX)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                push    hl                      ; the tail
+                push    hl
                 ld      a,(NoteCY)
                 inc     a
                 call    NoteRowAddr
-                ex      de,hl                   ; DE = the new line
+                ex      de,hl
                 pop     hl
+                ld      bc,NOTECOLS
                 ldir
-                ; and where it was becomes spaces
-                ld      a,(NoteCY)
-                call    NoteRowAddr
+                ; NoteExtend inserted a blank chunk. Transfer the link
+                ; that originally followed this chunk (saved below).
+                ld      a,(NoteOldLink)
+                inc     de
+                ld      (de),a
+                call    NoteCurAddr
                 ld      a,(NoteCX)
+                ld      (NoteDeleteCount),a
                 ld      e,a
                 ld      d,0
                 add     hl,de
-                ld      a,(NoteRowDst)
+                ld      a,NOTECOLS
+                sub     e
+                jr      z,NeTerm
                 ld      b,a
-                ld      a,' '
 NeBlank:
-                ld      (hl),a
+                ld      (hl),' '
                 inc     hl
                 djnz    NeBlank
-NeNoTail:
+NeTerm:
+                inc     hl
+                ld      (hl),0
                 ld      hl,NoteCY
                 inc     (hl)
                 xor     a
                 ld      (NoteCX),a
-                ld      a,NOTEREFLOW
-                ld      (NoteEdited),a
-                ld      a,1
-                ld      (NoteModified),a
-                ret
+NeDelete:
+                ld      a,(NoteDeleteCount)
+                or      a
+                jp      z,NbJoined
+                dec     a
+                ld      (NoteDeleteCount),a
+                call    NoteDeleteAt
+                jr      NeDelete
 
 NoteLeft:
                 ld      a,(NoteCX)
                 or      a
+                jr      nz,NleftDec
+                ld      a,(NoteCY)
+                or      a
                 ret     z
+                dec     a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                ret     z
+                ld      hl,NoteCY
+                dec     (hl)
+                ld      a,NOTECOLS
+NleftDec:
                 dec     a
                 ld      (NoteCX),a
                 ret
 NoteRight:
                 ld      a,(NoteCX)
                 cp      NOTELAST
-                ret     nc
-                inc     a
+                jr      c,NrightInc
+                call    NoteCurLink
+                ld      a,(hl)
+                or      a
+                jr      z,NrightEnd
+                ld      hl,NoteCY
+                inc     (hl)
+                ld      a,(NoteCX)
+                sub     NOTELAST
                 ld      (NoteCX),a
                 ret
-NoteUp:
+NrightEnd:
+                ld      a,(NoteCX)
+                cp      NOTECOLS
+                ret     nc
+NrightInc:
+                ld      hl,NoteCX
+                inc     (hl)
+                ret
+NoteCurLink:
                 ld      a,(NoteCY)
+                jp      NoteLinkAddr
+
+NoteUp:
+                call    NoteMeasure
+                ld      a,(NoteCursorY)
                 or      a
                 ret     z
                 dec     a
-                ld      (NoteCY),a
-                ret
+                jr      NoteGotoLine
 NoteDown:
-                ld      a,(NoteCY)
-                cp      NOTELASTROW
-                ret     nc
+                call    NoteMeasure
+                ld      a,(NoteRows)
+                ld      b,a
+                ld      a,(NoteCursorY)
                 inc     a
+                cp      b
+                ret     nc
+NoteGotoLine:
+                ld      c,a                     ; desired logical row
+                ld      b,0                     ; physical chunk
+NglRow:
+                ld      a,c
+                or      a
+                jr      z,NglColumn
+                ld      a,b
+                push    bc
+                call    NoteLinkAddr
+                pop     bc
+                ld      a,(hl)
+                or      a
+                jr      nz,NglNext
+                dec     c
+NglNext:
+                inc     b
+                jr      NglRow
+NglColumn:
+                ld      a,(NoteCursorX)
+                ld      c,a
+NglChunk:
+                ld      a,c
+                cp      NOTECOLS
+                jr      c,NglSet
+                ld      a,b
+                push    bc
+                call    NoteLinkAddr
+                pop     bc
+                ld      a,(hl)
+                or      a
+                ld      a,NOTECOLS
+                jr      z,NglSet
+                ld      a,c
+                sub     NOTECOLS
+                ld      c,a
+                inc     b
+                jr      NglChunk
+NglSet:
+                ld      (NoteCX),a
+                ld      a,b
                 ld      (NoteCY),a
                 ret
 
-; ------------------------------------------------------------
-;  The key handler
-;  A = key code. Returns with the screen already updated, so the
-;  event handler has nothing to do afterwards.
-; ------------------------------------------------------------
+; The key vector. Returns A = 1: every key it takes moves the cursor,
+; and the cursor is painted, so the window is recomposed.
 NoteKey:
                 ld      (NoteChar),a
                 xor     a
@@ -792,125 +771,29 @@ NkNotBs:
                 jr      NkView
 NkNotEnt:
                 cp      ' '
-                ret     c                       ; below space, not ours
+                jr      c,NkNone                ; below space, not ours
                 cp      128
-                ret     nc
+                jr      nc,NkNone
                 call    NoteInsert
-                ; and then every one of them ends here, because a cursor
-                ; the window is not showing is the one thing a scrolling
-                ; editor must never leave behind
 NkView:
                 call    NoteScroll
-                ret     z
-                ld      a,NOTEREFLOW            ; the view moved, so one line
-                ld      (NoteEdited),a          ; is not what has to be painted
+                ld      a,1
+                ret
+NkNone:
+                xor     a
                 ret
 
-; The screen half, kept apart so the bench can drive NoteKey with no
-; display at all and still check the buffer.
-;
-; The line repainted is the one the cursor was on when the key
-; arrived, not the one it ends on. Insert at the last column wraps the
-; cursor to the next line, and it is the line the character landed on
-; that changed.
-;
-; NoteDirty is set whatever the key did, because the cursor is painted
-; into the window too, so even a move that changes no text makes the
-; grabbed buffer stale. The cost of being generous here is one WinGrab
-; per drag rather than per key, which is the whole point of deferring.
-NoteKeyPaint:
-                ld      (NoteChar),a
-                call    NoteCurErase
-                ld      a,(NoteCY)
-                ld      (NoteOldY),a
-                ld      a,(NoteChar)
-                call    NoteKey
-                ld      a,(NoteEdited)
-                cp      NOTEREFLOW
-                jr      z,NkpAll                ; a scroll, a split or a join
-                or      a
-                jr      z,NkpNoText
-                ld      a,(NoteOldY)
-                call    NoteDrawLine
-                jr      NkpNoText
-NkpAll:
-                ; The interior is cleared first. A join and a scroll both
-                ; leave fewer lines than were there, and painting the new
-                ; ones over the old leaves the difference on screen.
-                call    NoteClearBody
-                call    NoteDrawAll
-NkpNoText:
-                ld      a,1
-                ld      (NoteDirty),a
-                call    NoteCurDraw
-                ; The bar is chrome and WinDraw normally paints it, but this
-                ; repaints the interior without going through WinDraw and
-                ; NoteClearBody has just wiped it. An application that
-                ; repaints its own interior owes the frame its chrome back.
-                jp      WndScrollBar
-
-; Blank the text area of the window, which is everything below the cap
-; and inside the border. DevFillRect works in byte columns and pixel
-; rows, which is what the window model already speaks.
-NoteClearBody:
-                ld      a,(WinX)
-                inc     a
-                ld      (FrX),a
-                ld      a,(WinY)
-                add     a,NOTETOP
-                ld      (FrY),a
-                ld      a,(WinW)
-                sub     2                       ; inside both borders, and
-                ld      (FrW),a                 ; still even for a window of
-                                                ; even width, which is what
-                                                ; DevFillRect halves
-                call    NoteVisRows
-                add     a,a
-                add     a,a
-                add     a,a                     ; the rows it shows, times 8
-                ld      (FrH),a
-                ld      hl,$0000                ; white
-                ld      (FrPat),hl
-                jp      DevFillRect
-
 ; ------------------------------------------------------------
-;  Keeping the window buffer honest
-;  The buffer is what a drag blits, so text typed after the last
-;  WinGrab would vanish the moment the window moved.
-;
-;  Re-grabbing on every keystroke would be wasteful, because the
-;  buffer is only ever read at the start of a drag. How wasteful
-;  is not measured: RectGrab has no bench subject. BlitRect, which
-;  walks the same rectangle the other way, costs 26,048 T, so the
-;  grab is expected to be near that, but expected is not measured
-;  and this comment should not be quoted as if it were.
-;
-;  Deferring it to the moment a drag starts costs nothing either
-;  way and removes the question.
+;  The document as a file: one write and one read of NOTESIZE
+;  through the storage layer, whichever backend is selected.
 ; ------------------------------------------------------------
-NoteSync:
-                ld      a,(NoteDirty)
-                or      a
-                ret     z
-                xor     a
-                ld      (NoteDirty),a
-                jp      WinGrab
-
-; ------------------------------------------------------------
-;  Storage
-;  The whole buffer is one blob. There is no header and no magic:
-;  the note is text, and the checks that matter are the two that
-;  stop a bad file hurting the printer.
-; ------------------------------------------------------------
-; NoteSave and NoteLoad work on NoteName. G3 needs the same two
-; against a name the user chose, so the name is now a parameter and
-; the old entry points pass NoteName in. The chosen name is copied
-; into NoteName as well, because after a save as, the note is that
-; file, and a later SAVE from the FILE menu has to agree.
-NoteSave:
-                ld      hl,NoteName
 NoteSaveAs:
                 call    NoteSetName
+NoteSave:
+                call    NoteSelectBackend
+                call    NoteSaveFile
+                jp      NoteRestoreBackend
+NoteSaveFile:
                 ld      hl,NoteName
                 ld      b,FA_OVERWRITE
                 call    StOpen
@@ -920,17 +803,23 @@ NoteSaveAs:
                 ld      bc,NOTESIZE
                 call    StWrite
                 ld      (NoteGot),bc
+                push    af                      ; keep write errors through CLOSE
                 ld      a,(NoteHandle)
                 call    StClose
+                jr      c,NsCloseFail
+                pop     af
+                ret     c
                 ld      hl,(NoteGot)
                 ld      de,NOTESIZE
                 or      a
                 sbc     hl,de
                 jr      nz,NsShort
-                xor     a                       ; written, so there is nothing
-                ld      (NoteModified),a        ; left to warn anybody about
+                xor     a
+                ld      (NoteModified),a
                 or      a
                 ret
+NsCloseFail:
+                pop     af
 NsShort:
                 scf
                 ret
@@ -938,41 +827,72 @@ NsShort:
 NoteLoad:
                 ld      hl,NoteName
 NoteLoadAs:
+                push    hl                      ; commit the name only after success
+                call    NoteLoadNamed
+                pop     hl
+                ret     c
                 call    NoteSetName
-                ld      hl,NoteName
+                or      a
+                ret
+NoteLoadNamed:
+                push    hl
+                call    NoteSelectBackend
+                pop     hl
+                call    NoteLoadFile
+                jp      NoteRestoreBackend
+NoteLoadFile:
                 ld      b,FA_READ
                 call    StOpen
                 jr      c,NlFail
                 ld      (NoteHandle),a
-                ld      hl,NoteBuf
+                ld      hl,CmdBuf                ; shared scratch, before any modal alert
                 ld      bc,NOTESIZE
                 call    StRead
                 ld      (NoteGot),bc
+                push    af                      ; preserve read errors through close
                 ld      a,(NoteHandle)
                 call    StClose
+                jr      c,NlCloseFail
+                pop     af
+                jr      c,NlFail
                 ld      hl,(NoteGot)
                 ld      de,NOTESIZE
                 or      a
                 sbc     hl,de
                 jr      nz,NlFail
+                ld      hl,CmdBuf
+                ld      de,NoteBuf
+                ld      bc,NOTESIZE
+                ldir
                 call    NoteSanitise
                 xor     a
                 ld      (NoteCX),a
                 ld      (NoteCY),a
                 ld      (NoteTop),a
-                ld      (NoteModified),a        ; this is the file, unchanged
+                ld      (NoteModified),a
                 ld      a,1
                 ld      (NoteDirty),a
                 or      a
                 ret
+NlCloseFail:
+                pop     af
 NlFail:
-                call    NoteNew
                 scf
                 ret
 
-; HL = a name, copied into NoteName. Passing NoteName itself copies
-; it onto itself a byte at a time, which is correct and costs about
-; forty T states, so there is no case to test for.
+NoteSelectBackend:
+                call    StIdent
+                ld      (NotePrevBackend),a
+                ld      a,(NoteBackend)
+                jp      StSelect
+NoteRestoreBackend:
+                push    af
+                ld      a,(NotePrevBackend)
+                call    StSelect
+                pop     af
+                ret
+
+; HL = a name, into NoteName, truncated to NOTENAMEMAX.
 NoteSetName:
                 ld      de,NoteName
                 ld      b,NOTENAMEMAX
@@ -985,16 +905,11 @@ NsnLoop:
                 inc     de
                 djnz    NsnLoop
                 xor     a
-                ld      (de),a                  ; a long name is truncated
-                ret                             ; rather than run off the end
+                ld      (de),a
+                ret
 
-; Two things have to be true before an arbitrary file is printed.
-; Byte 14 of every row must be zero, or PrintStrPx2 walks off the end
-; of the buffer looking for a terminator. And every text byte must be
-; printable, because a glyph is read from CHARSET + c*8 with CHARSET
-; at $3C00, so a byte of 128 or more fetches from $4000 upwards and
-; renders screen memory as letterforms. Neither is a crash. Both look
-; like a mystery later.
+; Whatever came off the file: anything unprintable becomes a space,
+; and the terminators are put back.
 NoteSanitise:
                 ld      b,NOTEROWS
                 xor     a
@@ -1017,7 +932,15 @@ NsanOk:
                 djnz    NsanCol
                 ld      (hl),0
                 inc     hl
+                ld      a,(NoteRowIx)
+                cp      NOTELASTROW
+                jr      z,NsanEnd
+                ld      a,(hl)
+                cp      1
+                jr      z,NsanLink
+NsanEnd:
                 ld      (hl),0
+NsanLink:
                 ld      a,(NoteRowIx)
                 inc     a
                 ld      (NoteRowIx),a
@@ -1025,234 +948,72 @@ NsanOk:
                 djnz    NsanRow
                 ret
 
-; ------------------------------------------------------------
-;  Menu actions
-;  NoteMenuOpen used to be here and was dead from G3, when the
-;  FILE menu started pointing OPEN at the file panel instead. It
-;  was still being assembled, which is how dead code survives in
-;  a project that checks for it: nothing referenced it and
-;  nothing said so.
-; ------------------------------------------------------------
-; F2 changed what NEW means. In a system with one document it blanked
-; the one there was, which is the only thing it could mean and also a
-; menu item that silently destroys what you typed. In a system that
-; can hold four windows it opens another notepad, and blanking is what
-; you get by opening one and closing the other.
-NoteMenuNew:
-                ld      a,APP_NOTE
-                jp      WndOpen
-
-; ------------------------------------------------------------
-;  NoteScrollInfo
-;  The scroll model, which is three numbers and no drawing. A
-;  unit is a line of the document.
-; ------------------------------------------------------------
-NoteScrollInfo:
-                call    NoteReach
-                inc     a
-                ld      b,a                     ; as far as the view can go,
-                                                ; not as far as the document
-                                                ; could hold. A bar whose
-                                                ; thumb implies room that is
-                                                ; not there is a bar that
-                                                ; stops moving and looks
-                                                ; broken.
-                call    NoteVisRows
-                ld      c,a
-                ld      a,(NoteTop)
-                ret
-
-; ------------------------------------------------------------
-;  NoteScrollTo
-;  in: A = the document row to put at the top of the view
-;  The cursor comes with it rather than being left behind
-;  off screen. An editor with a caret somewhere you cannot see is
-;  a thing that will surprise you the next time you type, and
-;  NoteScroll would drag the view back to it anyway on the very
-;  next key.
-; ------------------------------------------------------------
-NoteScrollTo:
-                ; The wanted row goes in memory, not in B. NoteReach loads
-                ; NoteCY into B on its way to comparing it, so holding the
-                ; argument there meant every scroll asked for wherever the
-                ; cursor happened to be and the view never moved at all.
-                ld      (NoteWantTop),a
-                call    NoteVisRows
-                ld      c,a                     ; C = showing
-                call    NoteReach
-                inc     a
-                sub     c                       ; the furthest top there is,
-                jr      nc,NstHave              ; and it is the same limit
-                xor     a                       ; NoteClampTop uses, because
-NstHave:                                        ; two clamps disagreeing is
-                ld      b,a                     ; how the bar moved the view
-                ld      a,(NoteWantTop)         ; and the draw put it back
-                cp      b
-                jr      c,NstTop
-                ld      a,b
-NstTop:
-                ld      (NoteTop),a
-                ; The cursor stays where it is. Dragging it along made the
-                ; range shrink as you scrolled, because the reach depends
-                ; on where the cursor is: scrolling up moved the cursor up
-                ; and then the bottom was no longer reachable.
-NstPaint:
-                call    PtrRestore
-                call    NoteClearBody
-                call    NoteDrawAll
-                call    NoteCurDraw
-                call    WndScrollBar
-                call    WinGrab
-                call    PtrSaveBg
-                jp      PtrDraw
-
-; ------------------------------------------------------------
-;  NotePrint
-;  A save writes NOTESIZE bytes, which is the document including
-;  its sixteen byte stride and the terminators inside it. That is
-;  the right thing to write to a file and the wrong thing to send
-;  to a printer, which would print the padding as well.
-;
-;  So printing walks the rows, sends each line's text up to its
-;  last non space character, and follows it with ENTER. That is a
-;  printed document rather than a memory dump, and it stops at
-;  the last row that has anything on it, because sixteen lines of
-;  which nine are blank is nine lines of wasted paper on a roll
-;  four inches wide.
-;
-;  It goes through the storage layer like everything else, so the
-;  printer being a device rather than a special case is not a
-;  claim made in a comment: this routine cannot tell.
-; ------------------------------------------------------------
-NotePrint:
-                call    NoteIsFront
-                ret     nz
-                ld      a,(StBackend)           ; put back whatever was
-                ld      (NotePrtWas),a          ; selected, the same way the
-                ld      a,ST_PRINT              ; commander does
-                call    StSelect
-                ret     c
-                ld      hl,NoteName
-                ld      b,FA_OVERWRITE
-                call    StOpen
-                jr      c,NotePrtFail
-                ld      (NoteHandle),a
-                ; the last row with anything on it
-                ld      a,NOTELASTROW
-                ld      (NoteRowIx),a
-NprLast:
-                ld      a,(NoteRowIx)
-                call    NoteLineLen
-                or      a
-                jr      nz,NprGotLast
-                ld      a,(NoteRowIx)
-                or      a
-                jr      z,NprGotLast
-                dec     a
-                ld      (NoteRowIx),a
-                jr      NprLast
-NprGotLast:
-                ld      a,(NoteRowIx)
-                ld      (NotePrtLast),a
-                xor     a
-                ld      (NoteRowIx),a
-NprRow:
-                ld      a,(NoteRowIx)
-                call    NoteLineLen
-                or      a
-                jr      z,NprNoText             ; a blank line in the middle
-                                                ; is still a line
-                ld      c,a
-                ld      b,0
-                ld      a,(NoteRowIx)
-                call    NoteRowAddr
-                ld      a,(NoteHandle)          ; the handle goes in A and
-                call    StWrite                 ; everything between the open
-                                                ; and here destroys it
-NprNoText:
-                ld      a,(NoteRowIx)
-                ld      b,a
-                ld      a,(NotePrtLast)
-                cp      b
-                jr      z,NprDone               ; The last line needs no ENTER
-                                                ; of its own: the close flushes
-                                                ; the buffer, and sending one
-                                                ; leaves an empty buffer for
-                                                ; the close to print as a
-                                                ; blank line of paper.
-                ld      hl,NotePrtEol
-                ld      bc,1
-                ld      a,(NoteHandle)
-                call    StWrite
-                ld      hl,NoteRowIx
-                inc     (hl)
-                jr      NprRow
-NprDone:
-                ld      a,(NoteHandle)
-                call    StClose
-NotePrtFail:
-                ld      a,(NotePrtWas)
-                jp      StSelect
-
-NotePrtEol:     defb    KEY_ENTER
-NoteWantTop:    defb    0
-NotePrtWas:     defb    0
-NotePrtLast:    defb    0
-
-; ------------------------------------------------------------
-;  NoteClose
-;  F2's close vector, and the reason that vector exists.
-;
-;  A document with unsaved work asks before it goes, and asking
-;  cannot block: the panel system is not a modal loop, it is a
-;  panel that takes every press until it closes and then calls
-;  back. So this refuses the close, and the answer performs it.
-;  Carry set means "not yet" rather than "no".
-; ------------------------------------------------------------
 NoteClose:
                 ld      a,(NoteModified)
                 or      a
-                ret     z                       ; nothing to lose
-                ld      hl,NoteName             ; which document, by name,
-                ld      de,TxtNoteLose          ; because two notepads can be
-                ld      bc,NoteCloseAnswer      ; open and only one is going
+                ret     z
+                ld      hl,NoteName
+                ld      de,TxtNoteLose
+                ld      bc,NoteCloseAnswer
                 call    DlgSave3
                 scf
                 ret
-
-; A = 0 cancel, 1 discard, 2 save. The window is still the live one:
-; a panel does not change which window is selected, it sits over it.
 NoteCloseAnswer:
                 or      a
-                ret     z                       ; stay open, unchanged
+                ret     z
                 cp      2
-                jr      z,NcaSave
+                jr      nz,NcaGo
+                call    NoteSave
+                jr      c,NoteSaveAlert
 NcaGo:
                 ld      a,1
                 ld      (WndForce),a
                 jp      WndClose
-NcaSave:
-                call    NoteSave
-                jr      nc,NcaGo
-                ; The save failed, so the window stays: closing now would
-                ; throw the work away having just been told to keep it.
+NoteSaveAlert:
                 ld      hl,TxtNoteNoSave
                 ld      de,0
                 jp      DlgAlert
-
-TxtNoteLose:    defb    "UNSAVED WORK",0   ; DGW is 14 columns
+NoteLoadAlert:
+                ld      hl,TxtNoteNoLoad
+                ld      de,0
+                jp      DlgAlert
+TxtNoteNoLoad:  defb    "COULD NOT LOAD",0
+TxtNoteLose:    defb    "UNSAVED WORK",0
 TxtNoteNoSave:  defb    "COULD NOT SAVE",0
 
-; F2. Everything in the FILE menu except DELETE acts on the document
-; in front, so it has to ask whether the thing in front has one. The
-; test is the descriptor the window already carries, so there is no
-; second copy of "which application is this" to go stale.
+; ---- The FILE menu
+NoteMenuNew:
+                ld      a,APP_NOTE
+                call    WndOpen
+                ret     c
+                ; Compose now, then restore the desktop and blit next frame,
+                ; as for SETTINGS. Do not compose the new buffer twice.
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+NmnBit:
+                rlca
+                djnz    NmnBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; successful open
+                ret
+
+; Z if the front window is a notepad, which is the live one after
+; the menu's press.
 NoteIsFront:
                 ld      hl,(WinApp)
                 ld      de,AppNote
                 or      a
                 sbc     hl,de
                 ret
+
 NoteMenuSave:
                 call    NoteIsFront
                 ret     nz
@@ -1262,25 +1023,57 @@ NoteMenuSave:
                 ld      a,1
 NmsOk:
                 ld      (NoteResult),a
+                or      a
+                jp      nz,NoteSaveAlert
                 ret
 
-NoteRefresh:
-                call    PtrRestore
-                call    NoteDrawAll
-                call    NoteCurDraw
-                call    WinGrab
-                xor     a
-                ld      (NoteDirty),a
-                call    PtrSaveBg
-                jp      PtrDraw
-
-; Scratch, all of it. Each is written and read inside one call, so a
-; second notepad shares these the way it shares the registers.
-NoteHandle:     defb    0
-NoteGot:        defw    0
-NoteResult:     defb    0
-NoteOldY:       defb    0
-NoteChar:       defb    0
-NoteLine:       defw    0
+; Tape has no directory; retain its sequential load operation.
+NoteMenuOpen:
+                call    StIdent
+                cp      ST_TAPE
+                jp      nz,CmdBrowseOpen
+                call    NoteIsFront
+                ret     nz
+                call    NoteLoad
+                ld      a,0
+                jr      nc,NmoOk
+                ld      a,1
+NmoOk:
+                ld      (NoteResult),a
+                or      a
+                jp      nz,NoteLoadAlert
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
 
 TxtNoteName:    defb    "NOTE",0
+TxtWinTitle:    defb    "NOTEPAD",0
+
+; Scroll model: count hard lines, not the chunks of a long line.
+NoteScrollInfo:
+                call    NoteMeasure
+                call    NoteVisRows
+                ld      c,a
+                ld      a,(NoteRows)
+                ld      b,a
+                ld      a,(NoteTop)
+                ret
+
+; Moving the view does not move the caret. NoteKey brings it back
+; into view on the next edit/navigation. NoteDraw uses the same clamp
+; when a larger window exposes more of the document.
+NoteScrollTo:
+                push    af
+                call    NoteMeasure
+                call    NoteVisRows
+                ld      b,a
+                ld      a,(NoteRows)
+                sub     b
+                ld      b,a
+                pop     af
+                cp      b
+                jr      c,NstSet
+                ld      a,b
+NstSet:
+                ld      (NoteTop),a
+                ret

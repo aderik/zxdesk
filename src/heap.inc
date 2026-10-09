@@ -1,5 +1,5 @@
 ; ============================================================
-;  F1: the heap
+;  The heap, ported from the ZX version as it stands.
 ;  Everything in this system has been static. Two windows exist
 ;  because two buffers were declared at fixed addresses, and a
 ;  third would have been a third declaration. That is what this
@@ -35,15 +35,11 @@
 ; ============================================================
 HEAPHDR         equ     4
 HEAPSPLIT       equ     HEAPHDR+16      ; not worth splitting off less
-; The heap stops a page short of the top of memory. Every walk here
-; computes the next block as address plus header plus size and then
-; compares it against the end, and a block that ended at $10000 would
-; wrap to nought and compare as below the base. Stopping at $FF00
-; means the arithmetic never reaches sixteen bits of carry, which
-; costs 256 bytes of 8,272 and removes the whole class.
-HEAPEND         equ     $FF00
-HeapBase        equ     SuArena + SUARENA
-HEAPSIZE        equ     HEAPEND-HeapBase
+; HeapBase is set in msxdesk.asm; the end is HeapEnd, a variable,
+; because a disk ROM lowers HIMEM by five kilobytes and the heap
+; stops STACKRES under whatever HIMEM is. Nothing here ever reaches
+; $10000, so the wrap the ZX version stopped a page short for cannot
+; happen.
 
 HEAPOWN_NONE    equ     0               ; owned by nothing in particular
 HEAPOWN_WIN     equ     $10             ; plus the window index
@@ -53,8 +49,12 @@ HEAPOWN_WIN     equ     $10             ; plus the window index
 ;  One free block covering everything.
 ; ------------------------------------------------------------
 HeapInit:
+                ld      hl,(HeapEnd)
+                ld      de,HeapBase+HEAPHDR
+                or      a
+                sbc     hl,de
+                ex      de,hl                   ; DE = the one block's payload
                 ld      hl,HeapBase
-                ld      de,HEAPSIZE-HEAPHDR
                 ld      (hl),e
                 inc     hl
                 ld      (hl),d
@@ -74,7 +74,7 @@ HeapAlloc:
                 ld      (HpWant),bc
                 ld      hl,HeapBase
 HpaLoop:
-                ld      de,HEAPEND              ; walked off the end?
+                ld      de,(HeapEnd)              ; walked off the end?
                 push    hl
                 or      a
                 sbc     hl,de
@@ -224,7 +224,7 @@ HeapFreeOwner:
                 ld      (HpOwner),a
                 ld      hl,HeapBase
 HpfLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -268,7 +268,7 @@ HpfNext:
 HeapCoalesce:
                 ld      hl,HeapBase
 HpcLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -289,7 +289,7 @@ HpcLoop:
                 ld      bc,HEAPHDR
                 add     hl,bc
                 add     hl,de                   ; HL = the next header
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -345,7 +345,7 @@ HeapStat:
                 ld      (HpBiggest),hl
                 ld      hl,HeapBase
 HpsLoop:
-                ld      de,HEAPEND
+                ld      de,(HeapEnd)
                 push    hl
                 or      a
                 sbc     hl,de
@@ -384,7 +384,4 @@ HpsDone:
                 ld      de,(HpBiggest)
                 ret
 
-HpWant:         defw    0
-HpOwner:        defb    0
-HpTotal:        defw    0
-HpBiggest:      defw    0
+; HpWant, HpOwner, HpTotal and HpBiggest live in the var block.

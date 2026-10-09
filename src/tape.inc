@@ -1,142 +1,109 @@
-; ============================================================
-;  Tape backend
-;  An unmodified 48K does have storage. It is tape, and it is
-;  what ZX Desk has to work with before any interface is fitted.
-;  This is the baseline backend, not a consolation prize.
-;
-;  Tape is a stream, so it cannot pretend to be a filesystem.
-;  A write buffers into RAM and the close does the actual SAVE;
-;  an open for reading does the LOAD and the reads then come out
-;  of the buffer. That maps cleanly onto settings and small
-;  documents, which is what a 48K is going to hold anyway, and
-;  the capability bits say so: WRITE and PERSIST, no RANDOM and
-;  no DIR.
-;
-;  ROM entry points, confirmed against the ROM disassembly:
-;    SA_BYTES  $04C2  A = type, IX = start, DE = length
-;    LD_BYTES  $0556  A = type, IX = start, DE = length,
-;                     carry set to load, returns carry set on OK
-;  Type is $00 for a header and $FF for data. Both are byte for
-;  byte identical in 48.rom and in the 128K's ROM 1, which are not
-;  the same ROM; printer.inc says where they do differ.
-;
-;  Two things the ROM assumes and will not tell you about:
-;  IY must be $5C3A, because the ROM indexes the system
-;  variables through it, and interrupts must be off, because the
-;  bit timing is done by counting T states. Our IM2 handler and
-;  frame counter stop for the duration, which is expected.
-; ============================================================
-SA_BYTES        equ     $04C2
-LD_BYTES        equ     $0556
-SYSVARS         equ     $5C3A
+; BIOS cassette stream: long leader + "MSXT", name[13], LE length;
+; short leader + payload (0..256 bytes). Not an MSX BASIC file.
+; One buffered file, handle 1. No directory or delete. BIOS owns PSG
+; and interrupt masking during transfers; the wrapper preserves buffers.
+TAPION          equ     $00E1
+TAPIN           equ     $00E4
+TAPIOF          equ     $00E7
+TAPOON          equ     $00EA
+TAPOUT          equ     $00ED
+TAPOOF          equ     $00F0
 
-TAPEHDR         equ     17
-
-TapeInit:
+TapeOpen:
+                xor     a
+                ld      (TapeMode),a
+                ld      a,b
+                cp      FA_READ
+                jr      z,TapeOpenMode
+                cp      FA_OVERWRITE
+                jp      nz,StNoDelete
+TapeOpenMode:
+                push    bc
+                call    RamNorm
+                pop     bc
+                ret     c
+                ld      a,b
+                ld      (TapeMode),a
                 ld      hl,0
                 ld      (TapeLen),hl
                 ld      (TapePos),hl
-                xor     a
-                ld      (TapeDirty),a
-                ret
-
-; HL = name, B = mode. One file at a time, handle is always 1.
-TapeOpen:
-                ld      a,b
-                ld      (TapeMode),a
-                call    TapeName                ; pad the name into the header
-                call    TapeInit
+                ld      hl,TapeMagic
+                ld      de,TapeHdr
+                ld      bc,4
+                ldir
+                ld      hl,RamName
+                ld      bc,13
+                ldir
                 ld      a,(TapeMode)
                 cp      FA_OVERWRITE
-                jr      z,TapoWrite
-                call    TapeLoad
-                ret     c
-                ld      hl,(TapeLen)
-                ld      a,h
-                or      l
-                jr      nz,TapoOk
-                ld      a,STERR_NOTFOUND
-                scf
-                ret
-TapoWrite:
+                jr      z,TapeOpened
                 ld      a,1
-                ld      (TapeDirty),a
-TapoOk:
-                ld      a,1
-                or      a
-                ret
-
-; Copy the caller's name into the header, space padded to ten
-; characters the way a Spectrum header wants it.
-TapeName:
-                push    hl
-                ld      hl,TapeHdr+1
-                ld      b,10
-                ld      a,' '
-TapnPad:
-                ld      (hl),a
-                inc     hl
-                djnz    TapnPad
-                pop     hl
-                ld      de,TapeHdr+1
-                ld      b,10
-TapnCopy:
-                ld      a,(hl)
-                or      a
-                ret     z
-                ld      (de),a
-                inc     hl
-                inc     de
-                djnz    TapnCopy
-                ret
-
-; Read headers until one matches the wanted name, then pull its
-; data block into the buffer. Carry set means the tape ran out or
-; the block was corrupt.
-TapeLoad:
-                ld      iy,SYSVARS              ; the ROM indexes through IY
+                ld      (TapeBusy),a
                 di
-TaplSeek:
-                ld      ix,TapeIn
-                ld      de,TAPEHDR
-                xor     a                       ; $00: a header block
-                scf                             ; load rather than verify
-                call    LD_BYTES
-                jr      nc,TaplFail
-                ld      hl,TapeHdr+1
-                ld      de,TapeIn+1
-                ld      b,10
-TaplCmp:
+                ld      hl,TapeIn
+                ld      bc,19
+                call    TapeGetBlock
+                jr      c,TapeLoadFail
+                ld      hl,TapeHdr
+                ld      de,TapeIn
+                ld      b,17
+TapeCompare:
                 ld      a,(de)
                 cp      (hl)
-                jr      nz,TaplSeek             ; not ours, keep looking
+                jr      nz,TapeLoadFail
                 inc     hl
                 inc     de
-                djnz    TaplCmp
-                ld      hl,(TapeIn+11)          ; length from the header
-                ld      de,TAPEMAX
+                djnz    TapeCompare
+                ld      hl,(TapeIn+17)
+                ld      de,257
                 or      a
                 sbc     hl,de
-                jr      nc,TaplFail             ; longer than the buffer
-                ld      hl,(TapeIn+11)
-                ld      (TapeLen),hl
-                ex      de,hl
-                ld      ix,TAPEBUF
-                ld      a,$FF                   ; $FF: a data block
-                scf
-                call    LD_BYTES
-                jr      nc,TaplFail
+                jr      nc,TapeLoadFail
+                ld      bc,(TapeIn+17)
+                ld      (TapeLen),bc
+                ld      hl,TapeBuf
+                call    TapeGetBlock
+                jr      c,TapeLoadFail
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
                 ei
+TapeOpened:
+                ld      a,1
                 or      a
                 ret
-TaplFail:
+TapeLoadFail:
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
                 ei
+                xor     a
+                ld      (TapeMode),a
                 ld      a,STERR_NOTFOUND
+                scf
+                ret
+TapeMagic:      defb    "MSXT"
+
+; A=handle, E=required mode. Invalid operations transfer zero bytes.
+TapeValid:
+                cp      1
+                jp      nz,TapeInvalid
+                ld      a,(TapeMode)
+                cp      e
+                ret     z                       ; CP clears carry on equality
+TapeInvalid:
+                ld      bc,0
+                ld      a,STERR_HANDLE
                 scf
                 ret
 
 ; A = handle, HL = buffer, BC = count. Returns BC = bytes moved.
 TapeRead:
+                ld      e,FA_READ
+                call    TapeValid
+                ret     c
                 call    TapeAvail               ; BC = min(count, len-pos)
                 ld      a,b
                 or      c
@@ -144,7 +111,7 @@ TapeRead:
                 push    bc
                 ex      de,hl                   ; DE = caller's buffer
                 ld      hl,(TapePos)
-                ld      bc,TAPEBUF
+                ld      bc,TapeBuf
                 add     hl,bc
                 pop     bc
                 push    bc
@@ -158,6 +125,9 @@ TapeRead:
 
 ; A = handle, HL = buffer, BC = count. Returns BC = bytes accepted.
 TapeWrite:
+                ld      e,FA_OVERWRITE
+                call    TapeValid
+                ret     c
                 call    TapeRoom                ; BC = min(count, max-len)
                 ld      a,b
                 or      c
@@ -165,7 +135,7 @@ TapeWrite:
                 push    bc
                 ld      de,(TapeLen)
                 push    hl
-                ld      hl,TAPEBUF
+                ld      hl,TapeBuf
                 add     hl,de
                 ex      de,hl                   ; DE = where it goes
                 pop     hl                      ; HL = where it comes from
@@ -188,10 +158,10 @@ TapeAvail:
                 sbc     hl,de
                 jr      TapeClamp
 
-; BC = min(BC, TAPEMAX - TapeLen)
+; BC = min(BC, 256 - TapeLen)
 TapeRoom:
                 push    hl
-                ld      hl,TAPEMAX
+                ld      hl,256
                 ld      de,(TapeLen)
                 or      a
                 sbc     hl,de
@@ -203,45 +173,112 @@ TapeClamp:
                 pop     hl
                 jr      c,TapcUse               ; available < asked, use it
                 pop     hl
+                or      a
                 ret                             ; asked for fits, keep BC
 TapcUse:
                 ld      b,h
                 ld      c,l
                 pop     hl
+                or      a
                 ret
 
-; Closing a file opened for writing is what actually saves it.
 TapeClose:
-                ld      a,(TapeDirty)
+                cp      1
+                jp      nz,TapeInvalid
+                ld      a,(TapeMode)
                 or      a
-                ret     z
+                jp      z,TapeInvalid
+                ld      b,a
                 xor     a
-                ld      (TapeDirty),a
-                ld      a,3                     ; header type 3, CODE
-                ld      (TapeHdr),a
-                ld      hl,(TapeLen)
-                ld      (TapeHdr+11),hl
-                ld      hl,TAPEBUF
-                ld      (TapeHdr+13),hl         ; start address
-                ld      hl,$8000
-                ld      (TapeHdr+15),hl         ; unused for CODE
-                ld      iy,SYSVARS
-                di
-                ld      ix,TapeHdr
-                ld      de,TAPEHDR
-                xor     a                       ; header block
-                call    SA_BYTES
-                ld      ix,TAPEBUF
-                ld      de,(TapeLen)
-                ld      a,$FF                   ; data block
-                call    SA_BYTES
-                ei
+                ld      (TapeMode),a
+                ld      a,b
+                cp      FA_OVERWRITE
+                jr      z,TapeSave
                 or      a
                 ret
+TapeSave:
+                ld      hl,(TapeLen)
+                ld      (TapeHdr+17),hl
+                ld      a,1
+                ld      (TapeBusy),a
+                di
+                ld      a,1                     ; long header leader
+                ld      hl,TapeHdr
+                ld      bc,19
+                call    TapePutBlock
+                jr      c,TapeSaveDone
+                xor     a                       ; short data leader
+                ld      hl,TapeBuf
+                ld      bc,(TapeLen)
+                call    TapePutBlock
+TapeSaveDone:
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
+                ei
+                ret
 
-TapeMode:       defb    0
-TapeLen:        defw    0
-TapePos:        defw    0
-TapeDirty:      defb    0
-TapeHdr:        defs    TAPEHDR
-TapeIn:         defs    TAPEHDR
+; BIOS calls may destroy every register. IX selects the BIOS entry;
+; the wrapper preserves the buffer pointer, count and application IY.
+TapeBios:
+                push    bc
+                push    de
+                push    hl
+                push    ix
+                push    iy
+                call    TapeBiosJump
+                pop     iy
+                pop     ix
+                pop     hl
+                pop     de
+                pop     bc
+                ret
+TapeBiosJump:   jp      (ix)
+
+TapeGetBlock:
+                ld      ix,TAPION
+                call    TapeBios
+                jr      c,TapeGetDone
+TapeGetLoop:
+                ld      a,b
+                or      c
+                jr      z,TapeGetDone
+                ld      ix,TAPIN
+                call    TapeBios
+                jr      c,TapeGetDone
+                ld      (hl),a
+                inc     hl
+                dec     bc
+                jr      TapeGetLoop
+TapeGetDone:
+                push    af
+                ld      ix,TAPIOF
+                call    TapeBios
+                pop     af
+                ret
+TapePutBlock:
+                ld      ix,TAPOON
+                call    TapeBios
+                jr      c,TapePutDone
+TapePutLoop:
+                ld      a,b
+                or      c
+                jr      z,TapePutDone
+                ld      a,(hl)
+                ld      ix,TAPOUT
+                call    TapeBios
+                jr      c,TapePutDone
+                inc     hl
+                dec     bc
+                jr      TapePutLoop
+TapePutDone:
+                push    af
+                ld      ix,TAPOOF
+                call    TapeBios
+                pop     de                      ; retain earlier byte failure
+                ret     c
+                bit     0,e
+                ret     z
+                scf
+                ret

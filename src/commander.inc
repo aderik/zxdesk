@@ -1,562 +1,762 @@
-; ============================================================
-;  Two pane file manager
-;  A commander, in the sense the word had when Norton and then
-;  GEM's desktop meant it: two listings side by side, one of them
-;  live, and everything you do goes from the live one to the
-;  other. That shape exists because copying is the thing people
-;  actually do with files, and it needs a source and a
-;  destination on screen at once.
-;
-;  There are no directories on this machine and there never will
-;  be, so the panes are not directories. They are devices, and
-;  the storage layer has had three of them since E1: RAM, tape
-;  and, on a 128K, the spare banks. Two panes over two devices
-;  with a copy between them is what a commander is for here, and
-;  it is a truer use of the abstraction than pretending a flat
-;  store has folders in it.
-;
-;  It is an application rather than a panel, and that is F2
-;  earning its keep. A panel would have wanted a save under
-;  thirty columns wide, and SUMAXW is sixteen: the arena would
-;  have had to grow by nearly three kilobytes of heap. A window
-;  takes its pixels from the heap already, sized to itself, and
-;  gets a title bar, a close box and a resize grip for nothing.
-;
-;  A pane on a device with no directory says so. That is not an
-;  error path bolted on, it is STCAP_DIR being asked, and the
-;  tape answering honestly is the reason the capability byte
-;  exists.
-; ============================================================
+; Two device panes, adapted from ZX Desk's commander (MIT, Damian Cooper).
+; Cached pages keep disk I/O out of APP_DRAW. State belongs to the window;
+; transfer scratch is shared because events run sequentially.
 CMDW            equ     30
-CMDH            equ     96
-CMDPANEW        equ     13              ; characters of listing in a pane
-CMDHEADY        equ     WinCapH+2       ; the device name
-CMDLISTY        equ     WinCapH+12      ; the first file under it
-CMDSTSZ         equ     5
+CMDH            equ     12
+CMDROWS         equ     6
+CMDENT          equ     15              ; name[13], size[2]
+CMDCACHE        equ     CMDROWS*CMDENT
 
-CmdState:
-CmdBk0:         defb    ST_RAM          ; the device each pane is showing
-CmdBk1:         defb    ST_TAPE
-CmdSel0:        defb    0               ; and the row each is pointing at
-CmdSel1:        defb    0
-CmdActive:      defb    0               ; 0 left, 1 right
-
-; ------------------------------------------------------------
-;  CmdInit
-;  The left pane opens on whatever StInit chose for this machine,
-;  which is the banks on a 128K and RAM on a 48K, and the right
-;  on tape. Two panes both showing the same device would be one
-;  pane drawn twice.
-; ------------------------------------------------------------
+CommanderOpen:
+                ld      a,APP_CMD
+                jp      WndOpen
+; FILE > OPEN uses the active backend in one pane. VIEW retains transfers.
+CmdBrowseOpen:
+                call    CommanderOpen
+                ret     c
+                ld      a,1
+                ld      (CmdBrowse),a
+                ret
 CmdInit:
+                ld      hl,CmdState
+                ld      de,CmdState+1
+                ld      bc,CMDSTSZ-1
+                ld      (hl),0
+                ldir
                 call    StIdent
                 ld      (CmdBk0),a
-                cp      ST_TAPE
-                ld      a,ST_TAPE
-                jr      nz,CmiRight
                 ld      a,ST_RAM
-CmiRight:
                 ld      (CmdBk1),a
-                xor     a
-                ld      (CmdSel0),a
-                ld      (CmdSel1),a
-                ld      (CmdActive),a
-                ret
+                jp      CmdRefresh
 
-; ------------------------------------------------------------
-;  CmdUse
-;  in: A = pane. Selects that pane's device and leaves the
-;      pane's index in CmdPane.
-;  Every listing and every transfer goes through here, so there
-;  is one place that knows a pane is a device and the rest of
-;  this file only knows about panes.
-; ------------------------------------------------------------
+; CmdPane selects the live side. Global storage is restored at public exits.
 CmdUse:
-                ld      (CmdPane),a
-                or      a
-                ld      a,(CmdBk0)
-                jr      z,CmuGo
-                ld      a,(CmdBk1)
-CmuGo:
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
                 jp      StSelect
-
-; out: HL = the selected row byte of CmdPane's pane
+CmdField:
+                ld      a,(CmdPane)
+                or      a
+                ret     z
+                inc     hl
+                ret
 CmdSelAt:
-                ld      a,(CmdPane)
-                or      a
                 ld      hl,CmdSel0
-                ret     z
-                ld      hl,CmdSel1
-                ret
-
-; out: A = how many rows of listing this window is tall
-CmdRows:
-                ld      a,(WinH)
-                sub     CMDLISTY+3
-                jr      c,CmrOne
-                srl     a
-                srl     a
-                srl     a
-                jr      z,CmrOne
-                ret
-CmrOne:
-                ld      a,1
-                ret
-
-; out: A = files on CmdPane's device, or nought if it has no
-;      directory to ask
-; in: A = pane. It took the pane from CmdPane instead, which is
-; whatever the last thing to call CmdUse left there, and the last
-; thing is always CmdDraw finishing with the right hand pane. So DOWN
-; asked the tape how many files it had, was told none, and refused to
-; move in a listing of three.
-CmdCount:
-                call    CmdUse
-                call    StCaps
-                and     STCAP_DIR
-                jr      z,CmcNone
-                ld      b,0
-CmcLoop:
-                ld      a,b
-                push    bc
-                call    StDir
-                pop     bc
-                jr      c,CmcDone
-                inc     b
-                ld      a,b
-                cp      99
-                jr      c,CmcLoop
-CmcDone:
-                ld      a,b
-                ret
-CmcNone:
-                xor     a
-                ret
-
-; ------------------------------------------------------------
-;  CmdScrollInfo
-;  A unit is a file on the live pane's device. A device with no
-;  directory has nothing to scroll and says so by reporting
-;  nought, which WndScrollInfo reads as no bar.
-; ------------------------------------------------------------
-CmdScrollInfo:
-                ld      a,(StBackend)
-                ld      (CmdWasS),a
-                ld      a,(CmdActive)
-                call    CmdCount
-                ld      (CmdTotal),a
-                ld      a,(CmdWasS)
-                call    StSelect
-                call    CmdRows
-                ld      c,a
-                ld      a,(CmdTotal)
-                ld      b,a
-                ld      a,(CmdActive)
-                ld      (CmdPane),a
-                call    CmdSelAt
-                ld      a,(hl)                  ; the bar tracks the selection
-                ret
-
-; ------------------------------------------------------------
-;  CmdScrollTo
-;  in: A = the file to point at
-;  The commander's listing always starts at the first file, so
-;  what its bar tracks is the selection rather than a view
-;  offset. That is what a list box's slider does, and it is
-;  honest: there is no second thing here that could move.
-; ------------------------------------------------------------
-CmdScrollTo:
-                ld      (CmdWant),a
-                ld      a,(StBackend)
-                ld      (CmdWasS),a
-                ld      a,(CmdActive)
-                call    CmdCount
-                ld      b,a
-                ld      a,(CmdWasS)
-                call    StSelect
-                ld      a,b
-                or      a
-                ret     z
-                dec     a
-                ld      b,a                     ; the last file there is
-                ld      a,(CmdWant)
-                cp      b
-                jr      c,CmdStSet
-                ld      a,b
-CmdStSet:
-                ld      (CmdWant),a
-                ld      a,(CmdActive)
-                ld      (CmdPane),a
-                call    CmdSelAt
-                ld      a,(CmdWant)
-                ld      (hl),a
-                jp      CmdRepaint
-
-; ------------------------------------------------------------
-;  CmdDraw
-;  F2's draw vector. Two panes, a rule between them, and the
-;  device each is showing written over it.
-; ------------------------------------------------------------
-; Selecting a device is a global act: StBackend is one byte and every
-; other part of the system reads it. So both public entry points here
-; put back exactly what they found, and they use separate cells for it
-; because a key ends by drawing and one cell would have the inner call
-; overwriting what the outer one saved.
-CmdDraw:
-                ld      a,(StBackend)
-                ld      (CmdWasD),a
-                xor     a
-                call    CmdPane1
-                ld      a,1
-                call    CmdPane1
-                ld      a,(CmdWasD)
-                jp      StSelect
-
-; A = pane. Draws its header and its listing.
-CmdPane1:
-                call    CmdUse
-                ; where this pane starts
+                jp      CmdField
+CmdTopAt:
+                ld      hl,CmdTop0
+                jp      CmdField
+CmdCacheAt:
+                ld      hl,CmdCache0
                 ld      a,(CmdPane)
                 or      a
-                ld      a,(WinX)
-                jr      z,CmpLeft
-                add     a,CMDPANEW+2
-CmpLeft:
-                inc     a
-                ld      (CmdCol),a
-                ; the header: the device, inverted when this is the pane
-                ; the keys are pointing at, because a one bit display has
-                ; one emphasis and this is what it is for
-                ld      a,(WinY)
-                add     a,CMDHEADY
-                ld      (PxRow),a
+                ret     z
+                ld      hl,CmdCache1
+                ret
+
+CmdRefresh:
+                call    StIdent
+                push    af
+                xor     a
+                ld      (CmdPane),a
+                call    CmdReadPane
+                ld      a,(CmdBrowse)
+                or      a
+                jr      nz,CrfDone
+                ld      a,1
+                ld      (CmdPane),a
+                call    CmdReadPane
+CrfDone:
+                pop     af
+                jp      StSelect
+CmdReadPane:
+                call    CmdUse
+                call    CmdCacheAt
+                ld      (CmdCacheP),hl
+                ld      d,h
+                ld      e,l
+                inc     de
+                ld      (hl),0
+                ld      bc,CMDCACHE-1
+                ldir
+                call    CmdTopAt
+                ld      a,(hl)
+                ld      (CmdIndex),a
+                ld      a,CMDROWS
+                ld      (CmdLeft),a
+CrpLoop:
+                ld      a,(CmdIndex)
+                call    StDir
+                ret     c
+                push    de                      ; size
+                ld      de,(CmdCacheP)
+                ld      b,12
+CrpName:
+                ld      a,(hl)
+                or      a
+                jr      z,CrpSize
+                ld      (de),a
+                inc     hl
+                inc     de
+                djnz    CrpName
+CrpSize:
+                pop     de
+                ld      hl,(CmdCacheP)
+                ld      bc,13
+                add     hl,bc
+                ld      (hl),e
+                inc     hl
+                ld      (hl),d
+                inc     hl
+                ld      (CmdCacheP),hl
+                ld      hl,CmdIndex
+                inc     (hl)
+                ret     z                       ; 8-bit directory index limit
+                ld      hl,CmdLeft
+                dec     (hl)
+                jr      nz,CrpLoop
+                ret
+
+; Drawing only reads the cached page; WinDraw has cleared the interior.
+CmdDraw:
+                xor     a
+                ld      (CmdPane),a
+                call    CmdDrawPane
+                ld      a,(CmdBrowse)
+                or      a
+                jr      nz,CdBrowseHelp
+                ld      a,1
+                ld      (CmdPane),a
+                call    CmdDrawPane
+                xor     a
+                ld      (PrintInv),a
+                ld      hl,TxtCmdHelp1
+                ld      bc,$0901
+                call    WinPrint
+                ld      hl,TxtCmdHelp2
+                ld      bc,$0A01
+                call    WinPrint
+                jr      CdStatus
+CdBrowseHelp:
+                xor     a
+                ld      (PrintInv),a
+                ld      hl,TxtBrowseHelp
+                ld      bc,$0901
+                call    WinPrint
+                ld      hl,TxtBrowseHelp2
+                ld      bc,$0A01
+                call    WinPrint
+CdStatus:
+                ld      a,(CmdStatus)
+                add     a,a
+                ld      e,a
+                ld      d,0
+                ld      hl,CmdMessages
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ex      de,hl
+                ld      bc,$0801
+                jp      WinPrint
+CmdDrawPane:
+                call    CmdUseCol
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_DISK
+                ld      hl,TxtCmdDisk
+                jr      z,CdpHeader
+                ld      hl,TxtCmdRam
+CdpHeader:
+                push    hl
+                call    CmdInverse
+                pop     hl
                 ld      a,(CmdCol)
                 ld      c,a
-                call    CmdDevName
+                ld      b,1
+                call    WinPrint
+                call    CmdCacheAt
+                ld      (CmdCacheP),hl
+                call    CmdTopAt
+                ld      a,(hl)
+                ld      (CmdIndex),a
+                ld      a,2
+                ld      (CmdRow),a
+CdpRow:
+                xor     a
+                ld      (PrintInv),a
+                call    CmdSelAt
+                ld      a,(CmdIndex)
+                cp      (hl)
+                call    z,CmdInverse
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                jr      nz,CdpText
+                ld      hl,TxtCmdEmpty
+                ld      a,(CmdRow)
+                cp      2
+                jr      z,CdpText
+                ld      hl,TxtCmdBlank
+CdpText:
+                ld      a,(CmdCol)
+                ld      c,a
+                ld      a,(CmdRow)
+                ld      b,a
+                call    WinPrint
+                ld      a,(CmdBrowse)
+                or      a
+                call    nz,CmdDrawSize
+                ld      hl,(CmdCacheP)
+                ld      de,CMDENT
+                add     hl,de
+                ld      (CmdCacheP),hl
+                ld      hl,CmdIndex
+                inc     (hl)
+                ld      hl,CmdRow
+                inc     (hl)
+                ld      a,(hl)
+                cp      2+CMDROWS
+                jr      c,CdpRow
+                ret
+; Five decimal digits, including zero, from the StDir cached length.
+CmdDrawSize:
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                ret     z
+                ld      de,13
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ex      de,hl
+                ld      ix,CmdNumber
+                ld      de,10000
+                call    CdsDigit
+                ld      de,1000
+                call    CdsDigit
+                ld      de,100
+                call    CdsDigit
+                ld      de,10
+                call    CdsDigit
+                ld      de,1
+                call    CdsDigit
+                ld      (ix+0),0
+                ld      hl,CmdNumber
+                ld      a,(CmdRow)
+                ld      b,a
+                ld      c,22
+                jp      WinPrint
+CdsDigit:
+                ld      a,'0'-1
+CdsSub:
+                inc     a
+                or      a
+                sbc     hl,de
+                jr      nc,CdsSub
+                add     hl,de
+                ld      (ix+0),a
+                inc     ix
+                ret
+
+CmdUseCol:
+                ld      a,(CmdPane)
+                or      a
+                ld      a,1
+                jr      z,CucStore
+                ld      a,16
+CucStore:
+                ld      (CmdCol),a
+                ret
+CmdInverse:
                 ld      a,(CmdPane)
                 ld      b,a
                 ld      a,(CmdActive)
                 cp      b
                 ld      a,0
-                jr      nz,CmpNotAct
-                inc     a
-CmpNotAct:
+                jr      nz,CivStore
+                ld      a,INVBANK
+CivStore:
                 ld      (PrintInv),a
-                call    WinPrintClip
-                xor     a
-                ld      (PrintInv),a
-                ; and the files
-                call    CmdRows
-                ld      (CmdN),a
-                xor     a
-                ld      (CmdRow),a
-CmpRow:
-                ld      a,(CmdRow)
-                push    af
-                call    StDir
-                jr      nc,CmpPaint             ; HL is the name
-                ; Nothing there. The first row of a device that cannot
-                ; enumerate says so, and every other empty row is blank:
-                ; a tape repeating NO DIR eight times would be shouting.
-                ld      hl,TxtCmdBlank
-                ld      a,(CmdRow)
+                ret
+
+; Single-pane picker: one click selects a cached row; [OPEN] activates it.
+; The event dispatcher has focused this window and excluded its frame.
+CmdPress:
+                ld      a,(CmdBrowse)
                 or      a
-                jr      nz,CmpPaint
-                push    hl
-                call    StCaps
-                and     STCAP_DIR
-                pop     hl
-                jr      nz,CmpPaint
-                ld      hl,TxtCmdNoDir
-CmpPaint:
-                ld      (CmdName),hl
-                pop     af
+                ret     z
+                ld      a,(PtrY)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinY
+                sub     (hl)
+                cp      10
+                jr      z,CprOpen
+                sub     2
+                cp      CMDROWS
+                ret     nc
                 ld      b,a
-                add     a,a
-                add     a,a
-                add     a,a
-                ld      c,a
-                ld      a,(WinY)
-                add     a,CMDLISTY
-                add     a,c
-                ld      (PxRow),a
-                ; the row the keys are on, in the pane the keys are in
-                call    CmdSelAt
+                ld      hl,CmdCache0
+                ld      de,CMDENT
+                or      a
+                jr      z,CprRow
+CprNext:
+                add     hl,de
+                dec     a
+                jr      nz,CprNext
+CprRow:
                 ld      a,(hl)
-                cp      b
-                jr      nz,CmpPlain
-                ld      a,(CmdPane)
-                ld      c,a
-                ld      a,(CmdActive)
-                cp      c
-                jr      nz,CmpPlain
-                ld      a,1
-                jr      CmpInv
-CmpPlain:
-                xor     a
-CmpInv:
-                ld      (PrintInv),a
-                ld      a,(CmdCol)
-                ld      c,a
-                ld      hl,(CmdName)
-                call    WinPrintClip
-                xor     a
-                ld      (PrintInv),a
-                ld      hl,CmdRow
-                inc     (hl)
-                ld      a,(hl)
-                ld      hl,CmdN
-                cp      (hl)
-                jr      c,CmpRow
-                ret
+                or      a
+                ret     z                       ; blank rows cannot select a file
+                ld      a,(CmdTop0)
+                add     a,b
+                ld      (CmdSel0),a
+                jr      CprPaint
+CprOpen:
+                ld      a,(PtrX)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinX
+                sub     (hl)
+                dec     a
+                cp      6                       ; [OPEN], columns 1 through 6
+                ret     nc
+                ld      a,KEY_ENTER
+                call    CmdKey
+CprPaint:
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
 
-; out: HL = the name of CmdPane's device
-CmdDevName:
-                call    StIdent
-                cp      ST_TAPE
-                ld      hl,TxtCmdTape
-                ret     z
-                cp      ST_BANK
-                ld      hl,TxtCmdBank
-                ret     z
-                ld      hl,TxtCmdRam
-                ret
-
-; ------------------------------------------------------------
-;  CmdKey
-;  F2's key vector. Up and down walk a pane, left and right
-;  change which pane, ENTER opens the file in a notepad of its
-;  own, C copies it to the other pane and D deletes it.
-;
-;  Letters rather than a row of buttons, because thirty columns
-;  is two listings and there is nowhere to put buttons that would
-;  not be taken from the names.
-; ------------------------------------------------------------
 CmdKey:
                 ld      (CmdKeyCh),a
-                ld      a,(StBackend)
+                call    StIdent
                 ld      (CmdWasK),a
-                ld      a,(CmdKeyCh)
-                cp      KEY_UP
-                jr      nz,CmkNotU
                 ld      a,(CmdActive)
                 ld      (CmdPane),a
+                ld      a,(CmdPending)
+                or      a
+                jp      nz,CmdConfirm
+                ld      a,(CmdKeyCh)
+                cp      KEY_UP
+                jp      z,CmdUp
+                cp      KEY_DOWN
+                jp      z,CmdDown
+                cp      KEY_DELETE
+                jp      z,CmdAskDialog
+                ld      b,a
+                ld      a,(CmdBrowse)
+                or      a
+                ld      a,b
+                jr      z,CkTransfer
+                cp      KEY_ENTER
+                jp      z,CmdOpen
+                cp      'R'
+                jp      z,CmdReload
+                xor     a
+                ret
+CkTransfer:
+                cp      KEY_LEFT
+                jr      z,CmdLeftPane
+                cp      KEY_RIGHT
+                jr      z,CmdRightPane
+                cp      9                       ; TAB
+                jr      z,CmdTab
+                cp      'R'
+                jp      z,CmdReload
+                cp      'C'
+                jp      z,CmdCopy
+                cp      'D'
+                jp      z,CmdAskDelete
+                cp      KEY_ENTER
+                jp      z,CmdOpen
+                xor     a
+                ret
+CmdLeftPane:
+                xor     a
+                jr      CmdPaneSet
+CmdRightPane:
+                ld      a,1
+                jr      CmdPaneSet
+CmdTab:
+                ld      a,(CmdActive)
+                xor     1
+CmdPaneSet:
+                ld      (CmdActive),a
+                xor     a
+                jp      CmdResult
+CmdUp:
                 call    CmdSelAt
                 ld      a,(hl)
                 or      a
-                jr      z,CmdRepaint
+                jp      z,CmdDone
                 dec     (hl)
-                jr      CmdRepaint
-CmkNotU:
-                cp      KEY_DOWN
-                jr      nz,CmkNotD
-                ld      a,(CmdActive)
-                call    CmdCount
-                ld      b,a
-                ld      a,(CmdActive)
-                ld      (CmdPane),a
-                call    CmdSelAt
-                ld      a,(hl)
-                inc     a
-                cp      b
-                jr      nc,CmdRepaint
+                dec     a
+                push    af
+                call    CmdTopAt
+                pop     af
+                cp      (hl)
+                jr      nc,CmdNavDone
                 ld      (hl),a
-                jr      CmdRepaint
-CmkNotD:
-                cp      KEY_LEFT
-                jr      nz,CmkNotL
-                xor     a
-                ld      (CmdActive),a
-                jr      CmdRepaint
-CmkNotL:
-                cp      KEY_RIGHT
-                jr      nz,CmkNotR
-                ld      a,1
-                ld      (CmdActive),a
-                jr      CmdRepaint
-CmkNotR:
-                cp      KEY_ENTER
-                jr      nz,CmkNotEnt
-                jp      CmdOpen
-CmkNotEnt:
-                cp      'C'
-                jr      nz,CmkNotC
-                call    CmdCopy
-                jr      CmdRepaint
-CmkNotC:
-                cp      'D'
-                ret     nz
-                call    CmdDelete
-                ; fall through
-
-CmdRepaint:
-                ld      a,(CmdWasK)
-                call    StSelect
-                call    PtrRestore
-                call    CmdClearBody
-                call    CmdDraw
-                call    WndScrollBar            ; the interior was repainted
-                                                ; without WinDraw, so the
-                                                ; chrome it cleared goes back
-                call    WinGrab
-                call    PtrSaveBg
-                jp      PtrDraw
-
-CmdClearBody:
-                ld      a,(WinX)
-                inc     a
-                ld      (FrX),a
-                ld      a,(WinY)
-                add     a,WinCapH
-                ld      (FrY),a
-                ld      a,(WinW)
-                sub     2
-                ld      (FrW),a
-                ld      a,(WinH)
-                sub     WinCapH+2
-                ld      (FrH),a
-                ld      hl,$0000
-                ld      (FrPat),hl
-                jp      DevFillRect
-
-; ------------------------------------------------------------
-;  The selected file's name, into CmdWork
-;  Returns carry set if the pane has nothing selected, which a
-;  tape pane always has.
-; ------------------------------------------------------------
-CmdPicked:
-                ld      a,(CmdActive)
+                jr      CmdNavDone
+CmdDown:
                 call    CmdUse
                 call    CmdSelAt
                 ld      a,(hl)
+                inc     a
+                jp      z,CmdDone
+                push    af
+                call    StDir
+                pop     bc                      ; B = proposed selection
+                jp      c,CmdDone
+                call    CmdSelAt
+                ld      (hl),b
+                push    bc
+                call    CmdTopAt
+                pop     bc
+                ld      a,b
+                sub     (hl)
+                cp      CMDROWS
+                jr      c,CmdNavDone
+                inc     (hl)
+CmdNavDone:
+                call    CmdRefresh
+                xor     a
+                jp      CmdResult
+CmdReload:
+                xor     a
+                ld      (CmdSel0),a
+                ld      (CmdSel1),a
+                ld      (CmdTop0),a
+                ld      (CmdTop1),a
+                call    CmdRefresh
+                xor     a
+                jp      CmdResult
+
+; Resolve the displayed name again, not its old directory index. Another
+; window may have removed an earlier entry since this page was cached.
+CmdPicked:
+                call    CmdSelAt
+                ld      a,(hl)
+                push    af
+                call    CmdTopAt
+                pop     af
+                sub     (hl)
+                cp      CMDROWS
+                jr      nc,CpkMissing
+                push    af
+                call    CmdCacheAt
+                pop     af
+                ld      de,CMDENT
+                or      a
+                jr      z,CpkAt
+CpkOffset:
+                add     hl,de
+                dec     a
+                jr      nz,CpkOffset
+CpkAt:
+                ld      a,(hl)
+                or      a
+                jr      z,CpkMissing
+                ld      de,CmdWork
+                ld      bc,13
+                ldir
+                call    CmdUse
+                xor     a
+                ld      (CmdIndex),a
+CpkFind:
+                ld      a,(CmdIndex)
                 call    StDir
                 ret     c
+                push    de                      ; current size, not cached size
                 ld      de,CmdWork
-                ld      b,12
-CmpkCopy:
-                ld      a,(hl)
-                ld      (de),a
+                ld      b,13
+CpkCompare:
+                ld      a,(de)
+                cp      (hl)
+                jr      nz,CpkNext
                 or      a
-                jr      z,CmpkDone
+                jr      z,CpkFound
                 inc     hl
                 inc     de
-                djnz    CmpkCopy
-                xor     a
-                ld      (de),a
-CmpkDone:
+                djnz    CpkCompare
+CpkNext:
+                pop     de
+                ld      hl,CmdIndex
+                inc     (hl)
+                jr      nz,CpkFind
+CpkMissing:
+                scf
+                ret
+CpkFound:
+                pop     de
+                ld      (CmdSize),de
                 or      a
                 ret
-
-; ------------------------------------------------------------
-;  CmdOpen
-;  The selected file, in a notepad of its own. A commander that
-;  opened files into whatever notepad happened to be behind it
-;  would be a commander that overwrote your work to show you a
-;  file.
-; ------------------------------------------------------------
-CmdOpen:
+; Modal deletion captures the name before painting can touch scratch.
+CmdAskDialog:
                 call    CmdPicked
-                jr      c,CmdRepaint
-                ; The name and the device are both put somewhere that is not
-                ; the instance state, because opening the window swaps this
-                ; application's state out for the notepad's and CmdActive
-                ; stops meaning anything the moment it does.
-                call    StIdent
-                ld      (CmdSrcBk),a
-                ld      a,APP_NOTE
-                call    WndOpen
-                jr      c,CmdRepaint            ; no room, and the commander
-                                                ; is still live to say so
-                ld      a,(CmdSrcBk)
-                call    StSelect
+                jp      c,CmdEmpty
                 ld      hl,CmdWork
-                call    NoteLoadAs
+                ld      de,CmdDeleteName
+                ld      bc,13
+                ldir
                 ld      a,(CmdWasK)
                 call    StSelect
-                jp      WndRepaintAll
+                ld      hl,CmdDeleteName
+                ld      de,TxtBrowseDelete
+                ld      bc,CmdDeleteAnswer
+                call    DlgDelete2
+                xor     a
+                ret
+CmdDeleteAnswer:
+                or      a
+                ret     z
+                ld      a,(CmdActive)
+                ld      (CmdPane),a
+                call    CmdDelete
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
 
-; ------------------------------------------------------------
-;  CmdCopy
-;  From the live pane to the other one, which is the operation
-;  the whole shape exists for. One chunk, because a file here is
-;  one chunk: RAMCHUNK is 256 and so is a document.
-; ------------------------------------------------------------
+CmdAskDelete:
+                call    CmdPicked
+                jp      c,CmdEmpty
+                ld      a,1
+                ld      (CmdPending),a
+                ld      a,2
+                jp      CmdResult
+CmdConfirm:
+                ld      a,(CmdKeyCh)
+                cp      'Y'
+                jr      z,CmdDelete
+                cp      'N'
+                jr      z,CmdCancel
+                cp      KEY_ESC
+                jp      nz,CmdDone
+CmdCancel:
+                xor     a
+                ld      (CmdPending),a
+                jp      CmdResult
+CmdDelete:
+                xor     a
+                ld      (CmdPending),a
+                call    CmdUse
+                ; Name was captured when confirmation was requested, not
+                ; looked up again after a directory change.
+                ld      hl,CmdDeleteName
+                call    StDelete
+                jp      c,CmdIoError
+                xor     a
+                ld      (CmdSel0),a
+                ld      (CmdSel1),a
+                ld      (CmdTop0),a
+                ld      (CmdTop1),a
+                call    CmdRefresh
+                ld      a,9
+                jp      CmdResult
+
 CmdCopy:
                 call    CmdPicked
-                ret     c
+                jp      c,CmdEmpty
+                ld      hl,(CmdSize)
+                ld      de,257
+                or      a
+                sbc     hl,de
+                jp      nc,CmdTooLarge
+                ld      hl,CmdBk0
+                ld      a,(hl)
+                inc     hl
+                cp      (hl)
+                ld      a,8
+                jp      z,CmdResult
+                ld      hl,CmdWork
+                ld      b,FA_READ
+                call    StOpen
+                jp      c,CmdIoError
+                ld      (CmdHandle),a
+                ld      hl,CmdBuf
+                ld      bc,(CmdSize)
+                call    StRead
+                ld      (CmdGot),bc
+                push    af
+                ld      a,(CmdHandle)
+                call    StClose
+                jr      nc,CcpSourceClosed
+                pop     af
+                jp      CmdIoError
+CcpSourceClosed:
+                pop     af
+                jp      c,CmdIoError
+                ld      hl,(CmdGot)
+                ld      de,(CmdSize)
+                or      a
+                sbc     hl,de
+                jp      nz,CmdIoError
                 ld      a,(CmdActive)
+                xor     1
+                ld      (CmdPane),a
                 call    CmdUse
                 ld      hl,CmdWork
                 ld      b,FA_READ
                 call    StOpen
-                ret     c
-                ld      (CmdHandle),a
-                ld      hl,CmdBuf
-                ld      bc,CMDBUFSZ
-                call    StRead
-                ld      (CmdGot),bc
-                ld      a,(CmdHandle)
+                jr      c,CcpCreate
                 call    StClose
-                ; the other pane
-                ld      a,(CmdActive)
-                xor     1
-                call    CmdUse
+                ld      a,3
+                jp      CmdResult
+CcpCreate:
+                cp      STERR_NOTFOUND
+                jp      nz,CmdIoError
                 ld      hl,CmdWork
                 ld      b,FA_OVERWRITE
                 call    StOpen
-                ret     c
+                jp      c,CmdIoError
                 ld      (CmdHandle),a
                 ld      hl,CmdBuf
-                ld      bc,(CmdGot)
+                ld      bc,(CmdSize)
                 call    StWrite
+                ld      (CmdGot),bc
+                push    af
                 ld      a,(CmdHandle)
-                jp      StClose
-
-CmdDelete:
-                call    CmdPicked
-                ret     c
-                ld      a,(CmdActive)
-                call    CmdUse
+                call    StClose
+                jr      nc,CcpTargetClosed
+                pop     af
+                jp      CmdAbortCopy
+CcpTargetClosed:
+                pop     af
+                jp      c,CmdAbortCopy
+                ld      hl,(CmdGot)
+                ld      de,(CmdSize)
+                or      a
+                sbc     hl,de
+                jp      nz,CmdAbortCopy
+                call    CmdRefresh
+                ld      a,1
+                jp      CmdResult
+CmdAbortCopy:
+                ; The destination did not exist before this copy. Remove a
+                ; partial new file, never an existing target or the source.
                 ld      hl,CmdWork
                 call    StDelete
-                ; the row may now be past the end of a shorter listing
-                ld      a,(CmdActive)
-                call    CmdCount
-                ld      b,a
-                ld      a,(CmdActive)
-                ld      (CmdPane),a
-                call    CmdSelAt
-                ld      a,(hl)
-                cp      b
-                ret     c
-                ld      a,b
+                call    CmdRefresh
+                jp      CmdIoError
+CmdOpen:
+                call    CmdPicked
+                jp      c,CmdEmpty
+                ld      hl,(CmdSize)
+                ld      de,NOTESIZE
                 or      a
-                ret     z
-                dec     a
-                ld      (hl),a
+                sbc     hl,de
+                jp      nz,CmdBadNote
+                call    StIdent
+                ld      (CmdSrcBk),a
+                ld      a,(CmdBrowse)
+                or      a
+                jr      z,CopNew
+                ; The picker closes, then find the foremost notepad by z order.
+                call    WndClose
+                ld      a,(WndCount)
+                or      a
+                jr      z,CopNew
+                ld      b,a
+                ld      hl,WndZ
+CopFind:
+                push    bc
+                push    hl
+                ld      a,(hl)
+                call    WndSelect
+                call    NoteIsFront
+                pop     hl
+                pop     bc
+                jr      z,CopExisting
+                inc     hl
+                djnz    CopFind
+CopNew:
+                ld      a,APP_NOTE
+                call    WndOpen
+                ld      a,7
+                jp      c,CmdResult
+                jr      CopLoad
+CopExisting:
+                ld      a,(WndCur)
+                call    WndFocusTo
+CopLoad:
+                ld      a,(NoteBackend)
+                push    af                      ; retain document ownership on failure
+                ld      a,(CmdSrcBk)
+                ld      (NoteBackend),a
+                ld      hl,CmdWork
+                call    NoteLoadAs
+                jr      nc,CopOk
+                pop     af
+                ld      (NoteBackend),a
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsAddLive
+                call    NoteLoadAlert
+                ld      a,1
+                ret
+CopOk:
+                pop     af
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,1                     ; repaint the new notepad
+                ret
+CmdBadNote:
+                ld      a,10
+                jr      CmdResult
+CmdTooLarge:
+                ld      a,4
+                jr      CmdResult
+CmdIoError:
+                ld      a,5
+                jr      CmdResult
+CmdEmpty:
+                ld      a,6
+CmdResult:
+                ld      (CmdStatus),a
+                cp      2
+                jr      nz,CmdDone
+                ld      hl,CmdWork
+                ld      de,CmdDeleteName
+                ld      bc,13
+                ldir
+CmdDone:
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,1
                 ret
 
-CMDBUFSZ        equ     256
-
+CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
+                defw    TxtCmdLarge, TxtCmdError, TxtCmdNone, TxtCmdNoRoom
+                defw    TxtCmdSame, TxtCmdDeleted, TxtCmdNotNote
+TxtCmdTitle:    defb    "COMMANDER",0
 TxtCmdRam:      defb    "RAM",0
-TxtCmdTape:     defb    "TAPE",0
-TxtCmdBank:     defb    "BANK",0
-TxtCmdNoDir:    defb    "NO DIR",0
-TxtCmdBlank:    defb    " ",0
+TxtCmdDisk:     defb    "DISK",0
+TxtCmdEmpty:    defb    "(EMPTY)",0
+TxtCmdBlank:    defb    0
+TxtCmdHelp1:    defb    "TAB PANE SHIFT+ARROWS R LIST",0
+TxtCmdHelp2:    defb    "ENTER OPEN C COPY D DELETE",0
+TxtCmdReady:    defb    "READY",0
+TxtCmdCopied:   defb    "COPIED",0
+TxtCmdConfirm:  defb    "DELETE SELECTED FILE? Y/N",0
+TxtCmdExists:   defb    "TARGET EXISTS",0
+TxtCmdLarge:    defb    "COPY LIMIT: 256 BYTES",0
+TxtCmdError:    defb    "STORAGE ERROR",0
+TxtCmdNone:     defb    "NO FILE SELECTED",0
+TxtCmdNoRoom:   defb    "NO ROOM FOR NOTEPAD",0
+TxtCmdSame:     defb    "SAME DEVICE",0
+TxtCmdDeleted:  defb    "DELETED",0
+TxtCmdNotNote:  defb    "NOT A 256 BYTE DOCUMENT",0
 
-CmdPane:        defb    0
-CmdCol:         defb    0
-CmdRow:         defb    0
-CmdN:           defb    0
-CmdName:        defw    0
-CmdWasD:        defb    0
-CmdWasK:        defb    0
-CmdSrcBk:       defb    0
-CmdKeyCh:       defb    0
-CmdWasS:        defb    0
-CmdTotal:       defb    0
-CmdWant:        defb    0
-CmdHandle:      defb    0
-CmdGot:         defw    0
-CmdWork:        defs    13
-CmdBuf:         defs    CMDBUFSZ
+TxtBrowseHelp:  defb    "SHIFT+ARROWS ENTER OPEN",0
+TxtBrowseHelp2: defb    "[OPEN] DELETE REMOVE R LIST",0
+TxtBrowseDelete: defb   "DELETE THIS FILE?",0

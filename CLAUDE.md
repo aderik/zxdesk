@@ -1,20 +1,20 @@
 # MSX Desk
 
-ZX Desk (Damian Cooper, MIT) ported to the MSX1. The ZX tree (`src/`,
-`zxtest.py`, `build.sh`) is the source it is ported from and stays
-untouched; all port work is under `msx/`. Read `msx/README.md` first:
-it holds the toolchain findings, the harness, the screen model and the
+ZX Desk (Damian Cooper, MIT) ported to the MSX1. The original ZX source
+(`zxtest.py` and friends) is no longer in the tree; it is upstream at
+github.com/mindbox77/zxdesk and in this repository's first commit. Read
+`README.md` first: it holds the toolchain findings, the harness, the screen model and the
 measured numbers.
 
 ## How work is verified
 
-- `msx/test.sh` assembles, boots the ROM headlessly in openMSX (Docker)
+- `./test.sh` assembles, boots the ROM headlessly in openMSX (Docker)
   and asserts on memory dumps: checksums and values, never screenshots.
-  `msx/test-all.sh` runs every machine configuration; the real ones need
-  the BIOS dumps in `msx/roms/` (gitignored) and are skipped without.
+  `./test-all.sh` runs every machine configuration; the real ones need
+  the BIOS dumps in `roms/` (gitignored) and are skipped without.
 - Assembly that has not been run and asserted does not count as done.
-  Every piece of work gets a subject in `msx/msxtest.py` (or, for pure
-  routines, in the TEST build `msx/src/test.inc`) that asserts on a
+  Every piece of work gets a subject in `msxtest.py` (or, for pure
+  routines, in the TEST build `src/test.inc`) that asserts on a
   checksum or a memory value.
 - Every claim about timing or correctness is a measurement, not an
   estimate: breakpoints and `machine_info time` for cycles, the
@@ -24,7 +24,7 @@ measured numbers.
   50 Hz one before committing; it has caught races the other never
   showed. With ROMs present, all five configurations.
 - The memory budget is printed by every build (ROM bytes, RAM bytes,
-  heap). RAM is handed out by the `var` macro in `msx/src/msxdesk.asm`;
+  heap). RAM is handed out by the `var` macro in `src/msxdesk.asm`;
   the heap ends at HIMEM minus $380 at run time. Say in the commit how
   much RAM a change adds.
 

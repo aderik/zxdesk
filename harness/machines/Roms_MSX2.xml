@@ -2,7 +2,7 @@
 <!DOCTYPE msxconfig SYSTEM 'msxconfig2.dtd'>
 <msxconfig>
   <!-- The Philips NMS 8250 config on the MSX2.ROM and MSX2EXT.ROM in
-       msx/roms/ (the same dumps openMSX lists for the 8245/8250/8255),
+       roms/ (the same dumps openMSX lists for the 8245/8250/8255),
        without its disk drive: the DISK.ROM there is a dump openMSX
        does not know, and a disk ROM takes work RAM under $F380, which
        is the MSX-DOS step's problem. -->
@@ -10,7 +10,7 @@
     <manufacturer>MSX Desk</manufacturer>
     <code>Roms MSX2</code>
     <release_year>1986</release_year>
-    <description>Philips NMS 8250 without the drive, on the BIOS in msx/roms.</description>
+    <description>Philips NMS 8250 without the drive, on the BIOS in roms.</description>
     <type>MSX2</type>
     <region>eu</region>
   </info>

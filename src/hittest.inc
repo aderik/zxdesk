@@ -1,22 +1,17 @@
 ; ============================================================
 ;  Hit testing
-;  HdlBtnDown used to walk straight into a title bar test with
-;  the window geometry inlined. Everything clickable is now a row
-;  in a control table, so a menu or a button is added by
-;  extending the table rather than by editing the handler.
+;  Ported from the ZX version: everything clickable is a row in
+;  a control table, searched front to back, first hit wins, so
+;  the order is the z order. A control is five bytes: x, y, w,
+;  h, id. On the ZX x and w were byte columns and y and h pixel
+;  rows; here everything is cells, because the desktop is a tile
+;  grid and nothing sits between cell boundaries. $FF ends the
+;  table.
 ;
-;  A control is five bytes: x, y, w, h, id. x and w are byte
-;  columns, y and h pixel rows, matching what the drawing code
-;  already works in. $FF ends the table.
-;
-;  The window's rows are refilled from WinX, WinY, WinW and WinH
-;  before every search rather than being kept in step by hand.
-;  A second copy of the window position that had to be updated
-;  separately is exactly the sort of thing that goes stale
-;  without anyone noticing.
-;
-;  The table is searched front to back and the first hit wins, so
-;  its order is also the z order. Small things go above large.
+;  The menu drop row is refilled from the menu model before every
+;  search; a closed menu gets a height of zero, which can never
+;  match because the row test is exclusive at the far edge. The
+;  dialogue row owns hits above the menus and windows.
 ; ============================================================
 CTLSIZE         equ     5
 
@@ -28,34 +23,21 @@ CTL_MENUBAR     equ     4
 CTL_DESKTOP     equ     5
 CTL_MENUDROP    equ     6
 CTL_DIALOG      equ     7
-CTL_SCROLL      equ     9               ; the bar down a window's right edge
-CTL_RESIZE      equ     8               ; the grip in a window's bottom right.
-                                        ; WndHitTest's, not this table's: it
-                                        ; belongs to a window and this table
-                                        ; holds the things there is one of
+CTL_RESIZE      equ     8
+CTL_SCROLL      equ     9
 
-; Refill the live rows from the model. An open menu is above
-; everything, and a closed one gets a height of zero, which can never
-; match because the row test is exclusive at the far edge.
+; Refill the live rows from the model. The table lives in RAM
+; (CtlTable) because a ROM cannot be patched; CtlInit copies the
+; constant part in.
+CtlDrop         equ     CtlTable+CTLDROPOFF
 CtlSync:
-                ; The dialogue row tracks whatever panel is on top rather
-                ; than the settings panel's fixed geometry. D3 put a
-                ; confirm over a panel, and the two are different sizes in
-                ; different places, so a fixed rectangle would send a press
-                ; on the confirm to whatever was underneath it.
-                ld      a,(DlgUp)
+                ld      a,(DgOpenFlag)
                 or      a
                 ld      a,0
-                jr      z,CsNoDlg
-                ld      a,(PnlX)
-                ld      (CtlDlg),a
-                ld      a,(PnlY)
-                ld      (CtlDlg+1),a
-                ld      a,(PnlW)
-                ld      (CtlDlg+2),a
-                ld      a,(PnlH)
-CsNoDlg:
-                ld      (CtlDlg+3),a
+                jr      z,CsDialog
+                ld      a,DGH
+CsDialog:
+                ld      (CtlTable+3),a
                 ld      a,(MnX)
                 ld      (CtlDrop),a
                 ld      a,(MnY)
@@ -71,7 +53,21 @@ CsShut:
                 ld      (CtlDrop+3),a
                 ret
 
-; in:  B = pointer byte column, C = pointer pixel row
+CtlInit:
+                ld      hl,CtlTableRom
+                ld      de,CtlTable
+                ld      bc,CTLTABSZ
+                ldir
+                xor     a
+                ld      (DgOpenFlag),a
+                ld      (MenuOpen),a
+                ld      (MnX),a
+                ld      (MnY),a
+                ld      (MnW),a
+                ld      (MnH),a
+                ret
+
+; in:  B = pointer cell column, C = pointer cell row
 ; out: A = control id, zero if nothing was hit
 HitTest:
                 call    CtlSync
@@ -122,11 +118,13 @@ HtMiss:
                 xor     a
                 ret
 
-; Front to back is the z order. The close box is above the title bar
-; it sits inside, the window is above the desktop it sits on.
-CtlTable:
-CtlDlg:         defb    0,0,0,0,            CTL_DIALOG
-CtlDrop:        defb    0,0,0,0,            CTL_MENUDROP
-CtlMenu:        defb    0,0,SCRCOLS,MENUH,       CTL_MENUBAR
-CtlDesk:        defb    0,MENUH,SCRCOLS,STATRULE-MENUH, CTL_DESKTOP
+; Front to back is the z order. The drop is above the bar, the bar
+; and the desktop above nothing.
+CtlTableRom:
+                defb    DGX,DGY,DGW,0,          CTL_DIALOG
+                defb    0,0,0,0,                CTL_MENUDROP
+                defb    0,MENUROW,SCRCOLS,1,    CTL_MENUBAR
+                defb    0,1,SCRCOLS,STATROW-1,  CTL_DESKTOP
                 defb    $FF
+CTLTABSZ        equ     $-CtlTableRom
+CTLDROPOFF      equ     5               ; the drop row's offset in the table

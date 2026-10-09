@@ -1,18 +1,20 @@
 ; ============================================================
 ;  Event queue
-;  MainLoop used to be a fixed sequence of calls with the window
-;  drag logic wired straight into it. Everything now goes through
-;  a ring of events, so a new control or application registers a
-;  handler instead of being spliced into the loop.
-;
-;  Sixteen slots of four bytes. Posting to a full queue drops the
-;  event silently, which is the right failure here: a lost pointer
-;  move is invisible on the next frame, a stalled loop is not.
+;  Ported from the ZX version unchanged in mechanism: a sixteen
+;  slot ring of four byte events. Posting to a full queue drops
+;  the event silently, which is the right failure here: a lost
+;  pointer move is invisible on the next frame, a stalled loop is
+;  not.
 ;
 ;  EvPoll runs at the end of a frame, after ReadInput, and turns
-;  changes in the raw input state into events. Dispatch happens in
-;  the same frame, so the window position is settled before the
-;  next frame's paint, which is what keeps PREWORK constant.
+;  changes in the raw input state into events. Dispatch happens
+;  in the same frame, so the model is settled before the next
+;  frame paints it.
+;
+;  The handlers are the phase 1 skeleton's: they count what
+;  arrived and echo keys on the status row, so the harness can
+;  assert that input reached the ring. Windows and menus take
+;  them over in the later phases.
 ; ============================================================
 EVSLOTS         equ     16
 EVMASK          equ     EVSLOTS-1
@@ -55,6 +57,8 @@ EvPost:
 EvpFull:
                 pop     af
                 pop     bc
+                ld      hl,EvDropped
+                inc     (hl)
                 scf
                 ret
 
@@ -113,60 +117,156 @@ EvHandlers:
                 defw    HdlBtnDown
                 defw    HdlBtnUp
                 defw    HdlKey
-EvIgnore:
-                ret
 
-; B = key code. The menu and the settings panel are modal in the same
-; way they are for a press: while either is up it owns the keyboard,
-; and the notepad hears nothing. The panel does something with it now
-; rather than dropping it. Otherwise the note is the only thing with a
-; text cursor, so it takes every key without a hit test.
-HdlKey:
-                ld      a,(DlgUp)
+; The skeleton's handlers. Each bumps its counter in EvCounts so a
+; run can be read back: counts are per type, in event order.
+HdlPtrMove:
+                ld      hl,EvCounts+0
+                inc     (hl)
+                ld      a,(Dragging)
                 or      a
-                jr      nz,HkDlg
+                ret     z
+                jp      DdMove
+HdlBtnDown:
+                ld      hl,EvCounts+1
+                inc     (hl)
+                ; what was under the pointer, in cells
+                ld      a,(PtrX)
+                rrca
+                rrca
+                rrca
+                and     $1F
+                ld      b,a
+                ld      a,(PtrY)
+                rrca
+                rrca
+                rrca
+                and     $1F
+                ld      c,a
+                ld      a,(DgOpenFlag)
+                or      a
+                jp      nz,DgPress
                 ld      a,(MenuOpen)
                 or      a
+                jr      z,HbdNoMenu
+                ; An open menu owns the press: an item is picked, anything
+                ; else just shuts it.
+                push    bc
+                call    HitTest
+                pop     bc
+                cp      CTL_MENUDROP
+                jr      z,HbdPick
+                ld      a,$FF
+                ld      (MenuPick),a
+                jr      HbdShut
+HbdPick:
+                call    MenuItemAt
+                ld      (MenuPick),a
+HbdShut:
+                ld      a,(MenuOpen)
+                ld      (MnLastMenu),a
+                call    MenuClose
+                ld      a,(MenuPick)
+                cp      $FF
+                ret     z
+                jp      MenuAction
+HbdNoMenu:
+                push    bc
+                call    HitTest
+                pop     bc
+                ld      (LastHit),a
+                cp      CTL_MENUBAR
+                jr      z,HbdBar
+                ; Windows are above the desktop and below the bar. A press
+                ; raises and focuses, because those are the same thing.
+                push    bc
+                call    WndHitTest
+                pop     bc
+                cp      CTL_NONE
+                jr      nz,HbdWindow
+                ret
+HbdWindow:
+                ld      (LastHit),a
+                push    af
+                ld      a,(WndHit)
+                call    WndFocusTo
+                pop     af
+                cp      CTL_CLOSEBOX
+                jp      z,WndClose
+                cp      CTL_RESIZE
+                jp      z,RszStart
+                cp      CTL_SCROLL
+                jp      z,ScrPress
+                cp      CTL_TITLEBAR
+                jr      z,HbdGrab
+                ld      hl,(WinApp)
+                ld      de,AppSettings
+                or      a
+                sbc     hl,de
+                jp      z,SetPress
+                ld      hl,(WinApp)
+                ld      de,AppCommander
+                or      a
+                sbc     hl,de
                 ret     nz
-                ; A shortcut is taken here, before a window is selected and
-                ; before any application is offered it. The codes are $81
-                ; and up, which no text table can produce, so this cannot
-                ; mistake a letter for a shortcut and an application cannot
-                ; be handed one by accident. A dialogue or an open menu has
-                ; already returned above, which is what keeps a modal panel
-                ; modal.
+                jp      CmdPress
+HbdGrab:        jp      WndGrab
+HbdBar:
+                call    MenuHitTitle
+                or      a
+                ret     z
+                jp      MenuOpenDrop
+
+HdlBtnUp:
+                ld      hl,EvCounts+2
+                inc     (hl)
+                xor     a
+                ld      (Dragging),a
+                jp      RszEnd
+HdlKey:
+                ld      hl,EvCounts+3
+                inc     (hl)
                 ld      a,b
-                cp      SC_BASE
-                jp      nc,ScDispatch
-                ; B4. The key goes to the window at the front of the z
-                ; order, because focus is the front window rather than a
-                ; separate variable. The about window has nothing to type
-                ; into, so it drops it rather than passing it to a notepad
-                ; that is behind something.
+                ld      (LastKey),a
+                ld      a,(DgOpenFlag)
+                or      a
+                ld      a,b
+                jp      nz,DgKey
+                ld      a,(MenuOpen)            ; an open menu owns the keyboard
+                or      a
+                ret     nz
+                ; The key goes to the front window's application, through
+                ; its descriptor, and the window is recomposed afterwards.
+                ; With no window it is echoed on the status row instead,
+                ; which is the skeleton's habit and the harness's probe.
+                ld      a,(WndCount)
+                or      a
+                jr      z,HkEcho
                 push    bc
                 ld      a,(WndZ)
                 call    WndSelect
                 pop     bc
-                ; F2. The key goes to whatever owns the front window,
-                ; through its descriptor. The about window's vector is
-                ; null, so it still drops what is typed at it, but this
-                ; routine no longer has to know that there is an about
-                ; window or how many kinds of window there are.
                 ld      a,b
                 ld      c,APP_KEY
-                jp      AppCall
-HkDlg:
-                ; D2 gave the panel a focus bar, so the keyboard has
-                ; somewhere to point and the panel can be driven without a
-                ; mouse. That matters on a machine most of whose owners had
-                ; no mouse, and it is what stops the mouse presence
-                ; heuristic being load bearing.
+                call    AppCall
+                or      a
+                ret     z                       ; the key meant nothing to it
+                ld      a,(WndCur)              ; recomposed at the end of the
+                call    WndTouch                ; frame, with whatever else
+                jp      RowsAddLive             ; changed
+HkEcho:
+                ld      a,(StatCol)
+                ld      c,a
+                inc     a
+                and     SCRCOLS-1
+                ld      (StatCol),a
                 ld      a,b
-                jp      DlgKey
+                or      INVBANK                 ; the status band is inverted
+                ld      b,STATROW
+                jp      PutChar
 
 ; Turn raw input state into events. Runs after ReadInput, at the end
-; of a frame. Only the left button is reported for now; the right one
-; has nothing to open yet.
+; of a frame. Only the left button is reported for now.
 EvPoll:
                 ld      a,(EvLastBtn)
                 ld      c,a
@@ -206,9 +306,25 @@ EvpMoved:
                 call    EvPost
                 jp      KbdPoll
 
-EvHead:         defb    0
-EvTail:         defb    0
-EvLastBtn:      defb    $FF             ; nothing pressed, active low
-EvLastX:        defb    120
-EvLastY:        defb    90
-EvQueue:        defs    EVSLOTS*4
+EvInit:
+                xor     a
+                ld      (EvHead),a
+                ld      (EvTail),a
+                ld      (EvDropped),a
+                ld      (StatCol),a
+                ld      (LastKey),a
+                ld      hl,EvCounts
+                ld      (hl),a
+                inc     hl
+                ld      (hl),a
+                inc     hl
+                ld      (hl),a
+                inc     hl
+                ld      (hl),a
+                ld      a,$FF
+                ld      (EvLastBtn),a
+                ld      a,(PtrX)
+                ld      (EvLastX),a
+                ld      a,(PtrY)
+                ld      (EvLastY),a
+                ret

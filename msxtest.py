@@ -4,12 +4,12 @@
     ./msxtest.py            build, run every subject, assert
 
 Checksums and memory values are the assertion; build/out/<subject>/shot.png
-is for people. The model is zxtest.py in the ZX tree, with openMSX
+is for people. The model is zxtest.py in the original ZX Desk, with openMSX
 standing in for the Python Z80 because the subjects here are VRAM, the
 PPI and the PSG, none of which a bare CPU model has.
 
-Runs inside the msx/docker image (pasmo 0.5.5, openMSX, Xvfb, xdotool on
-PATH); msx/test.sh wraps the docker invocation.
+Runs inside the docker image (pasmo 0.5.5, openMSX, Xvfb, xdotool on
+PATH); ./test.sh wraps the docker invocation.
 """
 import os
 import subprocess
@@ -86,7 +86,7 @@ ROMS = os.path.join(ROOT, "roms")
 
 
 def ensure_roms():
-    """Real BIOS ROMs, if any, from msx/roms (gitignored: not ours to
+    """Real BIOS ROMs, if any, from roms (gitignored: not ours to
     distribute) into the place openMSX looks: it matches them by sha1,
     the file names do not matter. C-BIOS has no cassette, so the tape
     backend needs a real machine: the configs in harness/machines

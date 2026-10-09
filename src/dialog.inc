@@ -1,290 +1,230 @@
-; ============================================================
-;  D3: dialogues
-;  A dialogue is a panel with a question in it. That is the whole
-;  package, and it is short because D2 was extracted properly; if
-;  this file were long, D2 would have been wrong.
-;
-;  Not a modal loop. The roadmap asked for one, which is how a
-;  machine with a main loop and no event queue does this. This
-;  one has an event queue and a panel that already takes every
-;  press and every key while it is up, so a confirm does not
-;  block: it opens, and it calls back with the answer when it
-;  closes.
-;
-;  The design plan and its self critique are in
-;  docs/dialog-design.md.
-; ============================================================
-DGX           equ     10              ; a little inside the panels it covers
-DGY           equ     52
-DGW           equ     14
-DGROW0        equ     DGY+10
-; Five rows, because DlgSave3 has three answers. A confirm uses four
-; of them and the panel is drawn to DgCount rather than to this, so the
-; extra row costs height on the tallest dialogue only.
-DGH           equ     DGROW0-DGY+5*8+2
+; Modal cell-grid dialogues. Save-under comes from ShadowNT; pending
+; window redraws wait until the answer restores it. No nested event loop.
+; Commander cannot transfer while a dialogue owns input. Share its
+; 256-byte scratch buffer; neither note saving nor painting uses it.
+DgSave          equ     CmdBuf
+DGX             equ     6
+DGY             equ     8
+DGW             equ     20
+DGH             equ     7
 
-; ------------------------------------------------------------
-;  DlgConfirm
-;  in: HL = first line, DE = second line or 0, BC = the routine
-;      to call afterwards with A = 1 for yes and 0 for no
-;
-;  NO is the first of the two and the focus starts on it. A
-;  confirm exists because the action is hard to undo, and the row
-;  the bar is already sitting on is the row a hurried ENTER will
-;  take, so the safe answer has to be the one sitting there.
-; ------------------------------------------------------------
-DlgConfirm:
-                ld      (DgLine1),hl
-                ld      (DgLine2),de
-                ld      (DgAfter),bc
-                ld      hl,DgConfirmRows
-                ld      (DgTab),hl
-                ld      a,4
-                ld      (DgCount),a
-                ld      a,2                     ; NO, not YES
-                ld      (DgFocus),a
-                ld      hl,TxtDdConfirm
-                ld      (DgTitle),hl
-                jr      DgOpen
-
-; ------------------------------------------------------------
-;  DlgSave3
-;  in: HL = first line, DE = second line or 0, BC = the routine
-;      to call afterwards with A = 0 cancel, 1 discard, 2 save
-;
-;  Two answers were enough while the only question was whether to
-;  delete a file, where NO means "do nothing" and covers both
-;  ways of declining. Closing a window with unsaved work has
-;  three answers and not two: keep the work by saving it, throw
-;  it away, or do not close after all. Collapsing any pair of
-;  those loses something a person meant.
-;
-;  CANCEL is first and the bar starts on it, for the same reason
-;  NO does in a confirm: the row the bar is already on is the row
-;  a hurried ENTER takes, so it has to be the one that changes
-;  nothing.
-; ------------------------------------------------------------
+; HL, DE = message lines; BC = callback (A: cancel=0, discard=1, save=2).
 DlgSave3:
-                ld      (DgLine1),hl
-                ld      (DgLine2),de
                 ld      (DgAfter),bc
-                ld      hl,DgSaveRows
-                ld      (DgTab),hl
-                ld      a,5
-                ld      (DgCount),a
-                ld      a,2                     ; CANCEL
-                ld      (DgFocus),a
-                ld      hl,TxtDdSave
-                ld      (DgTitle),hl
+                ld      a,3
                 jr      DgOpen
-
-; ------------------------------------------------------------
-;  DlgAlert
-;  in: HL = first line, DE = second line or 0
-;  Nothing to answer, so nothing to call back.
-; ------------------------------------------------------------
+; Two answers: cancel (0), delete (1), initially cancel.
+DlgDelete2:
+                ld      (DgAfter),bc
+                ld      a,2
+                jr      DgOpen
+; HL, DE = message lines. An alert has one OK answer and no callback.
 DlgAlert:
-                ; The one that earns the whole feature. An alert is the
-                ; system telling you something went wrong, and one that
-                ; appears silently while you are looking at the keyboard
-                ; has not told you anything.
-                push    hl
+                ld      bc,0
+                ld      (DgAfter),bc
+                ld      a,1
+DgOpen:
+                push    af
                 ld      a,SND_BEEP
                 call    SndPlay
-                pop     hl
+                pop     af
+                ld      (DgCount),a
                 ld      (DgLine1),hl
                 ld      (DgLine2),de
-                ld      hl,0
-                ld      (DgAfter),hl
-                ld      hl,DgAlertRows
-                ld      (DgTab),hl
-                ld      a,3
-                ld      (DgCount),a
-                ld      a,2                     ; OK
+                call    WinRedraw               ; settle any focus change first
+                xor     a
                 ld      (DgFocus),a
-                ld      hl,TxtDdAlert
-                ld      (DgTitle),hl
-                ; fall through
+                ld      de,DgSave
+                ld      b,DGY
+DgSaveRow:
+                push    bc
+                push    de
+                ld      c,DGX
+                call    CellAddr
+                pop     de
+                ld      bc,DGW
+                ldir
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      DGY+DGH
+                jr      nz,DgSaveRow
+                ld      a,1
+                ld      (DgOpenFlag),a
+                jp      DgPaint
 
-DgOpen:
-                ; the two message rows are labels whose text is patched in,
-                ; the same trick the file list uses for its filenames
-                ld      hl,(DgTab)
-                inc     hl
-                ld      de,(DgLine1)
-                ld      (hl),e
-                inc     hl
-                ld      (hl),d
-                ld      hl,(DgTab)
-                ld      de,PTSIZE+1
-                add     hl,de
-                ld      de,(DgLine2)
-                ld      (hl),e
-                inc     hl
-                ld      (hl),d
-
-                call    PnlPush                 ; the panel underneath, if any
-                call    PnlUpInc                ; and it is modal like the rest
-                ld      hl,DgDepth
-                inc     (hl)
-
-                ld      a,DGX
-                ld      (SuX),a
-                ld      (PnlX),a
-                ld      a,DGY
-                ld      (SuY),a
-                ld      (PnlY),a
-                ld      a,DGW
-                ld      (SuW),a
-                ld      (PnlW),a
-                ld      a,DGH
-                ld      (SuH),a
-                ld      (PnlH),a
-                ld      a,DGROW0
-                ld      (PnlRow0),a
-                ld      a,(DgCount)
-                ld      (PnlRows),a
-                ld      hl,(DgTab)
-                ld      (PnlTab),hl
-                ld      hl,(DgTitle)
-                ld      (PnlTitle),hl
-                ld      hl,0
-                ld      (PnlAfter),hl           ; each row acts on itself
+DgPaint:
+                ld      b,DGY
+DgPaintRow:
+                push    bc
+                ld      c,DGX
+                call    CellAddr
+                pop     bc
+                push    bc
+                ld      a,b
+                sub     DGY+3
+                ld      c,a
                 ld      a,(DgFocus)
-                ld      (PnlFocus),a
-                call    PnlCurEnd
-                call    PtrHide
-                call    SaveUnder
-                call    PnlPaint
-                jp      PtrShow
-
-; ------------------------------------------------------------
-;  The three answers. Each closes the dialogue and then calls
-;  back, in that order, because the callback usually paints and
-;  it must not paint underneath a panel that is still up.
-; ------------------------------------------------------------
-DgSave:
-                ld      a,2
-                jr      DgAnswer
-DgDiscard:
-                ld      a,1
-                jr      DgAnswer
-DgCancel:
+                cp      c
+                ld      a,' '
+                jr      nz,DgFill
+                or      INVBANK
+DgFill:
+                ld      b,DGW
+DgFillCell:
+                ld      (hl),a
+                inc     hl
+                djnz    DgFillCell
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      DGY+DGH
+                jr      nz,DgPaintRow
                 xor     a
-                jr      DgAnswer
-DgYes:
-                ld      a,1
-                jr      DgAnswer
-DgNo:
+                ld      (PrintInv),a
+                ld      hl,(DgLine1)
+                ld      b,DGY+1
+                call    DgText
+                ld      hl,(DgLine2)
+                ld      b,DGY+2
+                call    DgText
+                ld      hl,DgAnswers
+                ld      a,(DgCount)
+                cp      2
+                jr      nz,DgNotDelete
+                ld      hl,DgDelete
+                jr      DgLabels
+DgNotDelete:
+                cp      1
+                jr      nz,DgLabels
+                ld      hl,DgOk
+DgLabels:
+                ld      b,0
+DgLabel:
+                push    bc
+                push    hl
+                ld      a,(DgFocus)
+                cp      b
+                ld      a,0
+                jr      nz,DgNormal
+                ld      a,INVBANK
+DgNormal:
+                ld      (PrintInv),a
+                ld      a,b
+                add     a,DGY+3
+                ld      b,a
+                call    DgText
+                pop     hl
+DgSkip:
+                ld      a,(hl)
+                inc     hl
+                or      a
+                jr      nz,DgSkip
+                pop     bc
+                inc     b
+                ld      a,(DgCount)
+                cp      b
+                jr      nz,DgLabel
                 xor     a
-                jr      DgAnswer
-DgOk:
-                xor     a
-DgAnswer:
-                ld      (DgResult),a
-                push    af
-                ld      a,SND_CLICK             ; answering is a press, and
-                call    SndPlay                 ; presses click
-                pop     af
-                call    DgClose
-                ld      hl,(DgAfter)
+                ld      (PrintInv),a
+                ret
+DgText:
                 ld      a,h
                 or      l
                 ret     z
-                ld      a,(DgResult)
-                jp      (hl)
+                ld      c,DGX+1
+                jp      PrintStr
 
-DgClose:
-                ld      a,(DgDepth)
-                or      a
+DgPress:
+                push    bc
+                call    HitTest
+                pop     bc
+                ld      (LastHit),a
+                cp      CTL_DIALOG
+                ret     nz
+                ld      a,c
+                sub     DGY+3
+                ret     c
+                ld      b,a
+                ld      a,(DgCount)
+                cp      b
                 ret     z
+                ret     c
+                ld      a,b
+                jp      DgAnswer
+
+; SHIFT+arrows follows the desktop convention; TAB cycles, ESC stays.
+DgKey:
+                cp      KEY_ESC
+                jr      z,DgCancel
+                cp      KEY_ENTER
+                jr      z,DgChoose
+                cp      KEY_UP
+                jr      z,DgPrev
+                cp      KEY_LEFT
+                jr      z,DgPrev
+                cp      KEY_DOWN
+                jr      z,DgNext
+                cp      KEY_RIGHT
+                jr      z,DgNext
+                cp      9
+                ret     nz
+DgNext:
+                ld      a,(DgFocus)
+                inc     a
+                ld      hl,DgCount
+                cp      (hl)
+                jr      c,DgSet
+                xor     a
+                jr      DgSet
+DgPrev:
+                ld      a,(DgFocus)
+                sub     1
+                jr      nc,DgSet
+                ld      a,(DgCount)
                 dec     a
-                ld      (DgDepth),a
-                call    PnlUpDec
-                call    PtrHide
-                call    RestoreUnder            ; the pixels underneath
-                call    PnlPop                  ; and the panel that owns them
-                jp      PtrShow
-
-DgConfirmRows:
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdNo, DgNo
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdYes, DgYes
-                defb    0
-                defw    0
-
-DgSaveRows:
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdCancel, DgCancel
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdDiscard, DgDiscard
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdSaveIt, DgSave
-                defb    0
-                defw    0
-
-DgAlertRows:
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_LABEL
-                defw    0, 0
-                defb    0
-                defw    0
-
-                defb    PT_ACTION
-                defw    TxtDdOk, DgOk
-                defb    0
-                defw    0
-
-TxtDdConfirm:   defb    "CONFIRM",0
-TxtDdAlert:     defb    "NOTICE",0
-TxtDdYes:       defb    "YES",0
-TxtDdNo:        defb    "NO",0
-TxtDdOk:        defb    "OK",0
-TxtDdSave:      defb    "UNSAVED",0
-TxtDdCancel:    defb    "CANCEL",0
-TxtDdDiscard:   defb    "DISCARD",0
-TxtDdSaveIt:    defb    "SAVE",0
-
-DgLine1:        defw    0
-DgLine2:        defw    0
-DgAfter:        defw    0
-DgTab:          defw    0
-DgTitle:        defw    0
-DgCount:        defb    0
-DgFocus:        defb    0
-DgResult:       defb    0
-DgDepth:        defb    0
+DgSet:
+                ld      (DgFocus),a
+                jp      DgPaint
+DgChoose:
+                ld      a,(DgFocus)
+                jr      DgAnswer
+DgCancel:
+                xor     a
+DgAnswer:
+                push    af
+                ld      a,SND_CLICK
+                call    SndPlay
+                pop     af
+                push    af
+                ld      de,DgSave
+                ld      b,DGY
+DgRestoreRow:
+                push    bc
+                push    de
+                ld      c,DGX
+                call    CellAddr
+                pop     de
+                ex      de,hl
+                ld      bc,DGW
+                ldir
+                ex      de,hl
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      DGY+DGH
+                jr      nz,DgRestoreRow
+                xor     a
+                ld      (DgOpenFlag),a
+                ld      hl,(DgAfter)
+                ld      a,h
+                or      l
+                jr      z,DgNoCallback
+                pop     af
+                jp      (hl)
+DgNoCallback:
+                pop     af
+                ret
+DgAnswers:      defb    "CANCEL",0,"DISCARD",0,"SAVE",0
+DgDelete:       defb    "CANCEL",0,"DELETE",0
+DgOk:           defb    "OK",0

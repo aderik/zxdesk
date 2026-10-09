@@ -1,22 +1,23 @@
 ; ============================================================
-;  C3: keyboard
-;  ReadInput reads a handful of keys directly off the ports to
-;  move the pointer. That was enough for a pointer and is nowhere
-;  near enough for a text field, so this scans the whole matrix,
-;  decodes it with the two shift keys, and posts EV_KEY.
+;  Keyboard, MSX matrix through the PPI
+;  The ZX version scanned eight half rows off the ULA port. An
+;  MSX has eleven rows of eight keys behind PPI port C (row
+;  select, low nibble) and port B (columns, a bit reads low when
+;  its key is down). Rows 9 and 10 are the numeric keypad and
+;  are not scanned.
 ;
-;  The eight half rows, selected by pulling one address line low.
-;  Bit 0 is the first key listed, bit 4 the last, and a bit reads
-;  low when its key is down.
+;    row 0: 7 6 5 4 3 2 1 0            row 5: Z Y X W V U T S
+;    row 1: ; ] [ \ = - 9 8            row 6: F3 F2 F1 CODE CAPS GRAPH CTRL SHIFT
+;    row 2: B A dead / . , ` '         row 7: RET SEL BS STOP TAB ESC F5 F4
+;    row 3: J I H G F E D C            row 8: RIGHT DOWN UP LEFT DEL INS HOME SPACE
+;    row 4: R Q P O N M L K
 ;
-;    $FE  CAPS  Z  X  C  V        $EF  0  9  8  7  6
-;    $FD  A  S  D  F  G           $DF  P  O  I  U  Y
-;    $FB  Q  W  E  R  T           $BF  ENTER  L  K  J  H
-;    $F7  1  2  3  4  5           $7F  SPACE  SYM  M  N  B
-;
-;  Only one non-shift key is reported at a time. The Spectrum
-;  matrix cannot tell some three key combinations apart anyway,
-;  and a text field has no use for chords.
+;  Bit 0 is the rightmost key listed. Only one non-modifier key
+;  is reported at a time, as before: a text field has no use for
+;  chords. The cursor keys move the pointer in ReadInput and are
+;  nought here, so a key never does two things at once. SHIFT is
+;  the one modifier decoded; CTRL clicks the pointer in ReadInput.
+;  GRAPH is not mapped.
 ; ============================================================
 KEY_LEFT        equ     1
 KEY_RIGHT       equ     2
@@ -24,172 +25,114 @@ KEY_UP          equ     3
 KEY_DOWN        equ     4
 KEY_DELETE      equ     8
 KEY_ENTER       equ     13
+KEY_ESC         equ     27
 
+KBDROWS         equ     9
 KBDDELAY        equ     20              ; frames before a held key repeats
 KBDRATE         equ     3               ; frames between repeats after that
 
-KbdRows:        defb    $FE,$FD,$FB,$F7,$EF,$DF,$BF,$7F
-
-; Read all eight half rows into KbdMatrix, active high so a set bit
-; means a key is down and the decode does not have to keep inverting.
+; Read the nine rows into KbdMatrix, active high so a set bit means
+; a key is down. The upper nibble of port C carries the cassette
+; motor, the caps LED and the key click, so it is kept.
 KbdScan:
-                ld      hl,KbdRows
-                ld      de,KbdMatrix
-                ld      b,8
+                ld      hl,KbdMatrix
+                ld      c,0
+                ld      b,KBDROWS
 KbsLoop:
-                push    bc
-                ld      a,(hl)
-                ld      b,a
-                ld      c,$FE
-                in      a,(c)
-                cpl                     ; now one means pressed
-                and     $1F
-                ld      (de),a
+                in      a,(PPIC)
+                and     $F0
+                or      c
+                out     (PPIC),a
+                in      a,(PPIB)
+                cpl
+                ld      (hl),a
                 inc     hl
-                inc     de
-                pop     bc
+                inc     c
                 djnz    KbsLoop
                 ret
 
-; Returns A = matrix index 0..39 of the first non-shift key held, or
-; $FF if none. CAPS is index 0 and SYM is index 36, both skipped here
-; and picked up separately as modifiers.
+; Returns A = matrix index 0..71 of the first key held that is not a
+; modifier, or $FF if none. Row 6 is modifiers and function keys and
+; is skipped whole.
 KbdFirst:
                 ld      hl,KbdMatrix
-                ld      b,8
+                ld      b,KBDROWS
                 ld      c,0             ; running index
 KbfRow:
+                ld      a,c
+                cp      6*8
+                jr      z,KbfNext
                 ld      a,(hl)
                 or      a
                 jr      z,KbfNext
                 push    bc
                 ld      e,(hl)
-                ld      b,5
+                ld      b,8
                 ld      d,0             ; bit within the row
 KbfBit:
                 rr      e
                 jr      nc,KbfNoBit
+                pop     bc
                 ld      a,c
                 add     a,d
-                cp      0               ; CAPS SHIFT
-                jr      z,KbfNoBit
-                cp      36              ; SYM SHIFT
-                jr      z,KbfNoBit
-                pop     bc
                 ret
 KbfNoBit:
                 inc     d
                 djnz    KbfBit
                 pop     bc
 KbfNext:
-                inc     hl
                 ld      a,c
-                add     a,5
+                add     a,8
                 ld      c,a
+                inc     hl
                 djnz    KbfRow
                 ld      a,$FF
                 ret
 
-; Bit 0 of A set means CAPS is down, bit 1 means SYM.
+; Bit 0 = SHIFT held.
 KbdMods:
-                ld      a,(KbdMatrix)
-                and     $01             ; CAPS is bit 0 of the first row
-                ld      c,a
-                ld      a,(KbdMatrix+7)
-                and     $02             ; SYM is bit 1 of the last
-                or      c
+                ld      a,(KbdMatrix+6)
+                and     $01
                 ret
 
-; A = matrix index, KbdModState = the shift keys. Returns the code,
-; or zero if that combination is not mapped.
+; A = matrix index, KbdModState = the shift key. Returns the code, or
+; zero if that combination is not mapped.
 KbdDecode:
                 ld      l,a
                 ld      h,0
-                ld      a,(KbdModState)
-                and     3
-                cp      3
-                jr      z,KbdExt                ; both shifts, tested first
-                bit     1,a
-                jr      nz,KbdSym
-                bit     0,a
-                jr      nz,KbdCaps
                 ld      de,KbdBase
-                jr      KbdLook
-KbdExt:
-                ld      de,KbdExtT
-                jr      KbdLook
-KbdCaps:
-                ld      de,KbdCapsT
-                jr      KbdLook
-KbdSym:
-                ld      de,KbdSymT
+                ld      a,(KbdModState)
+                bit     0,a
+                jr      z,KbdLook
+                ld      de,KbdShiftT
 KbdLook:
                 add     hl,de
                 ld      a,(hl)
                 ret
 
+; Upper case without SHIFT: the desktop's font is upper case, as the
+; ZX one was, and lower case waits for a font that has it.
 KbdBase:
-                defb    0,'Z','X','C','V'
-                defb    'A','S','D','F','G'
-                defb    'Q','W','E','R','T'
-                defb    '1','2','3','4','5'
-                defb    '0','9','8','7','6'
-                defb    'P','O','I','U','Y'
-                defb    KEY_ENTER,'L','K','J','H'
-                defb    ' ',0,'M','N','B'
+                defb    '0','1','2','3','4','5','6','7'
+                defb    '8','9','-','=',92,'[',']',';'
+                defb    39,'`',',','.','/',0,'A','B'
+                defb    'C','D','E','F','G','H','I','J'
+                defb    'K','L','M','N','O','P','Q','R'
+                defb    'S','T','U','V','W','X','Y','Z'
+                defb    0,0,0,0,0,0,0,0
+                defb    0,0,KEY_ESC,9,0,KEY_DELETE,KEY_ENTER,0
+                defb    ' ',0,0,KEY_DELETE,0,0,0,0
 
-; CAPS turns the digit row into the cursor keys and delete, exactly
-; where forty years of muscle memory expects them.
-KbdCapsT:
-                defb    0,'Z','X','C','V'
-                defb    'A','S','D','F','G'
-                defb    'Q','W','E','R','T'
-                defb    0,0,0,0,KEY_LEFT
-                defb    KEY_DELETE,0,KEY_RIGHT,KEY_UP,KEY_DOWN
-                defb    'P','O','I','U','Y'
-                defb    KEY_ENTER,'L','K','J','H'
-                defb    ' ',0,'M','N','B'
-
-; ------------------------------------------------------------
-;  EXTEND MODE, both shifts held, is where a Spectrum puts a
-;  third meaning for a key. G2 already used it to gate the
-;  pointer keys, but it did that by reading the ports in
-;  ReadInput while KbdDecode still handed the key to the symbol
-;  table, so both shifts and O moved the pointer left and typed a
-;  semicolon at the same time. Nobody holds both shifts to type a
-;  symbol, so this table takes the mode over completely and the
-;  double meaning goes with it.
-;
-;  Every entry is either a shortcut or nought. Nought is what the
-;  four pointer keys and the cursor digits get, because ReadInput
-;  reads those from the ports and a key that also posted an event
-;  would do two things at once, which is the fault this table is
-;  fixing.
-;
-;  Nothing here can reach an application: the codes are $81 and
-;  up and HdlKey takes them before a window is selected, so a
-;  shortcut cannot be mistaken for text and text cannot be
-;  mistaken for a shortcut.
-; ------------------------------------------------------------
-KbdExtT:
-                defb    0,0,SC_NEXT,SC_CASCADE,SC_SAVEAS
-                defb    0,SC_SAVE,SC_DESKTOP,SC_FILES,SC_SETTINGS
-                defb    0,SC_CLOSE,0,SC_PRINT,SC_TILE
-                defb    0,0,0,0,0
-                defb    0,0,0,0,0
-                defb    0,0,SC_ABOUT,0,0
-                defb    0,SC_CALENDAR,SC_CLOCK,0,0
-                defb    0,0,0,SC_NEW,0
-
-KbdSymT:
-                defb    0,':',0,'?','/'
-                defb    0,0,0,0,0
-                defb    0,0,0,'<','>'
-                defb    '!','@','#','$','%'
-                defb    '_',')','(',39,'&'
-                defb    34,';',0,0,0
-                defb    KEY_ENTER,'=','+','-','^'
-                defb    ' ',0,'.',',','*'
+KbdShiftT:
+                defb    ')','!','@','#','$','%','^','&'
+                defb    '*','(','_','+','|','{','}',':'
+                defb    34,'~','<','>','?',0,'A','B'
+                defb    'C','D','E','F','G','H','I','J'
+                defb    'K','L','M','N','O','P','Q','R'
+                defb    'S','T','U','V','W','X','Y','Z'
+                defb    0,0,0,0,0,0,0,0
+                defb    0,0,KEY_ESC,9,0,KEY_DELETE,KEY_ENTER,0
+                defb    ' ',0,0,KEY_DELETE,KEY_LEFT,KEY_UP,KEY_DOWN,KEY_RIGHT
 
 ; Called once a frame. Posts EV_KEY on a fresh press, then again on a
 ; repeat once the key has been held past KBDDELAY. Only one key is
@@ -197,16 +140,17 @@ KbdSymT:
 ; once rather than waiting out the old one's timer.
 KbdPoll:
                 call    KbdScan
-                call    KbdFirst
-                cp      $FF
-                jr      z,KbpNone
                 call    KbdMods
                 ld      (KbdModState),a
                 call    KbdFirst
+                cp      $FF
+                jr      z,KbpNone
                 call    KbdDecode
                 or      a
                 jr      z,KbpNone               ; held, but not mapped
                 ld      c,a
+                ld      hl,KbdHeld
+                inc     (hl)
                 ld      a,(KbdLast)
                 cp      c
                 jr      nz,KbpNew
@@ -232,8 +176,3 @@ KbpNone:
                 xor     a
                 ld      (KbdLast),a
                 ret
-
-KbdMatrix:      defs    8
-KbdModState:    defb    0
-KbdLast:        defb    0
-KbdTimer:       defb    0

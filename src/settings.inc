@@ -1,189 +1,617 @@
-; ============================================================
-;  E4: settings
-;  A small record persisted through the storage layer, so it
-;  works on whatever backend is selected. On a stock 48K that is
-;  tape; on a machine with an interface it will be the same code
-;  talking to a different backend.
-;
-;  The record carries a magic byte and a version so a settings
-;  file from an older build, or a tape block that happens to have
-;  the right name, is rejected rather than believed. Anything
-;  that fails the check falls back to defaults, which is the only
-;  safe behaviour when the alternative is applying rubbish to the
-;  pointer and losing control of the machine.
-; ============================================================
-; Version 2 added SetKeyPtr and changed the default of SetInvertY
-; from 0 to 1. The old default was never the working value: the
-; pointer read a separate MouseInvY that defaulted to 1, so a
-; version 1 record replayed into version 2 code would invert the Y
-; axis of a machine that had been behaving. A version bump rejects
-; it and falls back, which is what the field is for.
-SETMAGIC        equ     $5A             ; 'Z'
-; Three, because the record grew a sound setting. An older file is
-; rejected and the defaults stand, which is what the version field has
-; been carrying since it was written and the first time it has earned
-; its byte.
-SETVERSION      equ     3
+; MSX format v4: magic 'M', version, ramp (0..2), mouse Y inverted
+; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
+; key pointer (0/1), lattice (0..2). Separate magic from the ZX record.
+SETMAGIC        equ     $4D
+SETVERSION      equ     4
 SETSIZE         equ     8
 
 SetDefaults:
-                ld      a,SETMAGIC
-                ld      (SetRec),a
-                ld      a,SETVERSION
-                ld      (SetRec+1),a
-                ld      a,1             ; pointer speed, middle of three
-                ld      (SetSpeed),a
-                ld      a,1             ; the counter rises as the mouse is
-                ld      (SetInvertY),a  ; pushed away, which is the common wiring
-                ld      a,1
-                ld      (SetLattice),a
-                ld      a,1             ; keyboard pointer, behind EXTEND MODE
-                ld      (SetKeyPtr),a
-                ld      a,1             ; sound on, because a desktop that
-                ld      (SetSound),a    ; has to be told to speak is a
-                                        ; desktop nobody knows can
-                xor     a
-                ld      (SetRec+7),a
+                ld      hl,SetInitial
+                ld      de,SetRec
+                ld      bc,SETSIZE
+                ldir
+                ld      a,(SetDevice)
+                ld      (SetBackend),a
+                ret
+SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1,1,1
+SetName:        defb    "SETTINGS",0
+
+; Always use the boot device for the preferences file, even when
+; the saved application backend is RAM. Restore the caller's vectors.
+SetFileOpen:
+                push    bc
+                ld      a,(SetDevice)
+                call    StSelect
+                pop     bc
+                ld      hl,SetName
+                jp      StOpen
+SetRestore:
+                pop     bc                      ; saved backend in B
+                push    af
+                ld      a,b
+                call    StSelect
+                pop     af
                 ret
 
-; Carry set means nothing usable was found and defaults are in place.
+; Carry means defaults were installed. Reject I/O errors, short and
+; oversized records as well as foreign magic/version bytes.
 SetLoad:
-                ld      hl,SetName
+                call    StIdent
+                push    af
+                ld      a,(SetDevice)
+                cp      ST_TAPE                 ; never wait for tape at boot
+                jr      z,SetLoadBad
                 ld      b,FA_READ
-                call    StOpen
-                jr      c,SetlNone
+                call    SetFileOpen
+                jr      c,SetLoadBad
                 ld      (SetHandle),a
                 ld      hl,SetRec
-                ld      bc,SETSIZE
+                ld      bc,SETSIZE+1
                 call    StRead
-                ld      (SetGot),bc
+                push    af
+                push    bc
                 ld      a,(SetHandle)
                 call    StClose
-                ld      hl,(SetGot)
-                ld      a,h
+                pop     bc
+                pop     de                      ; E = read flags
+                jr      c,SetLoadBad
+                bit     0,e
+                jr      nz,SetLoadBad
+                ld      a,b
                 or      a
-                jr      nz,SetlBad
-                ld      a,l
-                cp      SETSIZE
-                jr      nz,SetlBad
+                jr      nz,SetLoadBad
                 ld      a,(SetRec)
                 cp      SETMAGIC
-                jr      nz,SetlBad
+                jr      nz,SetLoadBad
                 ld      a,(SetRec+1)
+                cp      1
+                jr      z,SetLoadV1
+                cp      2
+                jr      z,SetLoadV2
+                cp      3
+                jr      z,SetLoadV3
                 cp      SETVERSION
-                jr      nz,SetlBad
+                jr      nz,SetLoadBad
+                ld      a,c
+                cp      SETSIZE
+                jr      nz,SetLoadBad
                 or      a
-                ret
-SetlBad:
-SetlNone:
+                jp      SetRestore
+SetLoadV1:
+                ld      a,c
+                cp      5
+                jr      nz,SetLoadBad
+                ld      a,1
+                ld      (SetSound),a
+                jr      SetLoadUpgrade
+SetLoadV2:
+                ld      a,c
+                cp      6
+                jr      nz,SetLoadBad
+SetLoadUpgrade:
+                ld      a,1
+                ld      (SetKeyPtr),a
+                jr      SetLoadLattice
+SetLoadV3:
+                ld      a,c
+                cp      7
+                jr      nz,SetLoadBad
+SetLoadLattice:
+                ld      a,1
+                ld      (SetLattice),a
+                ld      a,SETVERSION
+                ld      (SetRec+1),a
+                or      a
+                jp      SetRestore
+SetLoadBad:
                 call    SetDefaults
                 scf
-                ret
+                jp      SetRestore
 
-; Carry set if the backend refused. The caller decides what to say
-; about it; on tape a refusal usually means nothing was recording.
+; Preserve write and close failures. SetApply validates payload fields.
 SetSave:
                 ld      a,SETMAGIC
                 ld      (SetRec),a
                 ld      a,SETVERSION
                 ld      (SetRec+1),a
-                ld      hl,SetName
+SetWriteRecord:
+                call    StIdent
+                push    af
                 ld      b,FA_OVERWRITE
-                call    StOpen
-                ret     c
+                call    SetFileOpen
+                jp      c,SetRestore
                 ld      (SetHandle),a
                 ld      hl,SetRec
                 ld      bc,SETSIZE
                 call    StWrite
-                ld      (SetGot),bc
+                push    af
+                push    bc
                 ld      a,(SetHandle)
                 call    StClose
-                ld      hl,(SetGot)
-                ld      a,h
+                pop     bc
+                pop     de
+                jr      c,SetSaveBad
+                bit     0,e
+                jr      nz,SetSaveBad
+                ld      a,b
                 or      a
-                jr      nz,SetsShort
-                ld      a,l
+                jr      nz,SetSaveBad
+                ld      a,c
                 cp      SETSIZE
-                jr      nz,SetsShort
+                jr      nz,SetSaveBad
                 or      a
-                ret
-SetsShort:
-                ld      a,STERR_FULL
+                jp      SetRestore
+SetSaveBad:
                 scf
-                ret
+                jp      SetRestore
 
-; Push the record into the running system. Called after a load and
-; after any change, so there is one path from record to behaviour and
-; no chance of the two drifting apart.
 SetApply:
-                ; Every field is clamped before it is used. A record that
-                ; passed the magic and version checks can still hold a value
-                ; this build has no meaning for, and an out of range index
-                ; would read a table entry that is not a table entry.
+                call    SetApplyLattice
+                ld      a,(SetKeyPtr)
+                cp      2
+                jr      c,SetKeyPtrOK
+                ld      a,1
+                ld      (SetKeyPtr),a
+SetKeyPtrOK:
+                ld      a,(SetSound)
+                cp      2
+                jr      c,SetSoundOK
+                ld      a,1
+                ld      (SetSound),a
+SetSoundOK:
                 ld      a,(SetSpeed)
                 cp      3
-                jr      c,SetaSpeedOk
-                ld      a,1                     ; a corrupt value is not trusted
+                jr      c,SetSpeedOK
+                ld      a,1
                 ld      (SetSpeed),a
-SetaSpeedOk:
-                ; SPEED picks one of three acceleration ramps. ReadInput
-                ; reads the pointer through AccelPtr, so the choice costs
-                ; one indirection per frame and nothing per key.
+SetSpeedOK:
                 ld      e,a
                 add     a,a
                 add     a,a
-                add     a,e                     ; A = index * 5, the ramp length
+                add     a,e
                 ld      e,a
                 ld      d,0
                 ld      hl,AccelTabs
                 add     hl,de
                 ld      (AccelPtr),hl
+                ld      a,(SetInvertY)
+                cp      2
+                jr      c,SetYOK
+                xor     a                       ; anything but 0 or 1 is a
+                ld      (SetInvertY),a          ; damaged file, not a wish
+SetYOK:                                         ; to have the axis upside down
+                ld      a,(SetBackend)
+                cp      ST_RAM
+                jr      z,SetBackendOK
+IF TAPE
+                cp      ST_TAPE
+                jr      z,SetBackendOK
+ENDIF
+                cp      ST_DISK
+                jr      nz,SetBackendDefault
+                call    DskPresent
+                jr      nz,SetBackendDefault
+                ld      a,ST_DISK
+SetBackendOK:
+                jp      StSelect
+SetBackendDefault:
+                ld      a,(SetDevice)
+                cp      ST_RAM
+                jr      z,SetFallbackOK
+IF TAPE
+                cp      ST_TAPE
+                jr      z,SetFallbackOK
+ENDIF
+                cp      ST_DISK
+                jr      nz,SetFallbackRam
+                call    DskPresent
+                ld      a,ST_DISK
+                jr      z,SetFallbackOK
+SetFallbackRam:
+                ld      a,ST_RAM
+SetFallbackOK:
+                ld      (SetBackend),a
+                jp      StSelect
 
-                ld      a,(SetKeyPtr)
-                cp      3
-                jr      c,SetaKeyOk
-                ld      a,1
-                ld      (SetKeyPtr),a
-SetaKeyOk:
-
-                ; LATTICE picks the desktop background. The pattern bytes
-                ; are the immediate operands of the three routines that
-                ; paint it, patched here rather than read from a variable,
-                ; because two of the three are inner loops that write a
-                ; byte every few T states and cannot afford a load.
+; Change only pattern bytes, never the shadow/name table or window buffers.
+; Screen 2 has a separate pattern bank for each third of the screen.
+SetApplyLattice:
                 ld      a,(SetLattice)
+                cp      3
+                jr      c,SetLatticeOK
+                ld      a,1
+                ld      (SetLattice),a
+SetLatticeOK:
+                add     a,a
+                add     a,a
+                add     a,a
+                ld      e,a
+                ld      d,0
+                ld      hl,SetPatterns
+                add     hl,de
+                ex      de,hl
+                ld      hl,PGT+T_LATTICE*8
+                ld      b,3
+SetLatticeBank:
+                push    bc
+                push    hl
+                push    de
+                call    SetWrt
+                ex      de,hl
+                push    hl
+                ld      bc,8
+                call    CopyVram
+                ; The rule follows immediately; replace only its top row.
+                ld      a,$FF
+                out     (VDPDATA),a
+                pop     hl
+                inc     hl
+                ld      bc,7
+                call    CopyVram
+                pop     de
+                pop     hl
+                ld      bc,$0800
+                add     hl,bc
+                pop     bc
+                djnz    SetLatticeBank
+                ret
+SetPatterns:    defb    0,0,0,0,0,0,0,0
+                defb    $AA,$55,$AA,$55,$AA,$55,$AA,$55
+                defb    $FF,$55,$FF,$55,$FF,$55,$FF,$55
+
+; A = the mouse's raw dy. An MSX mouse reports the negative of the
+; movement, so the screen delta is always the negation; the setting
+; flips it once more. 0 is therefore a mouse that moves the pointer
+; the way the hand went, which is what a default should be: the first
+; version had 0 mean "no negation" and a SETTINGS file the harness
+; left on the disk image turned the Y axis upside down on a real
+; screen.
+SetMouseY:
+                neg
+                push    bc
+                ld      b,a
+                ld      a,(SetInvertY)
                 or      a
-                ld      hl,0                    ; plain: both rows blank
-                jr      z,SetaLatSet
-                ld      hl,(LatDots)            ; L = row 0 byte, H = row 2
-SetaLatSet:
-                ld      a,l
-                ld      (LatA1),a
-                ld      (LatA2),a
-                ld      (LatA3),a
-                ld      a,h
-                ld      (LatB1),a
-                ld      (LatB2),a
-                ld      (LatB3),a
+                ld      a,b
+                pop     bc
+                ret     z
+                neg
                 ret
 
-; The dot lattice as designed: a set pixel every four across on rows
-; nought and two of every four, offset by two so the dots sit on a
-; diagonal rather than in columns.
-LatDots:        defb    $88, $22
+SetOpen:
+                ld      a,APP_SETTINGS
+                call    WndOpen
+                ret     c
+                ; Compose now, then restore the desktop and blit next frame,
+                ; as for resize: doing both while opening misses NTSC frames.
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+SetOpenBit:
+                rlca
+                djnz    SetOpenBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a                  ; new buffer is already composed
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; retain successful open's carry
+                ret
+SetInit:
+                xor     a
+                ld      (SetRow),a
+                ret
 
-AccelPtr:       defw    AccelTabs+ACCELLEN
+; Eight rows: cyclic values, SAVE, DONE. Focus is per window.
+SetKey:
+                cp      KEY_ESC
+                jp      z,SetDone
+                cp      9
+                jp      z,SetNext
+                cp      KEY_DOWN
+                jp      z,SetNext
+                cp      KEY_UP
+                jp      z,SetPrev
+                ld      b,1
+                cp      KEY_RIGHT
+                jp      z,SetChange
+                cp      KEY_ENTER
+                jp      z,SetChange
+                cp      ' '
+                jp      z,SetChange
+                ld      b,2                       ; -1 modulo three
+                cp      KEY_LEFT
+                jp      z,SetChange
+                xor     a
+                ret
+SetNext:
+                ld      a,(SetRow)
+                inc     a
+                cp      8
+                jp      c,SetFocus
+                xor     a
+                jp      SetFocus
+SetPrev:
+                ld      a,(SetRow)
+                sub     1
+                jp      nc,SetFocus
+                ld      a,7
+SetFocus:
+                ld      (SetRow),a
+SetChanged:
+                ld      a,1
+                ret
+SetChange:
+                ld      a,(SetRow)
+                cp      7
+                jp      z,SetDone
+                cp      6
+                jp      z,SetStore
+                cp      5
+                jp      z,SetCycleLattice
+                cp      4
+                jp      z,SetCycleKeyPtr
+                cp      3
+                jp      z,SetCycleSound
+                cp      2
+                jp      z,SetCycleBackend
+                cp      1
+                jp      z,SetCycleY
+                ld      a,(SetSpeed)
+                add     a,b
+                cp      3
+                jp      c,SetCycleSpeed
+                sub     3
+SetCycleSpeed:
+                ld      (SetSpeed),a
+                jp      SetActivate
+SetCycleLattice:
+                ld      a,(SetLattice)
+                add     a,b
+                cp      3
+                jr      c,SetCycleLatticeStore
+                sub     3
+SetCycleLatticeStore:
+                ld      (SetLattice),a
+                jp      SetActivate
+SetCycleKeyPtr:
+                ld      a,(SetKeyPtr)
+                xor     1
+                ld      (SetKeyPtr),a
+                jp      SetActivate
+SetCycleSound:
+                ld      a,(SetSound)
+                xor     1
+                ld      (SetSound),a
+                jp      SetActivate
+SetCycleY:
+                ld      a,(SetInvertY)
+                xor     1
+                ld      (SetInvertY),a
+                jp      SetActivate
+SetCycleBackend:
+                call    DskPresent
+                ld      a,ST_RAM
+                jp      nz,SetCycleDevice
+                ld      a,(SetBackend)
+                cp      ST_DISK
+                ld      a,ST_RAM
+                jp      z,SetCycleDevice
+                ld      a,ST_DISK
+SetCycleDevice:
+                ld      (SetBackend),a
+SetActivate:
+                call    SetApply
+                ; Values are global, but each window has its own buffer
+                ; and focus. Mark every SETTINGS slot without selecting it.
+                call    WndFlush
+                ld      a,(WndCount)
+                or      a
+                jp      z,SetChanged
+                ld      b,a
+                ld      c,0
+SetTouchSlot:
+                push    bc
+                ld      e,c
+                ld      d,0
+                ld      hl,WndZ
+                add     hl,de
+                ld      a,(hl)
+                ld      c,a
+                call    WndRecAt
+                ld      de,WR_APP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,AppSettings
+                or      a
+                sbc     hl,de
+                jr      nz,SetTouchNext
+                ld      a,c
+                call    WndTouch
+                ld      a,c
+                call    RowsAddSlot
+SetTouchNext:
+                pop     bc
+                inc     c
+                djnz    SetTouchSlot
+                jp      SetChanged
+SetStore:
+                call    SetSave
+                jp      nc,SetChanged
+                ld      hl,SetSaveError
+                ld      de,0
+                call    DlgAlert
+                xor     a
+                ret
+SetDone:
+                call    WndClose
+                xor     a                       ; do not touch the closed slot
+                ret
 
-SetName:        defb    "SETTINGS",0
-SetHandle:      defb    0
-SetGot:         defw    0
+; Called after focusing a body hit. Derive coordinates again because
+; WndFocusTo uses BC. Only the eight visible button rectangles activate.
+SetPress:
+                ld      a,(PtrX)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinX
+                sub     (hl)
+                cp      16
+                ret     c
+                cp      22
+                ret     nc
+                ld      hl,WinW
+                ld      d,(hl)
+                dec     d
+                cp      d
+                ret     nc
+                ld      a,(PtrY)
+                srl     a
+                srl     a
+                srl     a
+                ld      hl,WinY
+                sub     (hl)
+                ld      hl,WinH
+                ld      d,(hl)
+                dec     d
+                cp      d
+                ret     nc
+                dec     a
+                cp      8
+                ret     nc
+                ld      (SetRow),a
+                ld      b,1
+                call    SetChange
+                or      a
+                ret     z
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsAddLive
 
-SetRec:
-                defb    SETMAGIC
-                defb    SETVERSION
-SetSpeed:       defb    1
-SetInvertY:     defb    1
-SetLattice:     defb    1
-SetKeyPtr:      defb    1
-SetSound:       defb    1
-                defb    0
+SetDraw:
+                xor     a
+                ld      (PrintInv),a
+                ld      hl,SetSpeedLabel
+                ld      bc,$0101
+                call    WinPrint
+                ld      hl,SetYLabel
+                ld      bc,$0201
+                call    WinPrint
+                ld      hl,SetBackendLabel
+                ld      bc,$0301
+                call    WinPrint
+                ld      hl,SetSoundLabel
+                ld      bc,$0401
+                call    WinPrint
+                ld      hl,SetKeyPtrLabel
+                ld      bc,$0501
+                call    WinPrint
+                ld      hl,SetLatticeLabel
+                ld      bc,$0601
+                call    WinPrint
+                ld      a,(SetSpeed)
+                ld      hl,SetSlow
+                or      a
+                jr      z,SetDrawSpeed
+                ld      hl,SetMed
+                dec     a
+                jr      z,SetDrawSpeed
+                ld      hl,SetFast
+SetDrawSpeed:
+                ld      b,1
+                call    SetButton
+                ld      a,(SetInvertY)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawY
+                ld      hl,SetOn
+SetDrawY:
+                ld      b,2
+                call    SetButton
+                ld      a,(SetBackend)
+                ld      hl,SetRamLabel
+                cp      ST_RAM
+                jr      z,SetDrawBackend
+                ld      hl,SetTapeLabel
+                cp      ST_TAPE
+                jr      z,SetDrawBackend
+                ld      hl,SetDiskLabel
+SetDrawBackend:
+                ld      b,3
+                call    SetButton
+                ld      a,(SetSound)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawSound
+                ld      hl,SetOn
+SetDrawSound:
+                ld      b,4
+                call    SetButton
+                ld      a,(SetKeyPtr)
+                ld      hl,SetOff
+                or      a
+                jr      z,SetDrawKeyPtr
+                ld      hl,SetOn
+SetDrawKeyPtr:
+                ld      b,5
+                call    SetButton
+                ld      a,(SetLattice)
+                ld      hl,SetEmpty
+                or      a
+                jr      z,SetDrawLattice
+                ld      hl,SetDots
+                dec     a
+                jr      z,SetDrawLattice
+                ld      hl,SetDense
+SetDrawLattice:
+                ld      b,6
+                call    SetButton
+                ld      hl,SetSaveLabel
+                ld      b,7
+                call    SetButton
+                ld      hl,SetDoneLabel
+                ld      b,8
+                call    SetButton
+                xor     a
+                ld      (PrintInv),a
+                ret
+SetButton:
+                ld      a,(SetRow)
+                inc     a
+                cp      b
+                ld      a,0
+                jr      nz,SetButtonNormal
+                ld      a,INVBANK
+SetButtonNormal:
+                ld      (PrintInv),a
+                ld      c,16
+                jp      WinPrint
+SetTitle:       defb    "SETTINGS",0
+SetSpeedLabel:  defb    "POINTER RAMP",0
+SetYLabel:      defb    "MOUSE Y INVERT",0
+SetBackendLabel: defb   "BACKEND",0
+SetSlow:        defb    "[SLOW]",0
+SetMed:         defb    "[MED ]",0
+SetFast:        defb    "[FAST]",0
+SetOff:         defb    "[OFF ]",0
+SetOn:          defb    "[ON  ]",0
+SetRamLabel:    defb    "[RAM ]",0
+SetTapeLabel:   defb    "[TAPE]",0
+SetDiskLabel:   defb    "[DISK]",0
+SetSaveLabel:   defb    "[SAVE]",0
+SetDoneLabel:   defb    "[DONE]",0
+SetSaveError:   defb    "COULD NOT SAVE",0
+
+SetSoundLabel:  defb    "SOUND",0
+SetKeyPtrLabel: defb    "KEY PTR",0
+
+SetLatticeLabel: defb   "LATTICE",0
+SetEmpty:       defb    "[NONE]",0
+SetDots:        defb    "[DOTS]",0
+SetDense:       defb    "[GRID]",0

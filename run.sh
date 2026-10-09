@@ -1,84 +1,55 @@
-#!/bin/zsh
-# ZX Desk: load a .tap into Fuse and capture the emulator window.
-#   ./run.sh                       run build/zxdesk.tap
-#   ./run.sh build/foo.tap 20      run something else, wait longer to settle
-# Quits Fuse politely rather than killing it, and polls for the window
-# instead of guessing a sleep, because repeated pkill and a fixed sleep
-# left the app running with no window at all.
+#!/bin/bash
+# ZX Desk for MSX: build the ROM and run it in a visible openMSX.
+#   ./run.sh                 C-BIOS_MSX1_EU, mouse in port A
+#   MSX_MACHINE=C-BIOS_MSX1_JP ./run.sh
+#   MSX_MACHINE=Roms_MSX1 ./run.sh    the real BIOS in roms/ (Roms_MSX2 too)
+#   MSX_MACHINE=Roms_MSX1 MSX_EXT=Roms_Disk MSX_DISK=build/disk.dsk ./run.sh
+#
+# Uses the host's openmsx when installed (Fedora: dnf install openmsx
+# cbios), otherwise the toolchain image with the X socket passed in
+# (works under Wayland through XWayland). Cursor keys move the pointer,
+# CTRL is the button, the host mouse is the MSX mouse once the window
+# has focus and is grabbed (openMSX gets relative motion only while the
+# pointer is inside the window, so it is grabbed; F12 opens the console,
+# `set grabinput off` lets go).
 set -e
-ROOT="${0:A:h}"
-TAP="${1:-$ROOT/build/zxdesk.tap}"
-SETTLE="${2:-10}"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+MACHINE="${MSX_MACHINE:-C-BIOS_MSX1_EU}"
+IMAGE=zxdesk-msx
 
-# MACHINE=128 ./run.sh runs on a 128K instead. Fuse reads this at
-# launch and, with autosavesettings on, writes it back at quit, so the
-# old value is put back afterwards rather than left changed.
-FUSEDOM=net.sourceforge.fuse-for-macosx.Fuse
-OLDMACHINE=""
-if [[ -n "${MACHINE:-}" ]]; then
-  OLDMACHINE="$(defaults read "$FUSEDOM" machine 2>/dev/null || echo 48)"
-fi
+docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -t "$IMAGE" "$ROOT/docker"
+docker run --rm -v "$ROOT:/work" -w /work -u "$(id -u):$(id -g)" "$IMAGE" \
+  pasmo -I src --bin src/msxdesk.asm build/msxdesk.rom build/msxdesk.sym 2>&1 | grep -v "WARNING: Var\|3 pass" || true
+[[ -s "$ROOT/build/msxdesk.rom" ]] || { echo "no ROM built" >&2; exit 1; }
 
-osascript -e 'tell application "Fuse" to quit' 2>/dev/null || true
-for i in {1..20}; do
-  pgrep -f "/Applications/Fuse.app/Contents/MacOS/Fuse" >/dev/null || break
-  sleep 0.5
-done
-
-# Wake the display and hold it awake for the run. A locked or slept
-# session tears down the window, so System Events reports no window and
-# screencapture has nothing to grab. This is not hypothetical.
-if [[ -n "$OLDMACHINE" ]]; then
-  defaults write "$FUSEDOM" machine -string "$MACHINE"
-fi
-
-caffeinate -u -t 1
-caffeinate -di -t $((SETTLE + 90)) &
-CAFF=$!
-
-# The machine setting is put back on the way out however that happens.
-# It was restored only on the success path, and the first time Fuse
-# lost focus to another app the guard below exited first and left the
-# emulator set to 128.
-cleanup() {
-  kill $CAFF 2>/dev/null
-  if [[ -n "$OLDMACHINE" ]]; then
-    osascript -e 'tell application "Fuse" to quit' 2>/dev/null || true
-    for i in {1..20}; do
-      pgrep -f "/Applications/Fuse.app/Contents/MacOS/Fuse" >/dev/null || break
-      sleep 0.5
-    done
-    defaults write "$FUSEDOM" machine -string "$OLDMACHINE"
+ARGS=(-machine "$MACHINE" -cartb "$ROOT/build/msxdesk.rom" -romtype page12 -command "plug joyporta mouse" -command "set grabinput on")
+# MSX_EXT=Roms_Disk puts the disk interface in slot 1, ahead of the
+# cartridge in slot 2, so its init runs first; MSX_DISK=file.dsk mounts an
+# image (the harness's build/disk.dsk is a blank 720K one).
+[[ -n "${MSX_EXT:-}" ]] && ARGS+=(-ext "$MSX_EXT")
+[[ -n "${MSX_DISK:-}" ]] && ARGS+=(-diska "$MSX_DISK")
+if command -v openmsx >/dev/null; then
+  # Fedora's cbios package is not linked into openMSX's system ROMs;
+  # the user share dir is searched too, so link them there once.
+  USERROMS="$HOME/.openMSX/share/systemroms"
+  mkdir -p "$USERROMS"
+  if [[ -d /usr/share/cbios && ! -e "$USERROMS/cbios_main_msx1_eu.rom" ]]; then
+    ln -sf /usr/share/cbios/*.rom "$USERROMS/"
   fi
-}
-trap cleanup EXIT
-
-open -a Fuse "$TAP"
-
-BOUNDS=""
-for i in {1..30}; do
-  BOUNDS=$(osascript -e 'tell application "System Events" to tell process "Fuse" to get {position, size} of window 1' 2>/dev/null) && break
-  sleep 1
-done
-if [[ -z "$BOUNDS" ]]; then
-  echo "Fuse came up with no window after 30s. Check the screen for a dialog." >&2
-  exit 1
+  # real BIOS ROMs from roms (gitignored), matched by sha1, and the
+  # machine configs built on them
+  if [[ -d "$ROOT/roms" ]]; then
+    ln -sf "$ROOT"/roms/* "$USERROMS/"
+  fi
+  mkdir -p "$HOME/.openMSX/share/machines" "$HOME/.openMSX/share/extensions"
+  ln -sf "$ROOT"/harness/machines/*.xml "$HOME/.openMSX/share/machines/"
+  ln -sf "$ROOT"/harness/extensions/*.xml "$HOME/.openMSX/share/extensions/"
+  exec openmsx "${ARGS[@]}"
 fi
-
-sleep "$SETTLE"
-
-# screencapture -R grabs a screen region, not a window, so anything
-# sitting on top of that rectangle is what gets captured. Raise Fuse and
-# re-read its bounds immediately before the shot.
-osascript -e 'tell application "Fuse" to activate' 2>/dev/null || true
-sleep 2
-BOUNDS=$(osascript -e 'tell application "System Events" to tell process "Fuse" to get {position, size} of window 1' 2>/dev/null)
-FRONT=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null)
-if [[ "$FRONT" != "Fuse" ]]; then
-  echo "Fuse is not frontmost (front is $FRONT); capture would show the wrong window." >&2
-  exit 1
-fi
-
-SHOT="$ROOT/shots/$(date +%H%M%S)-$(basename "${TAP%.tap}").png"
-screencapture -x -R "$(echo "$BOUNDS" | tr -d ' ')" "$SHOT"
-echo "$SHOT"
+# Fallback: the image on the host display. Needs the GPU passed in for
+# openMSX's GL renderer; without it the window opens and hangs.
+xhost +local: >/dev/null 2>&1 || true
+exec docker run --rm -it -e DISPLAY="${DISPLAY:-:0}" -e HOME=/tmp -e SDL_AUDIODRIVER=dummy \
+  --device /dev/dri -v /tmp/.X11-unix:/tmp/.X11-unix -v "$ROOT:$ROOT:ro" \
+  -u "$(id -u):$(id -g)" -v /etc/passwd:/etc/passwd:ro "$IMAGE" \
+  sh -c 'mkdir -p /tmp/.openMSX/share && ln -sfn "$0" /tmp/.openMSX/share/systemroms && ln -sfn "$1" /tmp/.openMSX/share/machines && ln -sfn "$2" /tmp/.openMSX/share/extensions; shift 2; exec openmsx "$@"' "$ROOT/roms" "$ROOT/harness/machines" "$ROOT/harness/extensions" "${ARGS[@]}"

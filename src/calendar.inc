@@ -1,54 +1,22 @@
 ; ============================================================
 ;  Calendar
-;  A month grid, and like the clock it has no idea what the date
-;  is until it is told. What it does know is which day of the
-;  week any date falls on, and that is the whole of the
-;  arithmetic worth having on a machine with no calendar chip.
-;
-;  Day of the week is worked out by counting forward from a known
-;  anchor rather than by Zeller or Sakamoto, because both of
-;  those want division by 4, 100 and 400, and this has neither a
-;  divide instruction nor a reason to want one. 1 January 1980
-;  was a Tuesday. A year is 365 days, which is 1 modulo 7, or 366
-;  in a leap year, which is 2, so walking a century is at most a
-;  hundred adds of one or two. It happens once per repaint.
-;
-;  The century rule never fires. This covers 1980 to 2079 and the
-;  only century year in that span is 2000, which is a leap year
-;  because it divides by 400, so within this range a leap year is
-;  exactly a year that divides by four. That is not a
-;  simplification being got away with, it is a property of the
-;  range, and the range is stated so the next person can check
-;  it.
-;
-;  Weeks start on Monday, which is the British convention and the
-;  one a Sinclair machine should have.
-;
-;  The month on show is per window, so two calendars can be open
-;  on two months. The date that is highlighted is not: today is
-;  the machine's, the same way the time is, and midnight moves it
-;  through CalNextDay.
+;  The arithmetic half of the ZX calendar, ported as it stands:
+;  day of the week counted forward from 1 January 1980, a
+;  Tuesday, because Zeller and Sakamoto both want division by 4,
+;  100 and 400 and this has no divide instruction. 1980 to 2079,
+;  where a leap year is exactly a year that divides by four. The
+;  grid rows are built into CalRow as text; painting them into a
+;  window is phase 3's, when there is a window.
 ; ============================================================
-CALW            equ     23              ; 21 characters of grid and two borders
-CALH            equ     82
+CALW            equ     23
+CALH            equ     10              ; cells: title, header, labels, six weeks, bottom
 CALYEAR0        equ     1980
 CALYEARS        equ     100
-CALCELL         equ     3               ; characters to a day
-CALSTSZ         equ     3               ; the year, the month and the day
-                                        ; the keys are pointing at
+CALSTSZ         equ     3               ; the year, the month and the selected day
 
-; The per instance state, live copy. Two bytes, and the smallest
-; application state in the system, which is the point of it being a
-; block rather than a special case.
-CalState:
-CalYear:        defb    0               ; years since CALYEAR0
-CalMonth:       defb    0               ; 0 to 11
-CalSel:         defb    1               ; the day the keys are on, 1 to 31
+; CalState is the live copy: CalYear, CalMonth, CalSel, contiguous
+; in the var block.
 
-; ------------------------------------------------------------
-;  CalInit
-;  A new calendar opens on whatever today is.
-; ------------------------------------------------------------
 CalInit:
                 ld      a,(TodayY)
                 ld      (CalYear),a
@@ -58,8 +26,6 @@ CalInit:
                 ld      (CalSel),a
                 ret
 
-; CalLeapY, for the year on show. Everything downstream wants it and
-; working it out in two places is how the two copies disagree.
 CalSetLeap:
                 ld      a,(CalYear)
                 call    CalLeap
@@ -71,9 +37,7 @@ CslNo:
                 ret
 
 ; The selection, forward and back a day, carrying into the next month
-; and the next year. Moving a week is this seven times, which is not
-; elegant and is about forty T states, and a second routine that got
-; the month boundary subtly differently would be worse.
+; and the next year.
 CalFwd:
                 call    CalSetLeap
                 ld      a,(CalMonth)
@@ -97,9 +61,9 @@ CalFwd:
                 ld      a,(hl)
                 cp      CALYEARS
                 ret     c
-                dec     (hl)                    ; the end of the range, so it
-                ld      a,11                    ; stops rather than wrapping
-                ld      (CalMonth),a            ; into arithmetic it cannot do
+                dec     (hl)                    ; the end of the range stops
+                ld      a,11                    ; rather than wrapping
+                ld      (CalMonth),a
                 ld      a,31
 CfSet:
                 ld      (CalSel),a
@@ -130,7 +94,65 @@ CbSameYear:
                 ld      (CalSel),a
                 ret
 
-; B times, whichever way.
+; A month or a year forward or back, C = 1 forward, 0 back, the day
+; kept or cut to the new month's last. The ends of the range stop.
+; Not the ZX's: without them today is thousands of weeks from 1980.
+CalMonthStep:
+                ld      a,c
+                or      a
+                ld      a,(CalMonth)
+                jr      z,CmsBack
+                inc     a
+                cp      12
+                jr      c,CmsSet
+                ld      a,(CalYear)
+                cp      CALYEARS-1
+                ret     nc
+                inc     a
+                ld      (CalYear),a
+                xor     a
+                jr      CmsSet
+CmsBack:
+                sub     1
+                jr      nc,CmsSet
+                ld      a,(CalYear)
+                or      a
+                ret     z
+                dec     a
+                ld      (CalYear),a
+                ld      a,11
+CmsSet:
+                ld      (CalMonth),a
+                jr      CalClampSel
+
+CalYearStep:
+                ld      a,c
+                or      a
+                ld      a,(CalYear)
+                jr      z,CysBack
+                cp      CALYEARS-1
+                ret     nc
+                inc     a
+                jr      CysSet
+CysBack:
+                or      a
+                ret     z
+                dec     a
+CysSet:
+                ld      (CalYear),a
+CalClampSel:
+                call    CalSetLeap
+                ld      a,(CalMonth)
+                call    CalMonthLen
+                ld      b,a
+                ld      a,(CalSel)
+                cp      b
+                ret     c
+                ld      a,b
+                ld      (CalSel),a
+                ret
+
+; B times, C = 1 forward, 0 back.
 CalMoveB:
                 push    bc
                 ld      a,c
@@ -145,20 +167,14 @@ CmbNext:
                 djnz    CalMoveB
                 ret
 
-; ------------------------------------------------------------
-;  CalLeap
-;  in:  A = years since 1980
-;  out: Z set if it is a leap year
-; ------------------------------------------------------------
+; in:  A = years since 1980
+; out: Z set if it is a leap year
 CalLeap:
-                and     3                       ; 1980 divides by four, so the
-                ret                             ; offset does too
+                and     3
+                ret
 
-; ------------------------------------------------------------
-;  CalMonthLen
-;  in:  A = month 0..11, CalLeapY = whether the year is a leap
-;  out: A = days in it
-; ------------------------------------------------------------
+; in:  A = month 0..11, CalLeapY = whether the year is a leap
+; out: A = days in it
 CalMonthLen:
                 ld      e,a
                 ld      d,0
@@ -179,14 +195,8 @@ CalMonthLen:
 
 CalLens:        defb    31,28,31,30,31,30,31,31,30,31,30,31
 
-; ------------------------------------------------------------
-;  CalFirstDow
-;  in:  CalYear, CalMonth
-;  out: A = weekday of the 1st, Monday nought
-;  Leaves CalLeapY set for the displayed year, because everything
-;  that follows wants it and working it out twice is how the two
-;  copies disagree.
-; ------------------------------------------------------------
+; in:  CalYear, CalMonth
+; out: CalDow = weekday of the 1st, Monday nought; CalLeapY set
 CalFirstDow:
                 call    CalSetLeap
                 ld      a,1                     ; 1 Jan 1980 was a Tuesday
@@ -198,7 +208,7 @@ CfdYear:
                 ld      hl,CalYear
                 cp      (hl)
                 jr      z,CfdMonths
-                call    CalLeap                 ; A is still CalIx
+                call    CalLeap
                 ld      b,1
                 jr      nz,CfdNotL2
                 inc     b                       ; 366 is 2 modulo 7
@@ -217,9 +227,7 @@ CfdMonth:
                 ld      a,(CalIx)
                 ld      hl,CalMonth
                 cp      (hl)
-                ret     z                       ; A is dropped; CalDow is the
-                                                ; answer and the caller reads
-                                                ; it back below
+                ret     z
                 call    CalMonthLen
                 ld      b,a
                 ld      a,(CalDow)
@@ -230,19 +238,13 @@ CfdMonth:
                 inc     (hl)
                 jr      CfdMonth
 
-; A modulo 7, for a value that cannot be far past it.
 CalMod7:
                 cp      7
                 ret     c
                 sub     7
                 jr      CalMod7
 
-; ------------------------------------------------------------
-;  CalNextDay
-;  Midnight. Rolls today's date, and the month lengths it needs
-;  are the ones for today's year rather than the displayed one,
-;  so it works them out for itself.
-; ------------------------------------------------------------
+; Midnight. Rolls today's date with today's year's month lengths.
 CalNextDay:
                 ld      a,(TodayY)
                 call    CalLeap
@@ -257,8 +259,8 @@ CndNotLeap:
                 ld      a,(TodayD)
                 inc     a
                 cp      b
-                jr      z,CndSet                ; the last day is still this
-                jr      c,CndSet                ; month
+                jr      z,CndSet
+                jr      c,CndSet
                 ld      a,1
                 ld      (TodayD),a
                 ld      hl,TodayM
@@ -272,34 +274,19 @@ CndNotLeap:
                 ld      a,(hl)
                 cp      CALYEARS
                 ret     c
-                ld      (hl),0                  ; 2080 is outside what the day
-                ret                             ; of the week walk covers
+                ld      (hl),0
+                ret
 CndSet:
                 ld      (TodayD),a
                 ret
 
-; ------------------------------------------------------------
-;  CalDraw
-;  F2's draw vector. A header, a row of weekday letters and six
-;  week rows, each built into one string and printed with one
-;  call, because PrintStrPx2 costs 622 T a character however it
-;  is asked and twenty one characters in one string is twenty one
-;  characters.
-; ------------------------------------------------------------
-CalDraw:
-                call    CalFirstDow
-                ld      a,(CalDow)
-                ld      (CalFirst),a
-                ld      a,(CalMonth)
-                call    CalMonthLen
-                ld      (CalLen),a
-
-                ; the header: three letters of the month and four of year
+; The header, "AUG 2026", into CalRow, null terminated.
+CalBuildHead:
                 ld      hl,CalRow
                 ld      a,(CalMonth)
                 ld      b,a
                 add     a,a
-                add     a,b                     ; three characters a name
+                add     a,b
                 ld      e,a
                 ld      d,0
                 push    hl
@@ -307,15 +294,15 @@ CalDraw:
                 add     hl,de
                 pop     de
                 ld      bc,3
-                ldir                            ; DE is left after the name
+                ldir
                 ex      de,hl
                 ld      (hl),' '
                 inc     hl
                 ld      a,(CalYear)
                 ld      b,a
-                ld      a,CALYEAR0/100          ; 19, and the century of the
-                ld      c,a                     ; range rather than of the year
-                ld      a,CALYEAR0-1900         ; 80
+                ld      a,CALYEAR0/100
+                ld      c,a
+                ld      a,CALYEAR0-1900
                 add     a,b
                 cp      100
                 jr      c,CalCent
@@ -324,85 +311,79 @@ CalDraw:
 CalCent:
                 ld      b,a
                 ld      a,c
-                ld      c,0                     ; the year keeps its noughts
-                push    bc                      ; and B is not kept in B:
-                call    CalPut2                 ; CalPut2 builds its tens digit
-                pop     bc                      ; there, so the year came out
-                ld      a,b                     ; as 2050, which is the ASCII
-                ld      c,0                     ; of the digit it had just
-                call    CalPut2                 ; printed
+                ld      c,0
+                push    bc
+                call    CalPut2
+                pop     bc
+                ld      a,b
+                ld      c,0
+                call    CalPut2
                 ld      (hl),0
-                ld      a,(WinY)
-                add     a,WinCapH+3
-                ld      (PxRow),a
-                call    CalPrint
+                ret
 
-                ; the weekday letters
-                ld      hl,CalDays              ; LDIR copies (HL) to (DE), so
-                ld      de,CalRow               ; the source is the labels and
-                ld      bc,21                   ; the destination is the row.
-                ldir                            ; The other way round wrote the
-                                                ; header over the labels and
-                                                ; printed the header twice
-                ld      a,(WinY)
-                add     a,WinCapH+12
-                ld      (PxRow),a
-                call    CalPrint
+; Sets CalFirst and CalLen for the month on show; CalBuildWeek wants
+; them.
+CalPrepare:
+                call    CalFirstDow
+                ld      a,(CalDow)
+                ld      (CalFirst),a
+                ld      a,(CalMonth)
+                call    CalMonthLen
+                ld      (CalLen),a
+                ret
 
-                ; and six weeks
-                xor     a
-                ld      (CalIx),a
-CalWeek:
-                call    CalBuildWeek
-                ld      a,(CalIx)
-                add     a,a
-                add     a,a
-                add     a,a                     ; eight pixel rows a week
-                ld      b,a
-                ld      a,(WinY)
-                add     a,WinCapH+21
-                add     a,b
-                ld      (PxRow),a
-                call    CalPrint
-                ld      hl,CalIx
-                inc     (hl)
-                ld      a,(hl)
-                cp      6
-                jr      c,CalWeek
-                call    CalToday
-                jp      CalSelDraw
-
-; The grid row for week CalIx, into CalRow.
+; The grid row for week CalIx: seven cells of two digits and a space,
+; twenty characters, null terminated, into CalRow or, through
+; CalBuildWeekAt, wherever HL points. A running day number in E
+; rather than the cell arithmetic per cell: the grid was measured at
+; five milliseconds of a window open the other way.
 CalBuildWeek:
                 ld      hl,CalRow
-                xor     a
-                ld      (CalCol),a
-CalCellLoop:
-                ; the day number this cell holds, which can be off either
-                ; end of the month and is a pair of spaces when it is
+CalBuildWeekAt:
                 ld      a,(CalIx)
                 ld      b,a
                 add     a,a
                 add     a,a
                 add     a,a
                 sub     b                       ; times seven
-                ld      b,a
-                ld      a,(CalCol)
-                add     a,b
-                ld      b,a                     ; the cell's index in the grid
-                ld      a,(CalFirst)
-                ld      d,a                     ; D, not C: CalPut2 wants C
-                ld      a,b
-                sub     d
-                jr      c,CalBlank              ; before the first
                 inc     a
                 ld      b,a
-                ld      a,(CalLen)
-                cp      b
-                jr      c,CalBlank              ; past the last
-                ld      a,b
-                ld      c,1                     ; a day drops its leading zero
-                call    CalPut2
+                ld      a,(CalFirst)
+                neg
+                add     a,b
+                ld      e,a                     ; the day in the first cell,
+                ld      a,(CalLen)              ; nought or below before the 1st
+                ld      d,a
+                ld      b,7
+CalCellLoop:
+                ld      a,e
+                or      a
+                jr      z,CalBlank
+                jp      m,CalBlank              ; before the first
+                cp      d
+                jr      z,CalDay
+                jr      nc,CalBlank             ; past the last
+CalDay:
+                push    hl                      ; two digits from the table:
+                push    bc                      ; a division loop a cell was
+                ld      l,a                     ; measured at 0.8 ms a week
+                ld      h,0
+                add     hl,hl
+                ld      bc,CalDayTab
+                add     hl,bc
+                ld      a,(hl)
+                ld      (CalPair),a
+                inc     hl
+                ld      a,(hl)                  ; through memory: B is the
+                ld      (CalPair+1),a           ; cell count and D and E are
+                pop     bc                      ; the month, so no register
+                pop     hl                      ; is free to carry it
+                ld      a,(CalPair)
+                ld      (hl),a
+                inc     hl
+                ld      a,(CalPair+1)
+                ld      (hl),a
+                inc     hl
                 jr      CalCellDone
 CalBlank:
                 ld      (hl),' '
@@ -412,19 +393,14 @@ CalBlank:
 CalCellDone:
                 ld      (hl),' '
                 inc     hl
-                ld      a,(CalCol)
-                inc     a
-                ld      (CalCol),a
-                cp      7
-                jr      c,CalCellLoop
+                inc     e
+                djnz    CalCellLoop
                 dec     hl                      ; the trailing space is not
-                ld      (hl),0                  ; wanted, and 21 characters is
-                ret                             ; what the window is sized for
+                ld      (hl),0                  ; wanted
+                ret
 
 ; A = a value below 100, HL = where its two digits go, C = 1 to print
-; a leading nought as a space. Days want that, because a calendar
-; reading 07 is a calendar written by a computer at you; the year does
-; not, because 20 5 is not a year.
+; a leading nought as a space.
 CalPut2:
                 ld      b,'0'-1
 CalP2T:
@@ -450,88 +426,6 @@ CalP2Put:
                 inc     hl
                 ret
 
-; CalRow at PxRow, one column in from the window's left edge.
-CalPrint:
-                ld      a,(WinX)
-                inc     a
-                ld      c,a
-                ld      hl,CalRow
-                xor     a
-                ld      (PrintInv),a
-                jp      WinPrintClip
-
-; The cell for day A of the month on show: leaves PxRow set and
-; returns C = its byte column. The caller has already made sure the
-; day is in this month.
-CalCellAt:
-                dec     a
-                ld      b,a
-                ld      a,(CalFirst)
-                add     a,b
-                call    CalDiv7                 ; A = week, CalRem = column
-                add     a,a
-                add     a,a
-                add     a,a
-                ld      b,a
-                ld      a,(WinY)
-                add     a,WinCapH+21
-                add     a,b
-                ld      (PxRow),a
-                ld      a,(CalRem)
-                ld      b,a
-                add     a,a
-                add     a,b                     ; three columns to a cell
-                ld      b,a
-                ld      a,(WinX)
-                inc     a
-                add     a,b
-                ld      c,a
-                ret
-
-; The selected day, printed again inverted. In a one bit display
-; inversion is the only emphasis there is, so it goes to the thing the
-; keys are pointing at rather than to today: today is marked instead
-; with a rule under it, which is two bytes of screen and reads as an
-; underline rather than as a second kind of selection.
-CalSelDraw:
-                ld      a,(CalSel)
-                call    CalCellAt
-                push    bc
-                ld      a,(CalSel)
-                ld      hl,CalPair
-                ld      c,1
-                call    CalPut2
-                ld      (hl),0
-                pop     bc
-                ld      hl,CalPair
-                ld      a,1
-                ld      (PrintInv),a
-                call    WinPrintClip
-                xor     a
-                ld      (PrintInv),a
-                ret
-
-CalToday:
-                ld      a,(TodayY)
-                ld      hl,CalYear
-                cp      (hl)
-                ret     nz
-                ld      a,(TodayM)
-                ld      hl,CalMonth
-                cp      (hl)
-                ret     nz
-                ld      a,(TodayD)
-                call    CalCellAt
-                ld      a,(PxRow)
-                add     a,7                     ; the last row of the glyph,
-                                                ; so the rule touches the
-                                                ; digits rather than floating
-                call    AddrAt
-                ld      (hl),$FF
-                inc     hl
-                ld      (hl),$FF
-                ret
-
 ; A divided by seven. Returns A = the quotient, CalRem = the rest.
 CalDiv7:
                 ld      c,0
@@ -546,13 +440,11 @@ CalD7Done:
                 ld      a,c
                 ret
 
-; ------------------------------------------------------------
-;  CalKey
-;  F2's key vector. Left and right walk the months, up and down
-;  the years, and both stop at the ends of the range the day of
-;  the week walk covers rather than wrapping into arithmetic it
-;  cannot do.
-; ------------------------------------------------------------
+; The key vector. Left and right walk the days, up and down the
+; weeks, comma and full stop the months, < and > the years, ENTER
+; makes the selected day today. Returns A = 1 if the
+; window needs recomposing, 0 if the key meant nothing to it.
+; Unhandled keys do not require a full grid rebuild.
 CalKey:
                 cp      KEY_LEFT
                 jr      nz,CkyNotL
@@ -578,65 +470,158 @@ CkyNotU:
                 ld      c,1
 CkyMove:
                 call    CalMoveB
-                jr      CkyPaint
+                ld      a,1                     ; the grid changed
+                ret
 CkyNotD:
+                ld      c,0
+                cp      ','
+                jr      z,CkyMonth
+                cp      '<'
+                jr      z,CkyYear
+                inc     c
+                cp      '.'
+                jr      z,CkyMonth
+                cp      '>'
+                jr      z,CkyYear
                 cp      KEY_ENTER
-                ret     nz
-                ; The only way the machine has of being told the date, and
-                ; the clock rolls it over from here at midnight.
+                ld      a,0                     ; anything else meant nothing,
+                ret     nz                      ; and nothing is repainted
                 ld      a,(CalYear)
                 ld      (TodayY),a
                 ld      a,(CalMonth)
                 ld      (TodayM),a
                 ld      a,(CalSel)
                 ld      (TodayD),a
-CkyPaint:
-                call    PtrRestore
-                call    CalClearBody
-                call    CalDraw
-                call    WndScrollBar            ; it has no bar, so this is a
-                                                ; compare and a return, and it
-                                                ; is here so the rule is the
-                                                ; same in every application
-                call    WinGrab
-                call    PtrSaveBg
-                jp      PtrDraw
+                ld      a,1
+                ret
+CkyMonth:
+                call    CalMonthStep
+                ld      a,1
+                ret
+CkyYear:
+                call    CalYearStep
+                ld      a,1
+                ret
 
-; The grid area, blanked. A month with five weeks follows one with
-; six, and the sixth row of the old month would otherwise stay.
-CalClearBody:
-                ld      a,(WinX)
-                inc     a
-                ld      (FrX),a
-                ld      a,(WinY)
-                add     a,WinCapH+1
-                ld      (FrY),a
+; ------------------------------------------------------------
+;  CalDraw
+;  The draw vector: header, weekday letters and six week rows
+;  into the live window's buffer, the selected day on the
+;  inverted bank. Today gets no rule: there is no pixel row on
+;  the grid to put one on.
+; ------------------------------------------------------------
+CalDraw:
                 ld      a,(WinW)
-                sub     2
-                ld      (FrW),a
+                cp      CALW
+                jp      nz,CalDrawClipped
                 ld      a,(WinH)
-                sub     WinCapH+3
-                ld      (FrH),a
-                ld      hl,$0000
-                ld      (FrPat),hl
-                jp      DevFillRect
+                cp      CALH
+                jp      nz,CalDrawClipped
+                call    CalPrepare
+                xor     a
+                ld      (PrintInv),a
+                call    CalBuildHead
+                ld      hl,CalRow
+                ld      b,1
+                ld      c,1
+                call    WinPrint
+                ld      b,1                     ; APPF_FULL: the rest of the
+                ld      c,9                     ; header row and the cell
+                call    WinCell                 ; after the labels are ours
+                ld      b,CALW-2-8              ; to blank
+CdPad:
+                ld      (hl),' '
+                inc     hl
+                djnz    CdPad
+                ld      hl,CalDays
+                ld      b,2
+                ld      c,1
+                call    WinPrint
+                ld      b,2
+                ld      c,CALW-2
+                call    WinCell
+                ld      (hl),' '
+                xor     a
+                ld      (CalIx),a
+CdWeek:
+                ld      a,(CalIx)               ; each week straight into the
+                add     a,3                     ; buffer rather than through
+                ld      b,a                     ; CalRow and a copy
+                ld      c,1
+                call    WinCell
+                call    CalBuildWeekAt
+                ld      (hl),' '                ; over the terminator
+                ld      hl,CalIx
+                inc     (hl)
+                ld      a,(hl)
+                cp      6
+                jr      c,CdWeek
+CdSelection:
+                ; the selected day again, inverted
+                ld      a,(CalSel)
+                dec     a
+                ld      b,a
+                ld      a,(CalFirst)
+                add     a,b
+                call    CalDiv7                 ; A = week, CalRem = column
+                add     a,3
+                ld      b,a
+                ld      a,(CalRem)
+                ld      c,a
+                add     a,a
+                add     a,c
+                inc     a
+                ld      c,a
+                push    bc
+                ld      a,(CalSel)
+                ld      hl,CalPair
+                ld      c,1
+                call    CalPut2
+                ld      (hl),0
+                pop     bc
+                ld      hl,CalPair
+                ld      a,INVBANK
+                ld      (PrintInv),a
+                call    WinPrint
+                xor     a
+                ld      (PrintInv),a
+                ret
 
+; The home-size fast path writes weeks directly into the buffer.
+; A tiled calendar builds them in scratch RAM and uses the clipper.
+CalDrawClipped:
+                call    CalPrepare
+                xor     a
+                ld      (PrintInv),a
+                call    CalBuildHead
+                ld      hl,CalRow
+                ld      bc,$0101
+                call    WinPrint
+                ld      hl,CalDays
+                ld      bc,$0201
+                call    WinPrint
+                xor     a
+                ld      (CalIx),a
+CdcWeek:
+                call    CalBuildWeek
+                ld      hl,CalRow
+                ld      a,(CalIx)
+                add     a,3
+                ld      b,a
+                ld      c,1
+                call    WinPrint
+                ld      hl,CalIx
+                inc     (hl)
+                ld      a,(hl)
+                cp      6
+                jr      c,CdcWeek
+                jp      CdSelection
+
+; Days 0 to 31 as two characters, a leading nought shown as a space.
+CalDayTab:      defb    "   1 2 3 4 5 6 7 8 9"
+                defb    "10111213141516171819"
+                defb    "20212223242526272829"
+                defb    "3031"
 CalNames:       defb    "JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC"
-; Two letters a day, so the labels sit over the digits rather than
-; beside them. Three character cells and a space between: twenty
-; characters, which is what a week row is.
 CalDays:        defb    "MO TU WE TH FR SA SU",0
-
-TodayY:         defb    0               ; today is the machine's, not the
-TodayM:         defb    0               ; window's, the same way the time is
-TodayD:         defb    1
-
-CalLeapY:       defb    0
-CalDow:         defb    0
-CalFirst:       defb    0
-CalLen:         defb    0
-CalIx:          defb    0
-CalCol:         defb    0
-CalRem:         defb    0
-CalPair:        defb    0,0,0
-CalRow:         defs    24
+TxtCalTitle:    defb    "CALENDAR",0

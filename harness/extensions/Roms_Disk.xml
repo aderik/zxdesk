@@ -1,14 +1,14 @@
 <?xml version="1.0" ?>
 <!DOCTYPE msxconfig SYSTEM 'msxconfig2.dtd'>
 <msxconfig>
-  <!-- The DISK.ROM in msx/roms/ (Disk BASIC 2.2, a dump openMSX has no
+  <!-- The DISK.ROM in roms/ (Disk BASIC 2.2, a dump openMSX has no
        config for) as a WD2793 interface in the Philips connection
        style, which every Philips VG/NMS drive uses. Whether the style
        is right is what the disk probe measures. -->
   <info>
     <manufacturer>MSX Desk</manufacturer>
     <code>Roms Disk</code>
-    <description>Disk interface on the DISK.ROM in msx/roms.</description>
+    <description>Disk interface on the DISK.ROM in roms.</description>
     <type>Disk drive</type>
   </info>
   <devices>
