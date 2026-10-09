@@ -722,7 +722,7 @@ def window_checks(syms, fails, vram0):
 
     # SHIFT+RIGHT moves the selection, ENTER makes it today
     keys = [(5, "key_down 6 0x01; key_down 8 0x80"), (3, "key_up 8 0x80; key_up 6 0x01"),
-            (5, "key_down 7 0x40"), (3, "key_up 7 0x40"), (10, "")]
+            (5, "key_down 7 0x80"), (3, "key_up 7 0x80"), (10, "")]
     r = Run(syms, open_cal + keys, "win-keys")
     want = compose(nt0, [cal_win(4, 4, sel=2)])
     today = tuple(r.ram[syms["TodayY"] - WORK:syms["TodayY"] - WORK + 3])
@@ -815,7 +815,7 @@ def app_checks(syms, fails, vram0):
     file_open = press_at(88, 3) + press_at(96, 19)      # FILE, OPEN on row 2
     file_save = press_at(88, 3) + press_at(96, 27)      # FILE, SAVE on row 3
     view_clock = press_at(140, 3) + press_at(148, 11)   # VIEW, CLOCK on row 1
-    H, I, X, ENTER, BS = (3, 0x20), (3, 0x40), (5, 0x20), (7, 0x40), (7, 0x20)
+    H, I, X, ENTER, BS = (3, 0x20), (3, 0x40), (5, 0x20), (7, 0x80), (7, 0x20)
 
     # type HI, ENTER, X, then backspace over the X
     r = Run(syms, file_new + tap(*H) + tap(*I) + tap(*ENTER) + tap(*X) + tap(*BS) + [(10, "")], "note-type")
@@ -849,7 +849,7 @@ def app_checks(syms, fails, vram0):
           f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     # save, type more, open: the file comes back over the document
-    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + tap(7, 64) + [(10, "")], "note-file")
+    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + tap(7, 128) + [(10, "")], "note-file")
     buf = r.bytes("NoteBuf", 256)
     rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
     ramdir = r.bytes("RamDir", 16)
@@ -896,7 +896,7 @@ def open_ui_checks(syms, fails):
     def menu(y):
         return click(88, 3) + click(96, y)
     document = b"H I".ljust(14) + b"\0\0" + b"X".ljust(14) + b"\0\0" + (b" "*14 + b"\0\0")*14
-    typed = tap(3, 32) + tap(8, 1) + tap(3, 64) + tap(7, 64) + tap(5, 32)
+    typed = tap(3, 32) + tap(8, 1) + tap(3, 64) + tap(7, 128) + tap(5, 32)
     base = [(5, "plug joyporta mouse")] + menu(11) + typed + menu(27)
     for closed in (False, True):
         edited = base + tap(5, 32)
@@ -908,7 +908,7 @@ def open_ui_checks(syms, fails):
         for action in ("enter", "mouse"):
             name = f"open-ui-{'closed' if closed else 'existing'}-{action}"
             selection = click((x+1)*8+2, (y+2)*8+2)
-            activate = tap(7, 64) if action == "enter" else click((x+2)*8+2, (y+10)*8+2)
+            activate = tap(7, 128) if action == "enter" else click((x+2)*8+2, (y+10)*8+2)
             r = Run(syms, opened + selection + activate + [(10, "")], name, files={})
             stored = read_disk_image(DISK).get("NOTE") if EXT else r.bytes("RamHeap", 256)
             check(fails, name, r.peek("WndCount") == 1 and r.bytes("NoteBuf", 256) == document
@@ -929,7 +929,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
         return [(5, f"key_down {row} {mask}" + ("; key_down 6 1" if shift else "")),
                 (3, f"key_up {row} {mask}" + ("; key_up 6 1" if shift else ""))]
     open_cmd = press(140, 3) + press(148, 51)
-    enter, down, tab = tap(7, 64), tap(8, 64, True), tap(7, 8)
+    enter, down, tab = tap(7, 128), tap(8, 64, True), tap(7, 8)
     copy, delete, yes, no = tap(3, 1), tap(3, 2), tap(5, 64), tap(4, 8)
     def doc(name):
         return name.encode().ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
@@ -1204,7 +1204,7 @@ def sound_checks(syms, fails):
                   (5, f"debug write memory {syms['PtrY']} 20"),
                   (5, "key_down 6 2"), (5, "key_up 6 2")]
         steps = opened + [(5, "plug joyporta mouse"), (5, setup),
-                          (3, "key_down 7 64"), (3, "key_up 7 64")]
+                          (3, "key_down 7 128"), (3, "key_up 7 128")]
         r = Run(syms, steps, "sound-" + name)
         before = r.ram[records-WORK:records-WORK+16]
         after = r.ram[records-WORK+16:records-WORK+32]
@@ -1249,7 +1249,7 @@ def sound_checks(syms, fails):
                  f"debug write memory {syms['TapeLen']} 0; debug write memory {syms['TapeLen']+1} 0; "
                  f"debug set_bp {syms['TapeBiosJump']} {{}} {{reg PC {stub}}}; "
                  f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
-        r = Run(syms, opened + [(5, setup), (3, "key_down 7 64"), (3, "key_up 7 64")],
+        r = Run(syms, opened + [(5, setup), (3, "key_down 7 128"), (3, "key_up 7 128")],
                 f"sound-transfer-{target}-{failure}")
         check(fails, f"sound-transfer-{target}-{failure}",
               r.ram[busyrec-WORK] == 1 and r.peek("TapeBusy") == 0
@@ -1282,12 +1282,12 @@ def sound_checks(syms, fails):
     alertcode = bytes((0x21, message & 255, message >> 8, 0x11, 0, 0)) + call("DlgAlert") + bytes((0xaf, 0xc9))
     alertsetup = (observe + f"; debug write_block memory {reader} [binary format H* {alertcode.hex()}]; "
                   f"debug set_bp {syms['SetKey']} {{}} {{reg PC {reader}}}")
-    alertsteps = opened + [(5, alertsetup), (3, "key_down 7 64"), (3, "key_up 7 64")]
+    alertsteps = opened + [(5, alertsetup), (3, "key_down 7 128"), (3, "key_up 7 128")]
     alert = Run(syms, alertsteps, "sound-alert-settings")
     check(fails, "sound-alert-settings", alert.peek("DgOpenFlag") == 1
           and alert.ram[records-WORK+1] == 1 and alert.peek("Dropped", 2) == 0,
           "alert calls BEEP with SETTINGS open")
-    answer = Run(syms, alertsteps + [(3, "key_down 7 64"), (3, "key_up 7 64"), (5, "")],
+    answer = Run(syms, alertsteps + [(3, "key_down 7 128"), (3, "key_up 7 128"), (5, "")],
                  "sound-dialog-click")
     check(fails, "sound-dialog-click", answer.peek("DgOpenFlag") == 0
           and answer.ram[records-WORK] == 1 and answer.peek("Dropped", 2) == 0,
@@ -1404,7 +1404,7 @@ def settings_checks(syms, fails):
 
     verify(opened, "settings-values", 1, 0, backend, 0)
     for control in ("mouse", "key"):
-        keys = tap(7, 8) * 3 + tap(7, 64)
+        keys = tap(7, 8) * 3 + tap(7, 128)
         if control == "mouse":
             keys = [(5, "plug joyporta mouse"),
                     (5, f"debug write memory {syms['PtrX']} 180; debug write memory {syms['PtrY']} 82"),
@@ -1427,18 +1427,18 @@ def settings_checks(syms, fails):
         r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 7)
     # Keyboard increment, wrap, decrement, focus in both directions, SAVE and DONE.
     steps = list(opened)
-    cases = [(tap(7, 64), 2, 0, backend, 0),
+    cases = [(tap(7, 128), 2, 0, backend, 0),
              (tap(8, 128, True), 0, 0, backend, 0),
              (tap(8, 16, True), 2, 0, backend, 0),
              (tap(8, 64, True), 2, 0, backend, 1),
-             (tap(7, 64), 2, 1, backend, 1),
+             (tap(7, 128), 2, 1, backend, 1),
              (tap(8, 16, True), 2, 0, backend, 1),
              (tap(7, 8), 2, 0, backend, 2),
-             (tap(7, 64), 2, 0, 1 if EXT else backend, 2),
+             (tap(7, 128), 2, 0, 1 if EXT else backend, 2),
              (tap(8, 32, True), 2, 0, 1, 1),
-             (tap(7, 64), 2, 1, 1, 1),
+             (tap(7, 128), 2, 1, 1, 1),
              (tap(7, 8) * 5, 2, 1, 1, 6),
-             (tap(7, 64), 2, 1, 1, 6)]
+             (tap(7, 128), 2, 1, 1, 6)]
     for n, (keys, speed, inv, device, focus) in enumerate(cases):
         steps += keys
         r = verify(steps, f"settings-key-{n}", speed, inv, device, focus)
@@ -1453,7 +1453,7 @@ def settings_checks(syms, fails):
         for row, values in enumerate(((2, 0, backend), (1, 1, backend), (1, 0, 1))):
             rear_focus = (row + 1) % 3
             two = [(5, "plug joyporta mouse")] + opened + tap(7, 8) * rear_focus + opened
-            two += tap(7, 8) * row + tap(7, 64) if control == "key" else click(row, 8, 7)
+            two += tap(7, 8) * row + tap(7, 128) if control == "key" else click(row, 8, 7)
             name = f"settings-two-{control}-{row}"
             r = Run(syms, two + [(10, "")], name)
             expected = bytes((0x4d, 4, *values, 1, 1, 1))
@@ -1470,15 +1470,15 @@ def settings_checks(syms, fails):
                       f"crc32 {zlib.crc32(actual):08x}, expected {zlib.crc32(want):08x}; focus {r.ram[state]}")
             remaining = two + tap(7, 4)  # ESC must expose the updated rear buffer.
             verify(remaining, name + "-close", *values, rear_focus)
-            remaining += tap(7, 8) * (6 - rear_focus) + tap(7, 64)
+            remaining += tap(7, 8) * (6 - rear_focus) + tap(7, 128)
             r = verify(remaining, name + "-save", *values, 6)
             check(fails, name + "-file", file_bytes(r) == expected,
                   f"SAVE from the remaining window writes {expected.hex()}")
 
     # Change after saving, then DONE: the stored bytes must stay identical.
-    steps += tap(8, 32, True) * 5 + tap(7, 64)
+    steps += tap(8, 32, True) * 5 + tap(7, 128)
     verify(steps, "settings-unsaved", 2, 0, 1, 1)
-    steps += tap(7, 8) * 6 + tap(7, 64)
+    steps += tap(7, 8) * 6 + tap(7, 128)
     r = verify(steps, "settings-done", 2, 0, 1, 7, True)
     check(fails, "settings-done-file", file_bytes(r) == saved, "DONE preserves saved file")
     # Invoke real SetLoad/SetApply at the next SetKey call after clearing RAM.
@@ -1488,23 +1488,23 @@ def settings_checks(syms, fails):
                   0xf5, 0xd1, 0x7b, 0x32, (scratch + 30) & 255, (scratch + 30) >> 8,
                   0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
     steps += opened + [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
-                                f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 64)
+                                f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 128)
     verify(steps, "settings-ui-reload", 2, 1, 1, 0)
     # SAVE with sound OFF, clear all eight bytes, then load through real storage.
-    off = opened + tap(7, 8) * 3 + tap(7, 64) + tap(7, 8) * 3 + tap(7, 64)
+    off = opened + tap(7, 8) * 3 + tap(7, 128) + tap(7, 8) * 3 + tap(7, 128)
     r = verify(off, "settings-sound-save", 1, 0, backend, 6, sound=0)
     check(fails, "settings-sound-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 0, 1, 1)),
           "SAVE persists SOUND OFF")
     off += [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
-                       f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 64)
+                       f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 128)
     verify(off, "settings-sound-reload", 1, 0, backend, 6, sound=0)
     for control in ("mouse", "key"):
-        toggle = click(4) if control == "mouse" else tap(7, 8) * 4 + tap(7, 64)
+        toggle = click(4) if control == "mouse" else tap(7, 8) * 4 + tap(7, 128)
         base = [(5, "plug joyporta mouse")] + opened + toggle
         verify(base, "settings-keyptr-" + control, 1, 0, backend, 4, keyptr=0)
         again = click(4) if control == "mouse" else tap(8, 16, True)
         verify(base + again, "settings-keyptr-wrap-" + control, 1, 0, backend, 4)
-    off = opened + tap(7, 8) * 4 + tap(7, 64) + tap(7, 8) * 2 + tap(7, 64)
+    off = opened + tap(7, 8) * 4 + tap(7, 128) + tap(7, 8) * 2 + tap(7, 128)
     r = verify(off, "settings-keyptr-save", 1, 0, backend, 6, keyptr=0)
     check(fails, "settings-keyptr-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 1, 0, 1)),
           "SAVE persists KEY PTR OFF")
@@ -1521,23 +1521,23 @@ def settings_checks(syms, fails):
         if control == "key":
             verify(base + tap(8, 16, True) * 2, "lattice-key-left-wrap",
                    1, 0, backend, 5, lattice=2)
-    lattice_save = opened + tap(7, 8) * 5 + tap(7, 64) + tap(7, 8) + tap(7, 64)
+    lattice_save = opened + tap(7, 8) * 5 + tap(7, 128) + tap(7, 8) + tap(7, 128)
     r = verify(lattice_save, "lattice-save", 1, 0, backend, 6, lattice=2)
     check(fails, "lattice-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 1, 1, 2)),
           "SAVE persists GRID")
-    verify(lattice_save + [(5, reload)] + tap(7, 64), "lattice-reload",
+    verify(lattice_save + [(5, reload)] + tap(7, 128), "lattice-reload",
            1, 0, backend, 6, lattice=2)
     if not EXT:
         legacy = bytes((0x4d, 3, 2, 1, 1, 0, 0))
         migrate = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 7; " + reload)
-        r = verify(lattice_save + [(5, migrate)] + tap(7, 64), "lattice-v3-migrate",
+        r = verify(lattice_save + [(5, migrate)] + tap(7, 128), "lattice-v3-migrate",
                    2, 1, 1, 6, sound=0, keyptr=0)
         check(fails, "lattice-v3-carry", r.ram[scratch + 30 - WORK] & 1 == 0,
               "v3 retains fields, defaults lattice to DOTS, carry clear")
     for control in ("key", "mouse"):
         two = [(5, "plug joyporta mouse")] + opened + opened
-        two += tap(7, 8) * 5 + tap(7, 64) if control == "key" else click(5, 8, 7)
+        two += tap(7, 8) * 5 + tap(7, 128) if control == "key" else click(5, 8, 7)
         r = Run(syms, two + [(10, "")], "lattice-two-" + control)
         windows = [(6, 6, 24, 10, b"SETTINGS", lines_for(1, 0, backend, 0, lattice=2)),
                    (8, 7, 24, 10, b"SETTINGS", lines_for(1, 0, backend, 5, lattice=2))]
@@ -1552,12 +1552,12 @@ def settings_checks(syms, fails):
                   "cached window and its independent focus preserved")
         verify(two + tap(7, 4), "lattice-two-close-" + control, 1, 0, backend, 0, lattice=2)
 
-    verify(off + [(5, reload)] + tap(7, 64), "settings-keyptr-reload", 1, 0, backend, 6, keyptr=0)
+    verify(off + [(5, reload)] + tap(7, 128), "settings-keyptr-reload", 1, 0, backend, 6, keyptr=0)
     if not EXT:
         legacy = bytes((0x4d, 2, 2, 1, 1, 0))
         migrate = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 6; " + reload)
-        r = verify(off + [(5, migrate)] + tap(7, 64), "settings-v2-migrate", 2, 1, 1, 6, sound=0)
+        r = verify(off + [(5, migrate)] + tap(7, 128), "settings-v2-migrate", 2, 1, 1, 6, sound=0)
         check(fails, "settings-v2-carry", r.ram[scratch + 30 - WORK] & 1 == 0,
               "previous version loads without carry")
     if not EXT:
@@ -1568,14 +1568,14 @@ def settings_checks(syms, fails):
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 5; " +
                    clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                    f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
-        verify(opened + tap(7, 8) * 6 + tap(7, 64) + [(5, migrate)] + tap(7, 64),
+        verify(opened + tap(7, 8) * 6 + tap(7, 128) + [(5, migrate)] + tap(7, 128),
                "settings-v1-migrate", 2, 1, 1, 6)
     if not EXT:
         code = bytes([0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
         inject = (f"debug write memory {syms['SetDevice']} 5; debug write memory {syms['SetBackend']} 5; "
                   f"debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                   f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
-        verify(opened + [(5, inject)] + tap(7, 64), "settings-no-drive-fallback", 1, 0, 1, 0)
+        verify(opened + [(5, inject)] + tap(7, 128), "settings-no-drive-fallback", 1, 0, 1, 0)
     # 0: the pointer follows the hand, host up is screen up; 1: upside down
     for inv, want in ((0, (120, 75)), (1, (120, 105))):
         reset = (f"debug write memory {syms['PtrX']} 120; debug write memory {syms['PtrY']} 90; "
@@ -1738,7 +1738,7 @@ def note_load_checks(syms, fails):
         return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
     new = press(88, 3) + press(96, 11)
     file_open = press(88, 3) + press(96, 19)
-    enter, esc = tap(7, 64), tap(7, 4)
+    enter, esc = tap(7, 128), tap(7, 4)
     document = b"H".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
     loaded = b"LOADED".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
     directory = b"OTHER" + bytes(8) + bytes([0, 1, 1]) + bytes(48)
@@ -1823,7 +1823,7 @@ def dialog_checks(syms, fails):
     new = press(88, 3) + press(96, 11)
     typed = new + tap(3, 32)
     close = press(66, 50)
-    enter, tab, esc = tap(7, 64), tap(7, 8), tap(7, 4)
+    enter, tab, esc = tap(7, 128), tap(7, 8), tap(7, 4)
     base = compose(expected_nt(), [note_win(8, 6, [b"H"] + [b""] * 15, 1, 0)])
     def panel(focus=0, alert=False):
         nt = bytearray(base)
@@ -2072,7 +2072,7 @@ def note_width_checks(syms, fails):
     check_view('note-width-insert', at_start + tap(5, 32), 18, 10, 1,
                note_width_document([b'X'+text]), [b'X'+text]+[b'']*14)
     right = [(5, 'key_down 6 1')] + tap(8, 128)*10 + [(5, 'key_up 6 1')]
-    split = at_start + right + tap(7, 64)
+    split = at_start + right + tap(7, 128)
     check_view('note-width-split', split, 18, 10, 0,
                note_width_document([text[:10], text[10:]]),
                [text[:10], text[10:]]+[b'']*14, y=1)
@@ -2083,7 +2083,7 @@ def note_width_checks(syms, fails):
                note_width_document([b'H'*13]), [b'H'*13]+[b'']*15)
     # Each direction is checked separately: a wide line is one logical
     # row, even when the cursor is in its second physical chunk.
-    up = typed + tap(7, 64) + [(5, 'key_down 6 1')] + tap(8, 32) + [(5, 'key_up 6 1')]
+    up = typed + tap(7, 128) + [(5, 'key_down 6 1')] + tap(8, 32) + [(5, 'key_up 6 1')]
     check_view('note-width-up', up, 18, 10, 0)
     down = at_start + [(5, 'key_down 6 1')] + tap(8, 64) + [(5, 'key_up 6 1')]
     check_view('note-width-down', down, 18, 10, 0, y=1)
@@ -2094,15 +2094,15 @@ def note_width_checks(syms, fails):
     # All 224 text slots remain usable; overflow and ENTER refuse without
     # replacing the last character or dropping a later logical line.
     full = b'H'*14 + b'I'*210
-    check_view('note-width-full', base + grow + tap(3, 64)*210 + tap(5, 32) + tap(7, 64),
+    check_view('note-width-full', base + grow + tap(3, 64)*210 + tap(5, 32) + tap(7, 128),
                18, 10, 224, note_width_document([full]), [full])
     # Extending the first line must shift later lines, not overwrite them.
-    later = base + tap(7, 64) + tap(5, 32)
+    later = base + tap(7, 128) + tap(5, 32)
     back_up = [(5, 'key_down 6 1')] + tap(8, 32) + tap(8, 128)*13 + [(5, 'key_up 6 1')]
     check_view('note-width-preserve-next', later + back_up + grow + tap(3, 64)*6,
                18, 10, 20, note_width_document([text, b'X']), [text, b'X']+[b'']*13)
     bottom = [(5, 'key_down 6 1')] + tap(8, 64)*15 + [(5, 'key_up 6 1')]
-    r = Run(syms, base + bottom + tap(7, 64) + [(10, '')], 'note-width-last-blank')
+    r = Run(syms, base + bottom + tap(7, 128) + [(10, '')], 'note-width-last-blank')
     check(fails, 'note-width-last-blank', r.bytes('NoteBuf', 256) == note_width_document([b'H'*14])
           and (r.peek('NoteCX'), r.peek('NoteCY')) == (14, 15)
           and r.bytes('NoteName', 5) == b'NOTE\0',
@@ -2111,7 +2111,7 @@ def note_width_checks(syms, fails):
         steps = typed + menu(27) + tap(5, 32)
         if closed:
             steps += click(66, 50) + click(60, 98)
-        steps += menu(19) + tap(7, 64)
+        steps += menu(19) + tap(7, 128)
         name = 'note-width-file-' + ('closed' if closed else 'existing')
         r = Run(syms, steps + [(10, '')], name, files={})
         stored = read_disk_image(DISK).get('NOTE') if EXT else r.bytes('RamHeap', 256)
