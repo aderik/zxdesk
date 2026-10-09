@@ -164,6 +164,12 @@ _ram            defl    _ram+size
                 var     MenuPick, 1     ; last item chosen, $FF for none
                 var     MnLastMenu, 1
                 var     MnSave, MNSAVESZ
+                var     DgMode, 1
+                var     DgCursor, 1
+                var     DgLength, 1
+                var     DgChar, 1
+                var     DgValidate, 2
+                var     NoteClosePending, 1
                 var     DgOpenFlag, 1
                 var     DgFocus, 1
                 var     DgCount, 1
@@ -634,9 +640,14 @@ ReadInput:
                 ld      a,$FF
                 ld      (Buttons),a
                 call    ReadMouse
+                ld      a,(DgOpenFlag)
+                or      a
+                jr      nz,RiNoPointer
                 ld      a,(SetKeyPtr)
                 or      a
                 jr      nz,RiKeys
+RiNoPointer:
+                xor     a
                 ld      (HeldX),a
                 ld      (HeldY),a
                 ld      (HoldCnt),a

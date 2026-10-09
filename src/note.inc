@@ -789,13 +789,21 @@ NkNone:
 ;  through the storage layer, whichever backend is selected.
 ; ------------------------------------------------------------
 NoteSaveAs:
-                call    NoteSetName
+                push    hl
+                call    NoteSelectBackend
+                pop     hl
+                push    hl
+                call    NoteSaveNamed
+                pop     hl
+                call    nc,NoteSetName
+                jp      NoteRestoreBackend
 NoteSave:
                 call    NoteSelectBackend
                 call    NoteSaveFile
                 jp      NoteRestoreBackend
 NoteSaveFile:
                 ld      hl,NoteName
+NoteSaveNamed:
                 ld      b,FA_OVERWRITE
                 call    StOpen
                 ret     c
@@ -967,6 +975,13 @@ NoteCloseAnswer:
                 ret     z
                 cp      2
                 jr      nz,NcaGo
+                ld      a,(NoteSaved)
+                or      a
+                jr      nz,NcaSave
+                ld      a,1
+                ld      (NoteClosePending),a
+                jp      NoteAskName
+NcaSave:
                 call    NoteSave
                 jr      c,NoteSaveAlert
 NcaGo:
@@ -974,6 +989,8 @@ NcaGo:
                 ld      (WndForce),a
                 jp      WndClose
 NoteSaveAlert:
+                ld      a,1
+                ld      (NoteResult),a
                 ld      hl,TxtNoteNoSave
                 ld      de,0
                 jp      DlgAlert
@@ -1012,6 +1029,12 @@ NmnBit:
 ; Z if the front window is a notepad, which is the live one after
 ; the menu's press.
 NoteIsFront:
+                ld      a,(WndCount)
+                or      a
+                jr      nz,NifApp
+                inc     a                       ; NZ: no live window
+                ret
+NifApp:
                 ld      hl,(WinApp)
                 ld      de,AppNote
                 or      a
@@ -1021,6 +1044,9 @@ NoteIsFront:
 NoteMenuSave:
                 call    NoteIsFront
                 ret     nz
+                ld      a,(NoteSaved)
+                or      a
+                jp      z,NoteMenuSaveAs
                 call    NoteSave
                 ld      a,0
                 jr      nc,NmsOk
@@ -1160,4 +1186,128 @@ NoteScrollTo:
                 ld      a,b
 NstSet:
                 ld      (NoteTop),a
+                ret
+
+; The modal callback keeps the live front document selected throughout.
+NoteMenuSaveAs:
+                call    NoteIsFront
+                ret     nz
+                xor     a
+                ld      (NoteClosePending),a
+NoteAskName:
+                ld      hl,TxtSaveAs
+                ld      de,NoteNameValid
+                ld      bc,NoteNameAnswer
+                jp      DlgInput
+TxtSaveAs:      defb    "SAVE AS",0
+NoteNameValid:
+                ; Common safe filename characters; disk additionally limits
+                ; the two components to 8 and 3. A trailing dot is a valid
+                ; editing prefix, but is rejected on submission below.
+                ld      b,0
+                ld      c,0
+NnvLoop:
+                ld      a,(hl)
+                or      a
+                ret     z
+                cp      '.'
+                jr      z,NnvDot
+                cp      '0'
+                jr      c,NnvPunct
+                cp      '9'+1
+                jr      c,NnvChar
+                cp      'A'
+                jr      c,NnvPunct
+                cp      'Z'+1
+                jr      c,NnvChar
+NnvPunct:
+                cp      '_'
+                jr      z,NnvChar
+                cp      '-'
+                jr      nz,NnvBad
+NnvChar:
+                inc     b
+                ld      a,(NoteBackend)
+                cp      ST_DISK
+                jr      nz,NnvNext
+                ld      a,c
+                or      a
+                ld      a,b
+                jr      nz,NnvExt
+                cp      9
+                jr      nc,NnvBad
+                jr      NnvNext
+NnvExt:
+                cp      4
+                jr      nc,NnvBad
+NnvNext:
+                inc     hl
+                jr      NnvLoop
+NnvDot:
+                ld      a,b
+                or      a
+                jr      z,NnvBad
+                ld      a,c
+                or      a
+                jr      nz,NnvBad
+                inc     c
+                ld      b,0
+                jr      NnvNext
+NnvBad:
+                scf
+                ret
+NoteNameAnswer:
+                or      a
+                ret     z
+                ld      a,(DgLength)
+                ld      e,a
+                ld      d,0
+                ld      hl,DgTextBuf-1
+                add     hl,de
+                ld      a,(hl)
+                cp      '.'
+                jr      nz,NnaCheck
+                ld      hl,TxtSaveAs
+                ld      de,0
+                ld      a,4
+                jp      DgOpen
+NnaCheck:
+                call    NoteSelectBackend
+                ld      a,(StCapability)
+                and     STCAP_DIR
+                jr      z,NnaWrite
+                ld      hl,DgTextBuf
+                ld      b,FA_READ
+                call    StOpen
+                jr      c,NnaMissing
+                call    StClose
+                jr      c,NnaError
+                call    NoteRestoreBackend
+                ld      hl,DgTextBuf
+                ld      de,0
+                ld      bc,NoteOverwriteAnswer
+                jp      DlgOverwrite
+NnaMissing:
+                cp      STERR_NOTFOUND
+                jr      z,NnaWrite
+NnaError:
+                call    NoteRestoreBackend
+                jp      NoteSaveAlert
+NnaWrite:
+                call    NoteRestoreBackend
+                ld      a,1
+NoteOverwriteAnswer:
+                or      a
+                ret     z
+                ld      hl,DgTextBuf
+                call    NoteSaveAs
+                jp      c,NoteSaveAlert
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsAddLive
+                xor     a
+                ld      (NoteResult),a
+                ld      a,(NoteClosePending)
+                or      a
+                jp      nz,NcaGo
                 ret

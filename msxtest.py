@@ -619,7 +619,7 @@ def window_buffer(w, h, title, front, lines):
         for i, ch in enumerate(text[:w - 1 - col]):
             buf[row * w + col + i] = ch | (0x80 if inv else 0)
     total = next((col for row, col, _, _ in lines if row == -2), 16)
-    if title == b"NOTEPAD" and h - 2 < total:
+    if (title == b"NOTEPAD" or any(row == -1 for row, _, _, _ in lines)) and h - 2 < total:
         top = next((col for row, col, _, _ in lines if row == -1), 0)
         thumb = 2 + top * max(0, h - 5) // (total - (h - 2))
         for row in range(1, h - 1):
@@ -656,13 +656,13 @@ def cal_win(x, y, sel=1, year=1980, month=1):
     return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(year, month, sel))
 
 
-KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
+KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
              b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT",
              b"CALENDAR:", b", . MONTH", b"< > YEAR"]
 
 
 def keys_win(x, y):
-    return (x, y, 15, 18, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+    return (x, y, 15, 19, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
 
 
 def about_win(x, y):
@@ -767,12 +767,12 @@ def window_checks(syms, fails, vram0):
 NOTE_W, NOTE_H, CLK_W, CLK_H = 16, 3 + 6, 8, 3
 
 
-def note_win(x, y, rows, cx, cy, top=0):
+def note_win(x, y, rows, cx, cy, top=0, title=b"NOTEPAD"):
     lines = [(1 + i, 1, (rows[top + i] if top + i < len(rows) else b"").ljust(14), False) for i in range(7)]
     # Nonpainting row carries the viewport origin for the frame oracle.
     lines.append((-1, top, b"", False))
     lines.append((1 + cy - top, 1 + cx, bytes([rows[cy][cx] if cx < len(rows[cy]) else 0x20]), True))
-    return (x, y, NOTE_W, NOTE_H, b"NOTEPAD", lines)
+    return (x, y, NOTE_W, NOTE_H, title, lines)
 
 
 def clock_win(x, y, h, m, field=0):
@@ -849,11 +849,11 @@ def app_checks(syms, fails, vram0):
           f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     # save, type more, open: the file comes back over the document
-    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + tap(*X) + tap(*X) + file_open + tap(7, 128) + [(10, "")], "note-file")
+    r = Run(syms, file_new + tap(*H) + tap(8, 0x01) + tap(*I) + file_save + input_note_name() + tap(*X) + tap(*X) + file_open + tap(7, 128) + [(10, "")], "note-file")
     buf = r.bytes("NoteBuf", 256)
     rows = [buf[i * 16:i * 16 + 14] for i in range(16)]
     ramdir = r.bytes("RamDir", 16)
-    want = compose(nt0, [note_win(8, 6, rows, 0, 0)])
+    want = compose(nt0, [note_win(8, 6, rows, 0, 0, title=b"NOTE")])
     if EXT:
         files = read_disk_image(DISK)
         stored = "NOTE" in files and len(files["NOTE"]) == 256 and files["NOTE"][:16] == buf[:16]
@@ -903,7 +903,7 @@ def delete_checks(syms, fails):
                               f"debug write_block memory {syms['RamHeap']} [binary format H* {other.hex()}]")]
     def run(steps, name):
         return Run(syms, seed + steps + [(15, "")], name, files={"OTHER": other})
-    base = menu(11) + tap(3, 32) + menu(27)
+    base = menu(11) + tap(3, 32) + menu(27) + input_note_name()
     before = run(base, "del-before")
     original = open(DISK, "rb").read() if EXT else before.bytes("RamDir", 64)
     r = run(base + menu(51), "del-confirm")
@@ -929,7 +929,7 @@ def delete_checks(syms, fails):
               and r.peek("NoteSaved") == cancelled and r.peek("DgOpenFlag") == 0,
               f"directory crc32 {zlib.crc32(actual):08x}; document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}; "
               f"modified {r.peek('NoteModified')}, saved {r.peek('NoteSaved')}")
-    for prefix, suffix in [([], ""), (menu(11), "-new"), (menu(11)+menu(27)+press(140,3)+press(148,11), "-clock")]:
+    for prefix, suffix in [([], ""), (menu(11), "-new"), (menu(11)+menu(27)+input_note_name()+press(140,3)+press(148,11), "-clock")]:
         browse = run(prefix + menu(19), "del-browse"+suffix)
         r = run(prefix + menu(51), "del-picker"+suffix)
         check(fails, "del-picker"+suffix, r.nt() == browse.nt() and r.peek("CmdBrowse") == 1,
@@ -942,9 +942,7 @@ def delete_checks(syms, fails):
           and (open(DISK,"rb").read() == original if EXT else r.bytes("RamDir",64) == original),
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf',256)):08x}; saved flag retained")
     # Long 8.3 names use both existing message lines, within the save-under.
-    longname = b"LONGNAME.TXT"
-    rename = [(5, f"debug write_block memory {syms['NoteName']} [binary format H* {(longname+bytes(1)).hex()}]")]
-    longbase = menu(11) + tap(3,32) + rename + menu(27)
+    longbase = menu(11) + tap(3,32) + menu(27) + input_note_name("LONGNAME.TXT")
     before = run(longbase, "del-long-before")
     r = run(longbase + menu(51) + enter, "del-long-cancel")
     check(fails, "del-long-cancel", r.nt() == before.nt() and r.peek("NoteSaved") == 1,
@@ -968,6 +966,12 @@ def delete_checks(syms, fails):
               f"nametable crc32 {zlib.crc32(r.nt()):08x}; directory unchanged")
 
 
+def input_note_name(value="NOTE"):
+    keys = [(2, 8) if c == "." else ((ord(c)-65+22)//8, 1 << ((ord(c)-65+22)%8)) for c in value]
+    return sum(([(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+                for row, mask in keys + [(7, 128)]), [])
+
+
 def open_ui_checks(syms, fails):
     """Own NOTE, typed/saved through UI; no directory or document fixtures."""
     def click(x, y):
@@ -981,7 +985,7 @@ def open_ui_checks(syms, fails):
         return click(88, 3) + click(96, y)
     document = b"H I".ljust(14) + b"\0\0" + b"X".ljust(14) + b"\0\0" + (b" "*14 + b"\0\0")*14
     typed = tap(3, 32) + tap(8, 1) + tap(3, 64) + tap(7, 128) + tap(5, 32)
-    base = [(5, "plug joyporta mouse")] + menu(11) + typed + menu(27)
+    base = [(5, "plug joyporta mouse")] + menu(11) + typed + menu(27) + input_note_name()
     for closed in (False, True):
         edited = base + tap(5, 32)
         if closed:
@@ -1106,7 +1110,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     prefix = new + tap(3, 32) + new + tap(3, 64)
     r = pick(down + enter, "browse-load", prefix)
     screen(r, "browse-load", [note_win(8, 6, [b"H"] + [b""]*15, 1, 0),
-                              note_win(10, 7, [b"BETA"] + [b""]*15, 0, 0)])
+                              note_win(10, 7, [b"BETA"] + [b""]*15, 0, 0, title=b"BETA")])
     check(fails, "browse-load-bytes", r.peek("WndCount") == 2
           and r.bytes("NoteBuf", 256) == fixtures["BETA"] and backend(r)
           and r.bytes("NoteName", 5) == b"BETA\0"
@@ -1173,7 +1177,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
           and r.bytes("NoteName", 5) == b"BETA\0" and backend(r),
           f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 5)!r}, backend {r.peek('StBackend')}")
     rows = [b"BETA"] + [b""] * 15
-    screen(r, "cmd-note-screen", [cmdwin(left, right, selection=1), note_win(10, 7, rows, 0, 0)])
+    screen(r, "cmd-note-screen", [cmdwin(left, right, selection=1), note_win(10, 7, rows, 0, 0, title=b"BETA")])
     r = run(down + open_cmd + press(20, 35), "cmd-instance")
     # The second window closes; the first keeps its own selection/cache.
     check(fails, "cmd-instance", r.peek("WndCount") == 1 and r.peek("CmdSel0") == 1,
@@ -1886,7 +1890,8 @@ def note_load_checks(syms, fails):
             clean = [(5, "debug remove_bp $faultbp; debug remove_bp $closebp; debug remove_bp $resultbp")]
             r = Run(syms, steps + esc + clean + action + [(15, "")],
                     f"note-load-{route}-{fault}-retry", files={})
-            want = compose(expected_nt(), [note_win(8, 6, [b"LOADED"] + [b""] * 15, 0, 0)])
+            want = compose(expected_nt(), [note_win(8, 6, [b"LOADED"] + [b""] * 15, 0, 0,
+                                                       title=b"NOTE" if route == "menu" else b"OTHER")])
             check(fails, f"note-load-{route}-{fault}-retry",
                   r.bytes('NoteBuf', 256) == loaded and r.peek('NoteModified') == 0
                   and r.bytes('NoteName', 5 if route == 'menu' else 6) ==
@@ -1946,7 +1951,7 @@ def dialog_checks(syms, fails):
               and (read_disk_image(DISK) == {} if EXT else r.bytes('RamDir', 64)[15::16] == bytes(4)),
               'all window allocations recovered; no file written')
     for suffix, answer in [('mouse', press(60, 106)), ('key', tab + tab + enter)]:
-        r = run(typed + close + answer, 'dialog-save-' + suffix, expected_nt(), 0, files={})
+        r = run(typed + close + answer + input_note_name(), 'dialog-save-' + suffix, expected_nt(), 0, files={})
         stored = (read_disk_image(DISK).get('NOTE') == document if EXT else
                   r.bytes('RamDir', 16) == b'NOTE' + bytes(9) + bytes([0, 1, 1])
                   and r.bytes('RamHeap', 256) == document)
@@ -1957,13 +1962,13 @@ def dialog_checks(syms, fails):
         scratch = syms['RamHeap'] + 768
         fault = [(5, f"debug write_block memory {scratch} [binary format H* 37c9]; "
                      f"debug set_bp {syms[vector]} {{}} {{reg PC {scratch}}}")]
-        steps = typed + fault + close + tab + tab + enter
+        steps = typed + fault + close + tab + tab + enter + input_note_name()
         r = run(steps, 'dialog-error-' + vector, panel(alert=True), opened=1)
         check(fails, 'dialog-error-' + vector + '-state', r.bytes('NoteBuf', 256) == document
               and r.peek('NoteModified') == 1, 'failed save preserves modified document')
         run(steps + enter, 'dialog-alert-ok-' + vector, base)
     file_save = press(88, 3) + press(96, 27)
-    run(typed + fault + file_save, 'dialog-menu-error', panel(alert=True), opened=1)
+    run(typed + fault + file_save + input_note_name(), 'dialog-menu-error', panel(alert=True), opened=1)
 
 
 def read_tape_wav(path):
@@ -2047,8 +2052,10 @@ def tape_checks(syms, fails):
         # Sequential tape loading needs a target: after DISCARD, FILE > NEW.
         target = press(66, 50) + press(60, 98) + new if closed else []
         wide_base, wide_grow, _, _, _, wide_tap, _ = note_width_steps(ts)
+        filename = "NOTE" if closed else "LETTER"
+        save_as = press(88, 3) + press(96, 35)
         r = Run(ts, record + wide_base + wide_grow + wide_tap(3, 64)*6
-                + snapshot + save + tap(5, 32) + tap(5, 32) + target + rewind + reopen
+                + snapshot + save_as + input_note_name(filename) + tap(5, 32) + tap(5, 32) + target + rewind + reopen
                 + [(10, 'cassetteplayer eject')], name, rom=rom)
         document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
         check(fails, name, r.bytes("NoteBuf", 256) == document
@@ -2058,9 +2065,14 @@ def tape_checks(syms, fails):
               f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
               f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
         blocks = read_tape_wav(os.path.join(OUT, name, "note.wav"))
-        check(fails, name + "-wav", blocks == [b"MSXT" + b"NOTE".ljust(13, b"\0")
+        check(fails, name + "-wav", blocks == [b"MSXT" + filename.encode().ljust(13, b"\0")
                                              + b"\0\1", document],
               f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
+
+    r = Run(ts, new + press(88,3) + press(96,35)
+            + input_note_name("ABCDEFGHIJKLM")[:-2] + [(10, "")], "saveas-tape-limit", rom=rom)
+    check(fails, "saveas-tape-limit", r.bytes("DgTextBuf",13) == b"ABCDEFGHIJKL\0",
+          "cassette header accepts twelve characters plus terminator")
 
     # Carry from byte output and final close must reach the existing
     # save-error dialog; edits must remain marked as unsaved.
@@ -2068,7 +2080,7 @@ def tape_checks(syms, fails):
         scratch = ts["CmdBuf"] + 250
         fault = [(5, f"debug write memory {scratch} 55; debug write memory {scratch+1} 201; "
                      f"debug set_bp {ts[entry]} {{}} {{reg PC {scratch}}}")]
-        rr = Run(ts, record + new + tap(3, 32) + fault + save + [(10, "cassetteplayer eject")],
+        rr = Run(ts, record + new + tap(3, 32) + fault + save + input_note_name() + [(10, "cassetteplayer eject")],
                  "tape-error-" + entry.lower(), rom=rom)
         check(fails, "tape-error-" + entry.lower(), rr.peek("NoteModified") == 1
               and rr.peek("NoteResult") != 0 and rr.peek("TapeMode") == 0,
@@ -2347,10 +2359,116 @@ def resize_scroll_checks(syms, fails):
               f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
 
+def saveas_checks(syms, fails):
+    def tap(row, mask, mod=0):
+        return [(3, f"key_down 6 {mod}; key_down {row} {mask}"),
+                (3, f"key_up {row} {mask}; key_up 6 {mod}")]
+    # Keyboard table starts A at matrix index 22.
+    def text(value):
+        return sum((tap((ord(c)-65+22)//8, 1 << ((ord(c)-65+22)%8)) for c in value), [])
+    enter, esc = tap(7, 128), tap(7, 4)
+    new = tap(4, 8, 4)
+    saveas = tap(5, 8, 4)
+    save = tap(5, 1, 4)
+    opened = tap(4, 16, 4)
+    base = new + text("HI")
+    named = saveas + text("LETTER") + enter
+    def press(x,y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")] + tap(6,2)
+    menu_as = press(88,3) + press(96,35)
+    document = b"HI".ljust(14) + b"\0\0" + (b" "*14+b"\0\0")*15
+    def stored(r):
+        if EXT:
+            return read_disk_image(DISK).get("LETTER")
+        directory = r.bytes("RamDir", 64)
+        for slot in range(4):
+            entry = directory[slot*16:(slot+1)*16]
+            if entry[:13].split(b"\0")[0] == b"LETTER" and entry[15]:
+                assert int.from_bytes(entry[13:15], "little") == 256
+                return r.bytes("RamHeap", 1024)[slot*256:(slot+1)*256]
+    for name, steps, expected in [
+        ("saveas-disk" if EXT else "saveas-ram", named, document),
+        ("saveas-first-save", save + text("LETTER") + enter, document),
+        ("saveas-menu", menu_as + text("LETTER") + enter, document),
+        ("saveas-save-again", named + text("X") + save, b"HIX".ljust(14)+document[14:]),
+        ("saveas-esc", saveas + text("LETTER") + esc, None),
+        ("saveas-name", saveas + text("LE") + tap(1, 1, 1) + text("TTER") + enter, document),
+        ("saveas-edit", saveas + text("LETER") + tap(8,16)*2 + text("T") + tap(8,128)*2 + text("X") + tap(7,32) + enter, document),
+        ("saveas-exists-cancel", named + text("X") + named + enter, document),
+        ("saveas-exists-overwrite", named + text("X") + named + tap(8,64) + enter,
+         b"HIX".ljust(14)+document[14:]),
+        ("saveas-reopen", named + text("X") + opened + (tap(8,64,1)*2 if EXT else []) + enter, document),
+    ]:
+        r = Run(syms, base + steps + [(10, "")], name, files={"OTHER": b"unchanged", "ZKEEP": bytes(range(256))})
+        got = stored(r)
+        check(fails, name, got == expected and r.bytes("NoteName",13).split(b"\0")[0]
+              == (b"NOTE" if expected is None else b"LETTER")
+              and (not EXT or {k:v for k,v in read_disk_image(DISK).items() if k != "LETTER"}
+                   == {"OTHER": b"unchanged", "ZKEEP": bytes(range(256))})
+              and (name != "saveas-reopen" or r.bytes("NoteBuf",256) == document)
+              and (expected is None or r.nt()[6*32+9:6*32+15] == bytes(c|128 for c in b"LETTER")),
+              f"file crc32 {zlib.crc32(got or b''):08x}, name {r.bytes('NoteName',13)!r}, screen crc32 {zlib.crc32(r.nt()):08x}")
+
+    for name, steps, expected in [
+        ("saveas-limit", text("ABCDEFGHIJKLM"), b"ABCDEFGH" if EXT else b"ABCDEFGHIJKL"),
+        ("saveas-dot", text("ABCDEFGH") + tap(2,8) + text("TXTQ"), b"ABCDEFGH.TXT"),
+        ("saveas-invalid-field", text("LE") + tap(1,1,1), b"LE"),
+    ]:
+        r = Run(syms, base + saveas + steps + [(10, "")], name)
+        check(fails, name, r.bytes("DgTextBuf",13).split(b"\0")[0] == expected
+              and r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 0,
+              f"field {r.bytes('DgTextBuf',13)!r}")
+    r = Run(syms, base + named + text("X") + named + [(10, "")], "saveas-exists")
+    check(fails, "saveas-exists", r.peek("DgMode") == 5 and r.peek("DgFocus") == 0
+          and stored(r) == document, "CANCEL initially selected; original 256 bytes intact")
+    r = Run(syms, base + named + saveas + text("OTHER") + esc + [(10, "")], "saveas-esc-named")
+    check(fails, "saveas-esc-named", r.bytes("NoteName",7) == b"LETTER\0"
+          and stored(r) == document, "prior filename and content unchanged")
+
+    r = Run(syms, base + saveas + enter + [(10, "")], "saveas-empty")
+    check(fails, "saveas-empty", r.peek("DgOpenFlag") == 1 and r.peek("DgLength") == 0
+          and r.peek("NoteSaved") == 0, "empty field remains open without writing")
+    # SAVE AS failure must not commit the new name or clear dirty state.
+    scratch = syms["RamHeap"] + 768
+    fault = [(5, f"debug write_block memory {scratch} [binary format H* 37c9]; "
+                 f"debug set_bp {syms['StWrite']} {{}} {{reg PC {scratch}}}")]
+    r = Run(syms, base + named + text("X") + fault + saveas + text("OTHER") + enter
+            + [(10, "")], "saveas-failure", files={})
+    check(fails, "saveas-failure", r.bytes("NoteName",7) == b"LETTER\0"
+          and r.peek("NoteModified") == 1 and stored(r) == document
+          and r.peek("DgCount") == 1, "failed write preserves prior name, dirty state and prior file")
+    r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "saveas-keys")
+    want = compose(expected_nt(), [keys_win(16,3)])
+    check(fails, "saveas-keys", r.nt() == want,
+          f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    steps = base + named + new + text("B") + saveas + text("SECOND") + enter + tap(5,32,4)
+    r = Run(syms, steps + [(10, "")], "saveas-front", files={})
+    check(fails, "saveas-front", r.peek("WndCount") == 2
+          and r.bytes("NoteName",7) == b"LETTER\0" and r.bytes("NoteBuf",256) == document
+          and stored(r) == document, "each window retains its own name and all document bytes")
+
+    r = Run(syms, base + named + text("X") + saveas + text("COPY") + enter + [(10, "")],
+            "saveas-new-name", files={})
+    copy = read_disk_image(DISK).get("COPY") if EXT else r.bytes("RamHeap",512)[256:]
+    check(fails, "saveas-new-name", stored(r) == document
+          and copy == b"HIX".ljust(14)+document[14:] and r.bytes("NoteName",5) == b"COPY\0"
+          and r.nt()[6*32+9:6*32+13] == bytes(c|128 for c in b"COPY"),
+          f"original crc32 {zlib.crc32(stored(r) or b''):08x}, copy crc32 {zlib.crc32(copy or b''):08x}")
+
+    r = Run(syms, new + tap(5,16,4) + saveas + save + [(10, "")], "saveas-no-document", files={})
+    check(fails, "saveas-no-document", r.peek("WndCount") == 0 and r.peek("DgOpenFlag") == 0
+          and r.nt() == expected_nt(), "SAVE and SAVE AS ignore a closed document")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--saveas"]:
+        saveas_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--delete"]:
         delete_checks(syms, fails)
         return bool(fails)
@@ -2400,6 +2518,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    saveas_checks(syms, fails)
     delete_checks(syms, fails)
     sound_checks(syms, fails)
     note_width_checks(syms, fails)

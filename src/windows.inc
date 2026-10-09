@@ -524,7 +524,14 @@ WdCapLoop:
                 ld      (hl),a
                 inc     hl
                 djnz    WdCapLoop
+                call    NoteIsFront
                 ld      hl,(WinTitle)
+                jr      nz,WdTitleReady
+                ld      a,(NoteSaved)
+                or      a
+                jr      z,WdTitleReady
+                ld      hl,NoteName
+WdTitleReady:
                 ld      a,(WdCapFill)
                 and     INVBANK
                 ld      (PrintInv),a
