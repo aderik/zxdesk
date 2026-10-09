@@ -872,3 +872,46 @@ Focused verification (all listed assertions passed):
 The EU resize subjects measured **Dropped = 0**. Python compilation and
 `git diff --check` pass. The local `roms` symlink is ignored and is
 not part of the commit.
+
+## lf-1522: FILE > DELETE
+
+FILE > DELETE confirms deletion of the front saved Notepad document,
+initially selecting CANCEL. DELETE calls the active storage backend,
+keeps the document open and marks it modified and no longer saved.
+A new document or another front window opens the existing picker.
+Backends using `StNoDelete` show NOT SUPPORTED. Failed deletion retains
+the document's saved/modified state. Full 8.3 names use the existing
+two-line confirmation layout. No new key is introduced.
+
+`./test.sh --delete` adds eleven memory/checksum assertions covering
+confirmation, byte-identical cancellation, only the selected file being
+removed, retained document contents/window, picker equivalence to OPEN,
+unsupported backends, errors and full 8.3 names. All eleven pass on
+C-BIOS_MSX1_EU (50 Hz), C-BIOS_MSX1_JP (60 Hz), Roms_MSX1,
+Roms_MSX1 + Roms_Disk and Roms_MSX2. RAM directory CRC32 changes from
+`730eaddc` to `45fc3d2f`; the document remains `c21bbd31`.
+Confirmation name-table CRC32 is `92447dda`; picker CRC32 is `23a99124`
+on RAM and `86635be0` on disk. Disk cancellation retains the complete
+image byte for byte; `read_disk_image` confirms only NOTE is removed.
+
+The existing `--open-ui` routes additionally assert the saved flag after
+typing, saving, modifying/closing and reopening through both Enter and
+mouse input: four assertions pass on EU, JP and disk, with all 256 document
+bytes at CRC32 `1cc48393`. The tape subjects assert the same saved flag
+after their complete cassette round trips and exercise DELETE against
+the actual tape registry. All twelve `--tape` assertions pass on both
+Roms_MSX1 and Roms_MSX2: document/WAV CRC32 `9a0f1306`, unsupported
+alert name-table CRC32 `5d8b3f04`. Cassette round trips measured
+35 dropped frames on each machine; no timing improvement is claimed.
+
+Measured against assembled `cf19453`: **+187 ROM bytes**, **+1 static RAM
+byte**, **+1 heap byte per Notepad state** (277 to 278); no extra allocations.
+Normal ROM: **14,826 bytes**, **1,558 bytes free in page 1**; static RAM
+**3,536 bytes**, heap **8,752 / 3,367 bytes** without/with disk.
+TEST ROM: **16,103 bytes**, **281 bytes free in page 1**; static RAM
+**6,268 bytes**, heap **6,020 / 635 bytes**. Confirmation text reuses
+Commander scratch beyond the dialogue's 140-byte save-under.
+
+The full `test-all.sh` was not run here: this implementation run permits
+only focused tests. The new subjects are included in the default suite
+for the pipeline. The local ignored `roms` symlink is not committed.

@@ -884,6 +884,90 @@ def app_checks(syms, fails, vram0):
           f"{since_set} interrupts since the set, {hms[1] * 60 + hms[2]} s counted, model {clock_model(since_set, hz50)}")
 
 
+def delete_checks(syms, fails):
+    """FILE > DELETE via UI, with complete directory/document comparisons."""
+    def tap(row, mask):
+        return [(5, f"key_down {row} {mask}"), (5, f"key_up {row} {mask}")]
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")] + tap(6, 2)
+    def menu(y):
+        return press(88, 3) + press(96, y)
+    enter, tab = tap(7, 128), tap(7, 8)
+    document = b"H".ljust(14) + b"\0\0" + (b" "*14 + b"\0\0")*15
+    other = b"unchanged"
+    directory = bytearray(64)
+    directory[:5] = b"OTHER"
+    directory[13:16] = bytes([len(other), 0, 1])
+    seed = [] if EXT else [(5, f"debug write_block memory {syms['RamDir']} [binary format H* {directory.hex()}]; "
+                              f"debug write_block memory {syms['RamHeap']} [binary format H* {other.hex()}]")]
+    def run(steps, name):
+        return Run(syms, seed + steps + [(15, "")], name, files={"OTHER": other})
+    base = menu(11) + tap(3, 32) + menu(27)
+    before = run(base, "del-before")
+    original = open(DISK, "rb").read() if EXT else before.bytes("RamDir", 64)
+    r = run(base + menu(51), "del-confirm")
+    want = bytearray(before.nt())
+    for y in range(8, 15):
+        want[y*32+6:y*32+26] = bytes([160 if y == 11 else 32])*20
+    for y, text in [(9, b"DELETE NOTE?"), (11, b"CANCEL"), (12, b"DELETE")]:
+        want[y*32+7:y*32+7+len(text)] = bytes(c | (128 if y == 11 else 0) for c in text)
+    check(fails, "del-confirm", r.nt() == want and r.peek("DgFocus") == 0
+          and r.peek("DgOpenFlag") == 1, f"nametable crc32 {zlib.crc32(r.nt()):08x}")
+    for name, answer in [("del-cancel", enter), ("del-note" if not EXT else "del-disk", tab+enter)]:
+        r = run(base + menu(51) + answer, name)
+        cancelled = name == "del-cancel"
+        actual = open(DISK, "rb").read() if EXT else r.bytes("RamDir", 64)
+        expected = bytearray(before.bytes("RamDir", 64))
+        expected[31] = 0
+        files_ok = (actual == original if cancelled else
+                    read_disk_image(DISK) == {"OTHER": other} if EXT else
+                    actual == expected and r.bytes("RamHeap", 1024) == before.bytes("RamHeap", 1024))
+        check(fails, name, files_ok and r.bytes("NoteBuf", 256) == document
+              and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppNote"]
+              and r.peek("NoteModified") == (not cancelled) and r.peek("NoteEdited") == 1
+              and r.peek("NoteSaved") == cancelled and r.peek("DgOpenFlag") == 0,
+              f"directory crc32 {zlib.crc32(actual):08x}; document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}; "
+              f"modified {r.peek('NoteModified')}, saved {r.peek('NoteSaved')}")
+    for prefix, suffix in [([], ""), (menu(11), "-new"), (menu(11)+menu(27)+press(140,3)+press(148,11), "-clock")]:
+        browse = run(prefix + menu(19), "del-browse"+suffix)
+        r = run(prefix + menu(51), "del-picker"+suffix)
+        check(fails, "del-picker"+suffix, r.nt() == browse.nt() and r.peek("CmdBrowse") == 1,
+              f"nametable crc32 {zlib.crc32(r.nt()):08x}")
+    # Failed deletion preserves the saved document and the full directory.
+    fault = [(5, f"debug set_bp {syms['StDelete']} {{}} {{reg PC {syms['StNoDelete']}}}")]
+    r = run(base + fault + menu(51) + tab + enter, "del-error")
+    check(fails, "del-error", r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 1
+          and r.peek("NoteModified") == 0 and r.bytes("NoteBuf",256) == document
+          and (open(DISK,"rb").read() == original if EXT else r.bytes("RamDir",64) == original),
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf',256)):08x}; saved flag retained")
+    # Long 8.3 names use both existing message lines, within the save-under.
+    longname = b"LONGNAME.TXT"
+    rename = [(5, f"debug write_block memory {syms['NoteName']} [binary format H* {(longname+bytes(1)).hex()}]")]
+    longbase = menu(11) + tap(3,32) + rename + menu(27)
+    before = run(longbase, "del-long-before")
+    r = run(longbase + menu(51) + enter, "del-long-cancel")
+    check(fails, "del-long-cancel", r.nt() == before.nt() and r.peek("NoteSaved") == 1,
+          f"restored nametable crc32 {zlib.crc32(r.nt()):08x}")
+    r = run(longbase + menu(51) + tab + enter, "del-long")
+    check(fails, "del-long", r.peek("NoteModified") == 1 and r.peek("NoteSaved") == 0
+          and (read_disk_image(DISK) == {"OTHER":other} if EXT else r.bytes("RamDir",64)[15::16] == bytes([1,0,0,0])),
+          "full 8.3 name deleted; other file retained")
+    # Tape's registry uses StNoDelete even in builds without cassette I/O.
+    tape = [(5, f"debug write memory {syms['StVecDelete']} {syms['StNoDelete'] & 255}; "
+                f"debug write memory {syms['StVecDelete']+1} {syms['StNoDelete'] >> 8}; "
+                f"debug write memory {syms['StBackend']} 2")]
+    for prefix, suffix in [([], ""), (base, "-note")]:
+        before = run(prefix + tape, "del-tape-before"+suffix)
+        r = run(prefix + tape + menu(51), "del-tape"+suffix)
+        check(fails, "del-tape"+suffix, r.peek("DgOpenFlag") == 1 and r.peek("DgCount") == 1
+              and r.nt()[9*32+7:9*32+20] == b"NOT SUPPORTED"
+              and r.bytes("RamDir",64) == before.bytes("RamDir",64)
+              and r.bytes("NoteBuf",256) == before.bytes("NoteBuf",256)
+              and r.peek("NoteModified") == before.peek("NoteModified"),
+              f"nametable crc32 {zlib.crc32(r.nt()):08x}; directory unchanged")
+
+
 def open_ui_checks(syms, fails):
     """Own NOTE, typed/saved through UI; no directory or document fixtures."""
     def click(x, y):
@@ -912,7 +996,7 @@ def open_ui_checks(syms, fails):
             r = Run(syms, opened + selection + activate + [(10, "")], name, files={})
             stored = read_disk_image(DISK).get("NOTE") if EXT else r.bytes("RamHeap", 256)
             check(fails, name, r.peek("WndCount") == 1 and r.bytes("NoteBuf", 256) == document
-                  and stored == document and r.peek("NoteModified") == 0
+                  and stored == document and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1
                   and r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("DgOpenFlag") == 0,
                   f"NOTE 256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
                   f"expected {zlib.crc32(document):08x}; windows {r.peek('WndCount')}")
@@ -1949,6 +2033,11 @@ def tape_checks(syms, fails):
     new = press(88, 3) + press(96, 11)
     save = press(88, 3) + press(96, 27)
     reopen = press(88, 3) + press(96, 19)
+    r = Run(ts, press(88, 3) + press(96, 51) + [(10, "")], "del-tape-backend", rom=rom)
+    check(fails, "del-tape-backend", r.peek("StBackend") == ts["ST_TAPE"]
+          and r.peek("DgOpenFlag") == 1 and r.peek("DgCount") == 1
+          and r.nt()[9*32+7:9*32+20] == b"NOT SUPPORTED" and r.peek("WndCount") == 0,
+          f"actual tape registry; nametable crc32 {zlib.crc32(r.nt()):08x}")
     record = [(5, 'cassetteplayer new $::out/note.wav')]
     snapshot = [(5, f'set f [open $::out/document.bin wb]; puts -nonewline $f '
                  f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
@@ -1964,7 +2053,7 @@ def tape_checks(syms, fails):
         document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
         check(fails, name, r.bytes("NoteBuf", 256) == document
               == note_width_document([b'H'*14 + b'I'*6])
-              and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0
+              and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1
               and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == ts["AppNote"],
               f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
               f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
@@ -2262,6 +2351,9 @@ def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--delete"]:
+        delete_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--note-width"]:
         note_width_checks(syms, fails)
         return bool(fails)
@@ -2308,6 +2400,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    delete_checks(syms, fails)
     sound_checks(syms, fails)
     note_width_checks(syms, fails)
     note_load_checks(syms, fails)
