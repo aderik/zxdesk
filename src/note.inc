@@ -17,7 +17,7 @@ NOTEW           equ     NOTECOLS+2
 NOTEH           equ     9               ; seven lines showing
 
 ; NoteState, NoteBuf, NoteName, NoteCX, NoteCY, NoteTop, NoteEdited,
-; NoteDirty and NoteModified are contiguous in the var block;
+; NoteDirty, NoteSaved and NoteModified are contiguous in the var block;
 ; NOTESTSZ is their total.
 
 ; A = row. Returns HL = its address in the document.
@@ -246,6 +246,7 @@ NoteNew:
                 ld      bc,NOTESIZE-NOTESTRIDE
                 ldir
                 xor     a
+                ld      (NoteSaved),a
                 ld      (NoteRowIx),a
                 ld      (NoteCX),a
                 ld      (NoteCY),a
@@ -816,6 +817,8 @@ NoteSaveFile:
                 jr      nz,NsShort
                 xor     a
                 ld      (NoteModified),a
+                inc     a
+                ld      (NoteSaved),a
                 or      a
                 ret
 NsCloseFail:
@@ -872,6 +875,7 @@ NoteLoadFile:
                 ld      (NoteModified),a
                 ld      a,1
                 ld      (NoteDirty),a
+                ld      (NoteSaved),a
                 or      a
                 ret
 NlCloseFail:
@@ -1026,6 +1030,86 @@ NmsOk:
                 or      a
                 jp      nz,NoteSaveAlert
                 ret
+
+; Unsupported backends report their own error before opening a picker.
+NoteMenuDelete:
+                ld      hl,(StVecDelete)
+                ld      de,StNoDelete
+                or      a
+                sbc     hl,de
+                jr      nz,NmdFront
+                call    StNoDelete
+                jr      NmdError
+NmdFront:
+                ld      a,(WndCount)
+                or      a
+                jp      z,CmdBrowseOpen
+                call    NoteIsFront
+                jp      nz,CmdBrowseOpen
+                ld      a,(NoteSaved)
+                or      a
+                jp      z,CmdBrowseOpen
+                ; A full 8.3 name needs its own line in the 20-cell panel.
+                ld      hl,NoteName
+                ld      b,12
+NmdLength:
+                ld      a,(hl)
+                or      a
+                jr      z,NmdPrompt
+                inc     hl
+                djnz    NmdLength
+                ld      hl,NoteName
+                ld      de,TxtBrowseDelete
+                jr      NmdDialog
+NmdPrompt:
+                ; The dialogue owns only the first 140 bytes of CmdBuf.
+                ld      hl,TxtNoteDelete
+                ld      de,CmdBuf+140
+                ld      bc,7
+                ldir
+                ld      hl,NoteName
+NmdName:
+                ld      a,(hl)
+                or      a
+                jr      z,NmdQuestion
+                ld      (de),a
+                inc     hl
+                inc     de
+                jr      NmdName
+NmdQuestion:
+                ld      a,'?'
+                ld      (de),a
+                inc     de
+                xor     a
+                ld      (de),a
+                ld      hl,CmdBuf+140
+                ld      de,0
+NmdDialog:
+                ld      bc,NoteDeleteAnswer
+                jp      DlgDelete2
+NoteDeleteAnswer:
+                or      a
+                ret     z
+                ld      hl,NoteName
+                call    StDelete
+                jr      c,NmdError
+                xor     a
+                ld      (NoteSaved),a
+                inc     a
+                ld      (NoteModified),a
+                ld      (NoteEdited),a
+                ret
+NmdError:
+                cp      STERR_NOSUP
+                ld      hl,TxtNoteNoDelete
+                jr      nz,NmdAlert
+                ld      hl,TxtNoteUnsupported
+NmdAlert:
+                ld      de,0
+                jp      DlgAlert
+TxtNoteDelete:  defb    "DELETE "
+TxtNoteNoDelete: defb   "COULD NOT DELETE",0
+TxtNoteUnsupported: defb "NOT SUPPORTED",0
 
 ; Tape has no directory; retain its sequential load operation.
 NoteMenuOpen:

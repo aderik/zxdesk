@@ -248,6 +248,7 @@ _ram            defl    _ram+size
                 var     NoteTop, 1
                 var     NoteEdited, 1
                 var     NoteDirty, 1
+                var     NoteSaved, 1            ; a successful save/load, per document
                 var     NoteModified, 1
                 var     NoteLeftCol, 1
                 var     NoteBackend, 1
