@@ -2217,7 +2217,7 @@ def note_width_checks(syms, fails):
           and r.bytes('NoteName', 5) == b'NOTE\0',
           f"last blank row ENTER preserves document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
     for closed in (False, True):
-        steps = typed + menu(27) + tap(5, 32)
+        steps = typed + menu(27) + input_note_name() + tap(5, 32)
         if closed:
             steps += click(66, 50) + click(60, 98)
         steps += menu(19) + tap(7, 128)
@@ -2225,6 +2225,7 @@ def note_width_checks(syms, fails):
         r = Run(syms, steps + [(10, '')], name, files={})
         stored = read_disk_image(DISK).get('NOTE') if EXT else r.bytes('RamHeap', 256)
         check(fails, name, r.bytes('NoteBuf', 256) == document == stored
+              and r.bytes('NoteName', 5) == b'NOTE\0'
               and r.peek('NoteModified') == 0 and r.peek('WndCount') == 1
               and r.peek('DgOpenFlag') == 0,
               f"complete UI roundtrip crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
