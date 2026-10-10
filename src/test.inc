@@ -493,7 +493,9 @@ TxtTsName5:     defb    "NOTE4",0
 TbResults       equ     CmdBuf+221              ; after the 21 bytes of TtResults
 TbName          equ     CmdWork                 ; "F0000" and so on
 
-; A hundred files of 256 bytes written with interrupts off throughout:
+; A hundred files of 256 bytes written with interrupts off throughout,
+; or half the bank's files when that is fewer (58 on a 16 KB bank), so
+; TestBank still has room to fill, delete and reuse:
 ; the routine's EI is a NOP while this runs, so the harness can
 ; compare the BIOS work area and the ROM before and after without a
 ; frame counter moving between the two snapshots.
@@ -509,10 +511,23 @@ TestBankSys:
                 ld      (BkCode+BkOEi),a        ; NOP for EI
                 di
 TbsStart:
-                ld      b,100
+                ld      hl,(BkFiles)
+                srl     h
+                rr      l                       ; half the bank's files
+                ld      a,h
+                or      a
+                jr      nz,TbsHundred
+                ld      a,l
+                cp      100
+                jr      c,TbsCount
+TbsHundred:
+                ld      a,100
+TbsCount:
+                ld      b,a
+                ld      c,a
 TbsLoop:
                 push    bc
-                ld      a,100
+                ld      a,c
                 sub     b
                 call    TbSetName
                 ld      a,'S'                   ; "S0000".."S0099"

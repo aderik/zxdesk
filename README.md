@@ -1251,9 +1251,12 @@ configuration after the five machines.
 
 **SETTINGS > BACKEND** goes round RAM, BANK and DISK, those that are
 there, in both directions; BANK shows its size after the label:
-`BACKEND 48 KB   [BANK]`. A 16K or 32K MSX1 has no hidden pages and
-no BANK (a 32K machine's page 2 RAM is behind the cartridge too, 16 KB,
-not measured here). In the Commander **B** takes the other pane round
+`BACKEND 48 KB   [BANK]`. A 16K MSX1 has no hidden pages and no BANK.
+A 32K MSX1 ($8000-$FFFF) does: its page 2 RAM is behind the cartridge,
+a 16 KB bank of 63 blocks and 58 files, `BACKEND 16 KB   [BANK]`
+(measured in the lf-1525 test on a Roms_MSX1 with 32K: source 1, 63
+blocks, Commander B and the save/close/reopen route byte-identical;
+`bank-mirror` measures the same size here). In the Commander **B** takes the other pane round
 the same ring (from PRN to RAM), so RAM, DISK and BANK copy both ways;
 the help row reads `TAB PANE P PRN B BANK R LIST`. A document saved on
 the bank keeps it as its backend, as with RAM.
@@ -1266,14 +1269,16 @@ with the bytes read out of the bank device and back in the source,
 `bank-note` (SETTINGS to BANK, type, save, edit, close and discard,
 FILE > OPEN: the document is the saved one, in the bank), and
 `bank-picker`. The TEST build's `bank-sys` writes a hundred 256 byte
-files with interrupts off throughout (the routine's EI is a NOP for the
+files (half the bank's files when that is fewer, so `bank-rw` still
+has room: 89 on 48 KB, 29 on 16 KB) with interrupts off throughout (the routine's EI is a NOP for the
 duration) and the harness snapshots $F380-$FFFF and the whole ROM at
 `TbsStart` and `TbsEnd`: identical, and the ROM equals the image.
 `bank-rw` round trips 64 bytes, fills the bank until `STERR_FULL`
-(**77** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
-on 496 KB: 412 s of emulated time, the whole TEST run), counts the
-directory (to 255, the index's width), deletes `F0002`, sees `NEW`
-take entry 103 and reads a full file back; `bank-dir` parses the
+(**88** files after the 90 before it on 48 KB, 28 after 30 on 16 KB,
+139 after 101 on 64 KB, 1,758 on 496 KB: 412 s of emulated time, the
+whole TEST run), counts the directory (to 255, the index's width),
+deletes `F0002`, sees `NEW` take its entry (103 when `bank-sys` wrote
+a hundred, 92 on 48 KB) and reads a full file back; `bank-dir` parses the
 dumped device itself: every entry, summary byte and data block. Every
 bank file's bytes are read from the openMSX device (`Main RAM`,
 `Mapper512`), not through the ROM.
@@ -1564,3 +1569,20 @@ Measured against base `ca6f74d`: normal ROM **20,432 → 20,467 bytes
 state, so each open commander's heap copy grows by the same byte; heap
 **8,283 → 8,282** without disk, **2,898 → 2,897** with it. Padded ROM
 CRC32: normal `a3cf85e2`, TEST `cbf4d59e`.
+
+## Small banks in the TEST subjects (lf-1540)
+
+The lf-1525 test found two things on a 32K MSX1. The 16 KB bank there
+works and is now documented above (whether it is wanted is for the
+product owner; nothing in the ROM changed). And `bank-sys` wrote a
+hundred files on any bank, so on 58 files it filled the bank and
+`bank-rw` began with `STERR_FULL`: the rw route went untested.
+`TestBankSys` now writes `min(100, BkFiles / 2)` files and the harness
+works the expected entries out from that count. On C-BIOS_MSX1_EU,
+`./test.sh --bank` (and the full run) also runs the TEST subjects on
+`C-BIOS_MSX1_Mirror32`, a 63 block bank: `bank-sys-mirror` 29 files
+under DI, work area and ROM identical; `bank-rw-mirror` 28 files to
+`STERR_FULL`, `NEW` in entry 32; `bank-dir-mirror` 58 of 58 entries
+parsed from the device. Normal ROM unchanged (20,467 bytes, crc32
+`a3cf85e2`); TEST ROM 22,204 -> 22,221 bytes (+17); RAM and heap
+unchanged.
