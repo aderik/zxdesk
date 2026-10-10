@@ -1,5 +1,11 @@
-; Write-only stream. Check readiness before every BIOS output: an unplugged
-; printer must never enter LPTOUT's busy wait. No buffers or document edits.
+; Write-only stream over the BIOS printer port. LPTSTT answers busy or
+; ready and nothing else: an unplugged port reads busy for ever, a real
+; printer reads busy while it works through its buffer, which on a one
+; line buffer is most of every job. So each output waits for ready up to
+; PRINTWAIT interrupts and gives up after that, rather than failing on the
+; first busy status or entering LPTOUT's unbounded wait. No buffers or
+; document edits.
+PRINTWAIT       equ     150                  ; 3 s at 50 Hz, 2.5 s at 60 Hz
 PrintOpen:
                 ld      a,b
                 cp      FA_OVERWRITE
@@ -8,12 +14,32 @@ PrintOpen:
                 ret     c
                 ld      a,1
                 ret
+; Carry set if the printer stayed busy for PRINTWAIT interrupts. IrqCnt
+; keeps counting because PrintBios leaves interrupts enabled.
 PrintReady:
-                ld      ix,$00A8             ; LPTSTT
+                push    hl
+                push    de
+                ld      de,(IrqCnt)
+PrPoll:
+                ld      ix,$00A8             ; LPTSTT: A = $FF ready, 0 busy
                 call    PrintBios
                 or      a
-                ret     nz
+                jr      nz,PrDone            ; OR cleared carry: ready
+                ld      hl,(IrqCnt)
+                or      a
+                sbc     hl,de                ; interrupts waited so far
+                ld      a,h
+                or      a
+                jr      nz,PrTimeout
+                ld      a,l
+                cp      PRINTWAIT
+                jr      c,PrPoll
+PrTimeout:
+                ld      a,STERR_NOTFOUND     ; no printer answered
                 scf
+PrDone:
+                pop     de
+                pop     hl
                 ret
 PrintChar:
                 push    af
