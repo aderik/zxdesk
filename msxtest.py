@@ -3215,105 +3215,6 @@ def desktop_checks(syms, fails):
         check(fails, "dsk-reload-v4", table_of(r) == DESK_DEFAULT and r.nt() == want
               and r.bytes("SetRec", 26) == set_record(1, 0, 1),
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
-def note_selection_checks(syms, fails):
-    _, _, _, _, click, tap, menu = note_width_steps(syms)
-    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
-    def typed(text):
-        matrix = {c: (r, 1 << i) for r, row in enumerate([
-            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
-                  for i, c in enumerate(row)}
-        matrix[' '] = (8, 1)
-        return sum((tap(*matrix[c]) for c in text), [])
-    def arrows(mask, n, shift=True):
-        return ([(5, 'key_down 6 1')] if shift else []) + tap(8, mask)*n + (
-            [(5, 'key_up 6 1')] if shift else [])
-    r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
-            + click(228, 3) + click(204, 11) + [(10, '')], 'sel-help')
-    expected = compose(expected_nt(), [keys_win(KEYS_X, KEYS_Y)])
-    check(fails, 'sel-help', r.nt() == expected,
-          f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
-    hello = base + typed('HELLO WORLD') + arrows(16, 11)
-    selected = hello + tap(7, 64) + arrows(128, 5)
-    document = note_width_document([b'HELLO WORLD'])
-    want = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', [
-        (1, 1, b'HELLO WORLD', False), (1, 1, b'HELLO', True), (-2, 16, b'', False)])])
-    def selection(name, steps):
-        r = Run(syms, steps + [(10, '')], name, files={})
-        check(fails, name, r.bytes('NoteBuf', 256) == document and r.nt() == want
-              and (r.peek('NoteAnchor') & 127, r.peek('NoteAnchor', 2) >> 8,
-                   r.peek('NoteEnd'), r.peek('NoteEnd', 2) >> 8) == (0, 0, 5, 0),
-              f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
-              f"anchor/end {r.bytes('NoteAnchor', 4).hex()}")
-        return r
-    selection('sel-keys', selected)
-    off = [(5, f"debug write memory {syms['SetKeyPtr']} 0")]
-    selection('sel-keys-pointer-off', hello + off + tap(7, 64) + arrows(128, 5, False))
-    # Whole-cell mouse selection at text origin (9,7), through five cells.
-    point = [(5, f"debug write memory {syms['PtrX']} 72; debug write memory {syms['PtrY']} 56")]
-    drag = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
-                    (5, 'mouse_move 80 0'), (5, 'exec xdotool mouseup 1'),
-                    (10, 'set ::throttle off')]
-    selection('sel-mouse', hello + drag)
-    for name, ending, expected in [
-            ('sel-type', tap(5, 32), b'X WORLD'),
-            ('sel-bs', tap(7, 32), b' WORLD'),
-            ('sel-del', tap(8, 8), b' WORLD')]:
-        r = Run(syms, selected + ending + [(10, '')], name, files={})
-        want_doc = note_width_document([expected])
-        check(fails, name, r.bytes('NoteBuf', 256) == want_doc
-              and r.peek('NoteAnchor', 2) >> 8 == 255,
-              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(want_doc):08x}")
-    for name, ending in [('sel-escape', tap(7, 4)), ('sel-click', click(72, 56))]:
-        r = Run(syms, selected + ending + [(10, '')], name, files={})
-        check(fails, name, r.bytes('NoteBuf', 256) == document
-              and (r.peek('NoteAnchor', 2) >> 8 == 255 or
-                   r.bytes('NoteAnchor', 2) == r.bytes('NoteEnd', 2)),
-              'selection cleared, document retained')
-    selection('sel-toggle', selected + tap(7, 64))
-    def shortcut(row, mask):
-        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
-    for name, extra, front in [('sel-instance-back', shortcut(4, 8), False),
-                                ('sel-instance-front', shortcut(4, 8) + shortcut(5, 32), True)]:
-        r = Run(syms, selected + extra + [(10, '')], name, files={})
-        buf = r.peek16_at(syms['WndTab'] + 6)
-        state = r.peek16_at(syms['WndTab'] + 10)
-        offset = syms['NoteAnchor'] - syms['NoteState']
-        text = r.ram[buf-0xc000+17:buf-0xc000+28]
-        expected = bytes(c | (128 if front and i < 5 else 0)
-                         for i, c in enumerate(b'HELLO WORLD'))
-        saved = r.ram[state-0xc000+offset:state-0xc000+offset+4]
-        check(fails, name, text == expected and saved == bytes((128, 0, 5, 0)),
-              f"buffer crc32 {zlib.crc32(text):08x}/{zlib.crc32(expected):08x}, state {saved.hex()}")
-    selection('sel-select-held', hello + [(30, 'key_down 7 64'), (5, 'key_up 7 64')]
-              + arrows(128, 5))
-    # A reverse selection spanning chunks, with the prefix scrolled out.
-    long_text = b'ABCDEFGHIJKLMNOPQRSTUVWX'
-    reverse = base + typed(long_text.decode()) + tap(7, 64) + arrows(16, 9)
-    r = Run(syms, reverse + [(10, '')], 'sel-chunks', files={})
-    painted = [(1, 1, long_text[2:], False), (1, 14, long_text[15:], True),
-               (-2, 15, b'', False)]
-    expected = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', painted)])
-    check(fails, 'sel-chunks', r.nt() == expected and r.peek('NoteLeftCol') == 2
-          and r.bytes('NoteBuf', 256) == note_width_document([long_text]),
-          f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
-    r = Run(syms, reverse + tap(5, 32) + [(10, '')], 'sel-chunks-type', files={})
-    expected = note_width_document([long_text[:15] + b'X'])
-    check(fails, 'sel-chunks-type', r.bytes('NoteBuf', 256) == expected,
-          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
-    # Select backwards across two hard breaks and a continuation chunk.
-    lines = base + typed('AB') + tap(7, 128) + typed('C'*20) + tap(7, 128) + typed('DE')
-    across = lines + tap(7, 64) + arrows(32, 2) + arrows(16, 1)
-    r = Run(syms, across + tap(7, 32) + [(10, '')], 'sel-lines', files={})
-    expected = note_width_document([b'A'])
-    check(fails, 'sel-lines', r.bytes('NoteBuf', 256) == expected,
-          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
-    scroll = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
-                       (25, 'mouse_move 0 128'), (5, 'exec xdotool mouseup 1'),
-                       (10, 'set ::throttle off')]
-    r = Run(syms, hello + scroll, 'sel-scroll', files={})
-    check(fails, 'sel-scroll', r.peek('NoteTop') > 0 and r.peek('NoteEnd', 2) >> 8 > 6
-          and r.peek('Dropped', 2) == 0,
-          f"top {r.peek('NoteTop')}, end {r.bytes('NoteEnd', 2).hex()}, Dropped {r.peek('Dropped', 2)}")
 
 
 def clipboard_checks(syms, fails):
@@ -3563,6 +3464,23 @@ def note_selection_checks(syms, fails):
     check(fails, 'sel-scroll', r.peek('NoteTop') > 0 and r.peek('NoteEnd', 2) >> 8 > 6
           and r.peek('Dropped', 2) == 0,
           f"top {r.peek('NoteTop')}, end {r.bytes('NoteEnd', 2).hex()}, Dropped {r.peek('Dropped', 2)}")
+    # Above and left of the window the drag scrolls back (lf-1547): it
+    # once took the pointer for a large cell and ran to the bottom/right.
+    def dragged(dx, dy, hold):
+        return point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
+                        (5, f'mouse_move {dx} {dy}'), (hold, 'exec xdotool mouseup 1'),
+                        (10, 'set ::throttle off')]
+    rows = base + sum((typed(str(i)) + (tap(7, 128) if i < 9 else []) for i in range(10)), [])
+    r = Run(syms, rows + dragged(0, -48, 30), 'sel-scroll-up', files={})
+    check(fails, 'sel-scroll-up', r.peek('NoteTop') == 0
+          and r.bytes('NoteAnchor', 4) == bytes((0, 3, 0, 0)),
+          f"top {r.peek('NoteTop')}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, pointer y {r.peek('PtrY')}")
+    wide = base + typed(long_text.decode())
+    point = [(5, f"debug write memory {syms['PtrX']} 80; debug write memory {syms['PtrY']} 56")]
+    r = Run(syms, wide + dragged(-48, 0, 10), 'sel-scroll-left', files={})
+    check(fails, 'sel-scroll-left', r.peek('NoteLeftCol') == 0
+          and r.bytes('NoteAnchor', 4) == bytes((12, 0, 0, 0)),
+          f"left {r.peek('NoteLeftCol')}, anchor/end {r.bytes('NoteAnchor', 4).hex()}")
 
 
 def main():
