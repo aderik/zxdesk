@@ -203,11 +203,12 @@ class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
 
-    def __init__(self, syms, steps, name, rom=ROM, files=None, setup=(), guard=120):
+    def __init__(self, syms, steps, name, rom=ROM, files=None, setup=(), guard=120, machine=None):
         """`setup`: Tcl run at start up, before the machine boots, for
         breakpoints that must be there before the TEST build's subjects,
         which run before the first frame a step could see. `guard`: the
-        driver's real time limit in seconds."""
+        driver's real time limit in seconds. `machine`: another config
+        than MSX_MACHINE's, with the same extensions."""
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
@@ -228,7 +229,7 @@ class Run:
         # The cartridge goes in slot 2 so a disk interface extension takes
         # slot 1 and the BIOS runs its init first: it must lower HIMEM and
         # plant the BDOS jump before this ROM's Init reads them.
-        cmd = ["openmsx", "-machine", MACHINE, "-cartb", rom, "-romtype", "page12",
+        cmd = ["openmsx", "-machine", machine or MACHINE, "-cartb", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
         for ext in EXTS:
             cmd += ["-ext", ext]
@@ -1349,6 +1350,35 @@ def bank_checks(syms, fails):
           and bank_files(r, "bank-note") == {"NOTE": (0, document)},
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, backend {r.peek('NoteBackend')}, "
           f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    # A 32K MSX1 whose RAM shows again in pages 0 and 1 of its slot, as
+    # hardware that does not decode A15 does (harness/machines/
+    # C-BIOS_MSX1_Mirror32): page 1 is page 3, the work RAM, and page 2
+    # is page 0, so the bank is page 0 alone, 63 blocks. The same route
+    # with the free hint on the last entry puts the document in the
+    # bank's last block and the work RAM keeps the document it reopens.
+    if MACHINE == "C-BIOS_MSX1_EU" and not EXTS:
+        mirror = "C-BIOS_MSX1_Mirror32"
+        size = 'note "ramsize [debug size {Main RAM}]"'
+        r = Run(syms, [(10, size)] + bank_dump_step(), "bank-mirror", machine=mirror)
+        ramsize = re.search(r"ramsize (\d+)", r.log)
+        ok = (ramsize and int(ramsize.group(1)) == 0x8000 and r.peek("BkSource") == 1 and r.peek("BkBlocks", 2) == 63
+              and r.bytes("BkPageTab", 1) == bytes((0,)) and r.bytes("BkSlotTab", 1) == bytes((3,))
+              and bank_files(r, "bank-mirror") == {})
+        check(fails, "bank-mirror", ok,
+              f"Main RAM {ramsize.group(1) if ramsize else '?'} bytes: source {r.peek('BkSource')}, "
+              f"{r.peek('BkBlocks', 2)} blocks, pages {tuple(r.bytes('BkPageTab', 3))} of slots {tuple(r.bytes('BkSlotTab', 3))}")
+        last = bank_geometry(r)[3] - 1
+        hint = [(5, f"debug write memory {syms['BkTop']} {last}; debug write memory {syms['BkFreeHint']} {last}")]
+        steps = (to_bank + hint + typed + file_save + input_note_name() + tap(5, 0x20) + press(66, 50) + press(60, 98)
+                 + file_open + enter + [(15, "")] + bank_dump_step())
+        r = Run(syms, steps, "bank-mirror-note", files={}, machine=mirror)
+        want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 0, 0, title=b"NOTE")])
+        check(fails, "bank-mirror-note", r.peek("NoteBackend") == 4 and r.bytes("NoteBuf", 256) == document
+              and r.peek("NoteSaved") == 1 and r.peek("WndCount") == 1 and r.nt() == want
+              and bank_files(r, "bank-mirror-note") == {"NOTE": (last, document)},
+              f"entry {last}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
     r = Run(syms, to_bank + typed + file_save + input_note_name() + file_open + [(15, "")], "bank-picker")
     want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"NOTE"),
                                    (2, 4, 30, 12, b"COMMANDER", [(1, 1, b"BANK", True), (2, 1, b"NOTE", True), (2, 22, b"00256", True),
@@ -2443,26 +2473,38 @@ def tape_checks(syms, fails):
     snapshot = [(5, f'set f [open $::out/document.bin wb]; puts -nonewline $f '
                  f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
     rewind = [(5, 'cassetteplayer rewind; cassetteplayer play')]
-    for closed in (False, True):
-        name = "note-tape-closed" if closed else "note-tape"
-        # Sequential tape loading needs a target: after DISCARD, FILE > NEW.
-        target = press(66, 50) + press(60, 98) + new if closed else []
+    edited = [(5, f'set f [open $::out/edited.bin wb]; puts -nonewline $f '
+               f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
+    # FILE > OPEN takes the next file and its name off the tape, so a
+    # SAVE AS name survives closing the window (lf-1537). After the
+    # close, FILE > NEW is the load target and is named NOTE.
+    for variant, after in (("", []),
+                           ("-closed", press(66, 50) + press(60, 98) + new + rewind + reopen),
+                           ("-saved", edited + press(66, 50) + press(60, 106) + new
+                            + rewind + reopen + reopen)):
+        name = "note-tape" + variant
         wide_base, wide_grow, _, _, _, wide_tap, _ = note_width_steps(ts)
-        filename = "NOTE" if closed else "LETTER"
+        filename = "LETTER"
         save_as = press(88, 3) + press(96, 35)
         r = Run(ts, record + wide_base + wide_grow + wide_tap(3, 64)*6
-                + snapshot + save_as + input_note_name(filename) + tap(5, 32) + tap(5, 32) + target + rewind + reopen
-                + [(10, 'cassetteplayer eject')], name, rom=rom)
+                + snapshot + save_as + input_note_name(filename) + tap(5, 32) + tap(5, 32)
+                + (after or rewind + reopen) + [(10, 'cassetteplayer eject')], name, rom=rom)
         document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
-        check(fails, name, r.bytes("NoteBuf", 256) == document
-              == note_width_document([b'H'*14 + b'I'*6])
+        header = b"MSXT" + filename.encode().ljust(13, b"\0") + b"\0\1"
+        expected, wav = document, [header, document]
+        if variant == "-saved":
+            expected = open(os.path.join(OUT, name, "edited.bin"), "rb").read()
+            wav += [header, expected]
+        check(fails, name, r.bytes("NoteBuf", 256) == expected
+              and document == note_width_document([b'H'*14 + b'I'*6]) and (variant != "-saved" or expected != document)
               and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1
+              and r.bytes("NoteName", 7) == b"LETTER\0"
               and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == ts["AppNote"],
               f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
-              f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
+              f"expected {zlib.crc32(expected):08x}; name {r.bytes('NoteName', 7)}; "
+              f"Dropped {r.peek('Dropped', 2)}")
         blocks = read_tape_wav(os.path.join(OUT, name, "note.wav"))
-        check(fails, name + "-wav", blocks == [b"MSXT" + filename.encode().ljust(13, b"\0")
-                                             + b"\0\1", document],
+        check(fails, name + "-wav", blocks == wav,
               f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
 
     r = Run(ts, new + press(88,3) + press(96,35)
@@ -2482,12 +2524,11 @@ def tape_checks(syms, fails):
               and rr.peek("NoteResult") != 0 and rr.peek("TapeMode") == 0,
               "BIOS carry propagated, document remains unsaved")
 
-    # Real BIOS reads synthetic CAS headers: reject foreign format, a
-    # different filename and oversized payload before accepting a payload.
+    # Real BIOS reads synthetic CAS headers: reject foreign format and
+    # oversized payload before accepting a payload.
     marker = bytes.fromhex("1fa6debacc137d74")
     header = blocks[0]
     for name, bad in (("magic", b"BAD!" + header[4:]),
-                      ("name", header[:4] + b"OTHER".ljust(13, b"\0") + header[17:]),
                       ("length", header[:17] + b"\1\1")):
         path = os.path.join(BUILD, "tape-" + name + ".cas")
         with open(path, "wb") as f:
@@ -2497,6 +2538,20 @@ def tape_checks(syms, fails):
         check(fails, "tape-bad-" + name, rr.peek("NoteResult") != 0
               and rr.peek("TapeLen", 2) == 0 and rr.peek("TapeMode") == 0,
               "bad header rejected, no payload accepted")
+
+    # Any file name on tape opens and becomes the document's name; CAS
+    # blocks start on eight byte boundaries.
+    other = header[:4] + b"OTHER".ljust(13, b"\0") + header[17:]
+    payload = bytes(range(32, 128)) * 2 + bytes(range(32, 96))
+    path = os.path.join(BUILD, "tape-other.cas")
+    with open(path, "wb") as f:
+        f.write(marker + other + bytes(5) + marker + payload)
+    rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")]
+             + reopen + [(10, "")], "tape-other", rom=rom)
+    loaded = rr.bytes("NoteBuf", 256)
+    check(fails, "tape-other", rr.peek("NoteResult") == 0 and rr.bytes("NoteName", 6) == b"OTHER\0"
+          and loaded[:14] == payload[:14] and rr.peek("TapeMode") == 0,
+          f"name {rr.bytes('NoteName', 6)}, 256 bytes crc32 {zlib.crc32(loaded):08x}")
 
 
 def note_width_document(lines):

@@ -881,8 +881,6 @@ NsShort:
                 scf
                 ret
 
-NoteLoad:
-                ld      hl,NoteName
 NoteLoadAs:
                 push    hl                      ; commit the name only after success
                 call    NoteLoadNamed
@@ -1185,17 +1183,30 @@ TxtNoteDelete:  defb    "DELETE "
 TxtNoteNoDelete: defb   "COULD NOT DELETE",0
 TxtNoteUnsupported: defb "NOT SUPPORTED",0
 
-; Tape has no directory; retain its sequential load operation.
+; Tape has no directory: load the next file, whatever its name, and
+; take the name from its header (a SAVE AS name survives closing).
 NoteMenuOpen:
                 call    StIdent
                 cp      ST_TAPE
                 jp      nz,CmdBrowseOpen
                 call    NoteIsFront
                 ret     nz
-                call    NoteLoad
-                ld      a,0
-                jr      nc,NmoOk
+                ld      hl,NoteName
+                ld      a,(NoteBackend)
+                cp      ST_TAPE
+                jr      nz,NmoLoad              ; a note kept elsewhere: by name
+                ld      hl,TxtNoteName+4        ; empty name
+NmoLoad:
+                push    hl
+                call    NoteLoadNamed
+                pop     hl
                 ld      a,1
+                jr      c,NmoOk
+                ld      a,(hl)
+                or      a
+                ld      hl,TapeIn+4
+                call    z,NoteSetName
+                xor     a
 NmoOk:
                 ld      (NoteResult),a
                 or      a
