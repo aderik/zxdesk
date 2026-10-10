@@ -3020,6 +3020,37 @@ def print_checks(syms, fails):
               and r.peek("StBackend") == home and r.nt().count(b"PRN") == 1 + (8 in (left, right)),
               f"panes {(r.peek('CmdBk0'), r.peek('CmdBk1'))}, expected {(left, right)}, "
               f"PRN headers {r.nt().count(b'PRN') - 1}")
+    # P gives back what the pane showed before, also a device B chose; and
+    # P from a PRN pane leaves the other pane alone: one PRN pane at most,
+    # its header the active, inverted one beside the help row's plain PRN.
+    bb = Run(syms, commander + text("BB") + [(10, "")], "print-cmd-bb")
+    chosen = bb.peek("CmdBk1")
+    r = Run(syms, commander + text("BBPP") + [(10, "")], "print-cmd-bb-back")
+    check(fails, "print-cmd-bb-back", (r.peek("CmdBk0"), r.peek("CmdBk1")) == (home, chosen)
+          and r.peek("StBackend") == home and r.nt().count(b"PRN") == 1,
+          f"B B gives {(bb.peek('CmdBk0'), chosen)}, B B P P {(r.peek('CmdBk0'), r.peek('CmdBk1'))}")
+    r = Run(syms, commander + tab + text("P") + tab + text("P") + [(10, "")], "print-cmd-one-prn")
+    check(fails, "print-cmd-one-prn", (r.peek("CmdBk0"), r.peek("CmdBk1")) == (8, 1)
+          and r.peek("CmdActive") == 0 and r.nt().count(b"PRN") == 1
+          and r.nt().count(bytes(c | 128 for c in b"PRN")) == 1,
+          f"panes {(r.peek('CmdBk0'), r.peek('CmdBk1'))}, inverted PRN headers "
+          f"{r.nt().count(bytes(c | 128 for c in b'PRN'))}")
+    # ESC ends the wait for a printer that stays busy: held 0.5 s into the
+    # job and released at 0.7 s, the alert opens on the release, long
+    # before PRINTWAIT, and stays up because the dialog never sees that ESC.
+    esc = [(1, f"debug set_bp {syms['NoteMenuPrint']} {{}} {{set ::printstart [machine_info time]; "
+               f"binary scan [debug read_block memory {irq} 2] su ::printirq; "
+               f"after time 0.5 {{key_down 7 4}}; after time 0.7 {{key_up 7 4}}}}; "
+               f"debug set_bp {syms['PrintAlert']} {{}} {{binary scan [debug read_block memory {irq} 2] su irq; "
+               f"note \"print_us [expr {{round(([machine_info time]-$::printstart)*1000000)}}] "
+               f"print_irqs [expr {{($irq-$::printirq) & 0xFFFF}}]\"}}")]
+    r = Run(syms, base + esc + shortcut + [(10, "")], "print-esc")
+    elapsed = list(map(int, re.findall(r"print_us (\d+)", r.log)))
+    irqs = list(map(int, re.findall(r"print_irqs (\d+)", r.log)))
+    check(fails, "print-esc", len(irqs) == 1 and 700000 <= elapsed[0] < 800000 and irqs[0] < wait // 2
+          and r.peek("DgOpenFlag") == 1 and r.bytes("NoteBuf",256) == document
+          and r.peek("NoteModified") == 1,
+          f"alert after {irqs} interrupts ({elapsed} us), PRINTWAIT {wait}, document preserved")
     # Inject a BIOS output failure after readiness, not a storage success stub.
     scratch = syms["CmdBuf"]
     fault = [(1, f"debug write_block memory {scratch} [binary format H* 37c9]; "

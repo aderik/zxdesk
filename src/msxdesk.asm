@@ -330,6 +330,7 @@ NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a pas
                 var     CmdActive, 1
                 var     CmdStatus, 1
                 var     CmdPending, 1
+                var     CmdPrnWas, 1    ; the device a PRN pane had before P
                 var     CmdDeleteName, 13
                 var     CmdCache0, CMDCACHE
                 var     CmdCache1, CMDCACHE

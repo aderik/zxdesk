@@ -1534,3 +1534,33 @@ Focused verification (the full `test-all.sh` is the pipeline's):
 | Roms_MSX1 | `--tape`, `--arrange`; with Mapper512 `--bank` | 13, 106; 20 |
 | Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--bank` | 170, 16, 55, 20 |
 | Roms_MSX2 | `--clipboard`, `--arrange` | 16, 106 |
+
+## Printer follow-up (lf-1546)
+
+Three remarks from the test of lf-1536.
+
+**P gives back the pane's own device.** P restored what `CmdInit` gave a
+pane, so a right pane that B had put on DISK came back as RAM. P now keeps
+the device the pane showed in `CmdPrnWas` and returns to it: on
+Roms_MSX1 + Roms_Disk, B B gives panes (5, 5) and B B P P (5, 5) again
+(`print-cmd-bb-back`).
+
+**One PRN pane.** P from a pane that is already PRN does nothing, so TAB P
+TAB P leaves (8, 1) rather than two write-only panes
+(`print-cmd-one-prn`).
+
+**ESC ends the wait.** While the printer stays busy, `PrintReady` reads
+ESC (row 7, bit 2) between polls and gives up on it, waiting for the key's
+release so the `PRINTER NOT READY` alert that follows does not take the
+same ESC as its own. `print-esc` holds ESC from 0.5 s into the job and
+releases it at 0.7 s: the alert opens after **35** interrupts (700,198 µs)
+at 50 Hz and **42** (700,214 µs) at 60 Hz, instead of after `PRINTWAIT`
+(150), and stays open with the document intact. No "PRINTING" status
+line: the ESC abort is the way out of a long wait.
+
+Measured against base `ca6f74d`: normal ROM **20,432 → 20,467 bytes
+(+35)**, TEST ROM **22,169 → 22,204 (+35)**. Static RAM **4,005 → 4,006
+(+1)**, TEST **6,737 → 6,738 (+1)**: `CmdPrnWas` sits in the commander
+state, so each open commander's heap copy grows by the same byte; heap
+**8,283 → 8,282** without disk, **2,898 → 2,897** with it. Padded ROM
+CRC32: normal `a3cf85e2`, TEST `cbf4d59e`.
