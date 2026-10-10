@@ -972,3 +972,58 @@ The additional HELP > KEYS row increases that window's heap buffer by
 **15 bytes** while it is open; document state size is unchanged.
 
 Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
+
+## lf-1526: Notepad selection
+
+SELECT toggles marking at the caret; holding it does not repeat the
+toggle. While marking, SHIFT+arrows extend the selection with KEY PTR ON,
+and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
+drag selects whole cells, and dragging beyond the viewport scrolls it.
+SELECT again stops extending while retaining the selection. ESC or a
+click without dragging clears it. Typing replaces it; BS and DEL delete
+it. HELP > KEYS now includes SELECT MARK.
+
+Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
+in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
+no selection. Continuation chunks remain part of the same logical line.
+Selection uses the existing inverse bank, only in the front window.
+Focus changes recompose Notepad content so the background loses inversion
+without losing its selection. Mouse composition and desktop repaint use
+successive frames; all output still goes through the shadow nametable.
+
+`./test.sh --note-selection` adds 17 assertions, also included in the
+pipeline's default suite. They compare memory and compositor bytes for
+keyboard/mouse equivalence, both KEY PTR modes, SELECT toggling and repeat
+suppression, replacement, BS/DEL, ESC/click clearing, per-instance focus,
+reverse selection across chunks, three-line deletion and drag scrolling.
+The three-line deletion compares all 256 document bytes.
+
+Focused verification:
+
+| Configuration | Selection | Existing width/chunk checks | Existing application checks |
+|---|---:|---:|---:|
+| C-BIOS_MSX1_EU, 50 Hz | 17 | 16 | 7 |
+| C-BIOS_MSX1_JP, 60 Hz | 17 | — | — |
+
+Keyboard and mouse selection both have nametable CRC32 **f4052d28**.
+Replacement with X gives document CRC32 **fb9f7a1f**; BS/DEL give
+**3bc1feef**; deletion across three logical lines including a continuation
+chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
+**2d1d3048**. HELP > KEYS has CRC32 **91f6a615**. The drag-scroll subject
+measures **Dropped = 0** on both frequencies; this is not a claim about
+all editing operations or window sizes.
+
+The actual checkout base is `666af80`, whose assembled normal/TEST ROMs
+use **15,483 / 16,760 bytes**. This change adds **512 ROM bytes**:
+normal **15,995**, TEST **17,272**. Normal page 1 has **389 bytes** left;
+page 2 was already mapped. Static RAM grows **20 bytes** (four live state
+bytes, one mouse capture byte, fifteen paint scratch bytes), to **3,563**
+normal / **6,295** TEST. Normal heap capacity falls by 20 to **8,725**
+bytes without disk or **3,340** with disk. Each Notepad's existing state
+allocation grows **4 bytes**, from **278 to 282**, with no new allocation.
+The additional HELP row uses **15 extra heap bytes** while that window
+is open. Padded ROM CRC32: normal **82db8c77**, TEST **6d2aed3f**.
+
+The full five-configuration `test-all.sh` is left to the pipeline, as
+required by this implementation run's focused-tests-only instruction.
+No real-ROM matrix results are claimed here.

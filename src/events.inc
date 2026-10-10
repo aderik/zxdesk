@@ -199,6 +199,8 @@ HbdWindow:
                 jp      z,ScrPress
                 cp      CTL_TITLEBAR
                 jr      z,HbdGrab
+                call    NoteIsFront
+                jp      z,NoteMouseStart
                 ld      hl,(WinApp)
                 ld      de,AppSettings
                 or      a
@@ -222,6 +224,7 @@ HdlBtnUp:
                 inc     (hl)
                 xor     a
                 ld      (Dragging),a
+                ld      (NoteMouse),a
                 jp      RszEnd
 HdlKey:
                 ld      hl,EvCounts+3
