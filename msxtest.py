@@ -2584,14 +2584,52 @@ def print_checks(syms, fails):
               if busy else open(log,"rb").read() == b"ABC\f" and r.peek("CmdStatus") == 1,
               "busy preserves source" if busy else "raw stream ABC + FF")
 
-    timing = [(1, f"debug set_bp {syms['NoteMenuPrint']} {{}} {{set ::printstart [machine_info time]}}; "
-                  f"debug set_bp {syms['PrintAlert']} {{}} {{note \"print_us [expr {{round(([machine_info time]-$::printstart)*1000000)}}]\"}}")]
+    # Nothing plugged in reads busy for ever: the alert comes after PRINTWAIT
+    # interrupts, counted on the ROM's own IrqCnt, not at the first busy poll.
+    irq = syms["IrqCnt"]
+    wait = syms["PRINTWAIT"]
+    timing = [(1, f"debug set_bp {syms['NoteMenuPrint']} {{}} {{set ::printstart [machine_info time]; "
+                  f"binary scan [debug read_block memory {irq} 2] su ::printirq}}; "
+                  f"debug set_bp {syms['PrintAlert']} {{}} {{binary scan [debug read_block memory {irq} 2] su irq; "
+                  f"note \"print_us [expr {{round(([machine_info time]-$::printstart)*1000000)}}] "
+                  f"print_irqs [expr {{($irq-$::printirq) & 0xFFFF}}]\"}}")]
     r = Run(syms, base + timing + shortcut + [(10, "")], "print-busy")
     import re
     elapsed = list(map(int, re.findall(r"print_us (\d+)", r.log)))
-    check(fails, "print-busy", bool(elapsed) and max(elapsed) < 1000000
+    irqs = list(map(int, re.findall(r"print_irqs (\d+)", r.log)))
+    check(fails, "print-busy", len(irqs) == 1 and wait <= irqs[0] <= wait + 2
+          and max(elapsed) < 3500000
           and r.peek("DgOpenFlag") == 1 and r.bytes("NoteBuf",256) == document
-          and r.peek("NoteModified") == 1, f"alert after {elapsed} us, document preserved")
+          and r.peek("NoteModified") == 1,
+          f"alert after {irqs} interrupts ({elapsed} us), PRINTWAIT {wait}, document preserved")
+    # A printer that is busy when the job starts and ready within the wait
+    # gets the whole job: the logger is plugged one emulated second after
+    # PRINT, inside PRINTWAIT. Dropped counts the frames the wait stalled.
+    log = os.path.join(OUT, "print-wait", "printer.log")
+    plug = [(1, f"set printerlogfilename {log}; "
+                f"debug set_bp {syms['NoteMenuPrint']} {{}} {{after time 1 {{plug printerport logger}}}}")]
+    r = Run(syms, base + plug + shortcut + [(10, "unplug printerport")], "print-wait", files={})
+    data = open(log, "rb").read()
+    check(fails, "print-wait", data == b"HI\r\nTHERE\r\n\f" and r.peek("DgOpenFlag") == 0
+          and 40 <= r.peek("Dropped", 2) <= wait and r.bytes("NoteBuf",256) == document,
+          f"printer bytes {data!r} after a {r.peek('Dropped', 2)} frame wait, no alert")
+    # P gives the opposite pane PRN and then its own device back: the
+    # selected backend on the left, RAM on the right, never RAM for DISK.
+    commander = tap(3, 8, 4)
+    tab = tap(7, 8)
+    home = syms["ST_DISK"] if EXT else syms["ST_RAM"]
+    for name, steps, left, right in [
+        ("print-cmd-prn-left", commander + tab + text("P"), 8, 1),
+        ("print-cmd-back-left", commander + tab + text("PP"), home, 1),
+        ("print-cmd-prn-right", commander + text("P"), home, 8),
+        ("print-cmd-back-right", commander + text("PP"), home, 1),
+    ]:
+        r = Run(syms, steps + [(10, "")], name)
+        # The help row says "P PRN" once; a PRN pane header is the second.
+        check(fails, name, (r.peek("CmdBk0"), r.peek("CmdBk1")) == (left, right)
+              and r.peek("StBackend") == home and r.nt().count(b"PRN") == 1 + (8 in (left, right)),
+              f"panes {(r.peek('CmdBk0'), r.peek('CmdBk1'))}, expected {(left, right)}, "
+              f"PRN headers {r.nt().count(b'PRN') - 1}")
     # Inject a BIOS output failure after readiness, not a storage success stub.
     scratch = syms["CmdBuf"]
     fault = [(1, f"debug write_block memory {scratch} [binary format H* 37c9]; "

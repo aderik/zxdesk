@@ -1007,7 +1007,8 @@ Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
 
 FILE > PRINT and GRAPH+R print the front notepad through the write-only
 `ST_PRINT` (8) backend. In COMMANDER, **P** toggles the opposite pane
-between PRN and RAM; **C** copies the selected file there. A 256-byte
+between PRN and its own device (see lf-1536 below); **C** copies the
+selected file there. A 256-byte
 notepad is printed as logical lines, joining continuation chunks and
 omitting empty trailing lines; each line ends in CR LF and the job ends
 in FF. Other files within the commander's existing 256-byte copy limit
@@ -1017,7 +1018,8 @@ and SETTINGS > BACKEND. HELP > KEYS includes R PRINT.
 
 The backend uses inter-slot CALSLT calls to BIOS LPTSTT ($00A8) and
 LPTOUT ($00A5). It checks readiness before opening and before each output
-byte, and reports `PRINTER NOT READY` for busy status or output carry.
+byte, and reports `PRINTER NOT READY` for a printer that stays busy (see
+lf-1536 below for the bounded wait) or for output carry.
 [C-BIOS implements both calls](https://github.com/cbios/cbios/blob/master/src/main.asm);
 its LPTOUT implementation includes a busy loop, hence the explicit status
 check. The logger subjects run on C-BIOS as well as the real BIOS machines;
@@ -1141,3 +1143,41 @@ Focused verification (the full `test-all.sh` is the pipeline's):
 Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2 were not available
 in this environment; the disk-only subjects (`dsk-boot-*`, the seeded
 version 5 boots) run there in the pipeline.
+
+## Review of the printer (lf-1536)
+
+Two findings from the review of lf-1524, both fixed here.
+
+**Busy handling.** LPTSTT answers busy or ready and nothing else, and the
+backend failed the whole job on the first busy poll. A real printer holds
+BUSY while it takes a character into its buffer and for as long as it
+prints once the buffer is full, so on hardware the second byte or the
+second line would have raised `PRINTER NOT READY`; the emulated logger is
+never busy, which is why no subject saw it. `PrintReady` now polls LPTSTT
+until ready or until `PRINTWAIT` (150) interrupts have passed on `IrqCnt`,
+which keeps counting because `PrintBios` re-enables interrupts after
+CALSLT. An unplugged port still ends in the alert, after 150 interrupts:
+measured **2,990,748 µs** at 50 Hz and **2,503,478 µs** at 60 Hz, asserted
+as 150 to 152 interrupts on the ROM's own counter rather than as a time.
+The new `print-wait` subject starts the job with nothing plugged in and
+plugs the logger one emulated second later: the output is the complete
+`HI\r\nTHERE\r\n\f` (CRC32 6cea7f8e), no alert, and `Dropped` counts the
+stalled frames, **51** at 50 Hz and **61** at 60 Hz.
+
+**Commander P.** P turned the opposite pane into PRN and then into RAM, so
+a DISK pane was gone until the commander was reopened. It now returns the
+pane to what `CmdInit` gave it: the global backend on the left, RAM on the
+right. Four subjects assert `CmdBk0`/`CmdBk1` and the PRN header after P
+and P P on either pane; on Roms_MSX1 + Roms_Disk the left pane goes
+5 → 8 → 5.
+
+Measured against base `0ed9256`: normal ROM **17,166 → 17,201 bytes
+(+35)**, TEST ROM **18,455 → 18,490 (+35)**. Static RAM **3,578 (+0)**,
+TEST **6,310 (+0)**; heap **8,710** without disk and **3,325** with it,
+unchanged. No new RAM: the wait uses `IrqCnt`, the toggle `CmdWasK`.
+Padded ROM CRC32: normal `6704eb41`, TEST `8498aabb`.
+
+`./test.sh --print`: C-BIOS_MSX1_EU **23**, C-BIOS_MSX1_JP **23**,
+Roms_MSX1 + Roms_Disk **22** assertions, none failed (the disk run omits
+the RAM-only raw-stream fixture, as before). The full suite is the
+pipeline's.
