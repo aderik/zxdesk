@@ -17,8 +17,8 @@ NOTEW           equ     NOTECOLS+2
 NOTEH           equ     9               ; seven lines showing
 
 ; NoteState, NoteBuf, NoteName, NoteCX, NoteCY, NoteTop, NoteEdited,
-; NoteDirty, NoteSaved and NoteModified are contiguous in the var block;
-; NOTESTSZ is their total.
+; Viewport, backend and selection follow the document fields in the
+; contiguous per-instance state; NOTESTSZ is their total.
 
 ; A = row. Returns HL = its address in the document.
 NoteRowAddr:
@@ -162,6 +162,8 @@ NdBreak:
 NdNext:
                 pop     bc
                 djnz    NdRow
+                call    NoteSelectionBounds
+                ret     nz
                 ld      a,(NoteCursorX)
                 ld      (NoteDrawX),a
                 ld      a,(NoteCursorY)
@@ -180,6 +182,11 @@ NotePaintChunk:
                 sub     c
                 ret     c
                 ld      b,a
+                ld      a,(WinH)
+                sub     2
+                cp      b
+                ret     z
+                ret     c
                 inc     b
                 ld      a,(NoteLeftCol)
                 ld      c,a
@@ -198,6 +205,9 @@ NpcColumn:
                 inc     c
                 xor     a
                 ld      (PrintInv),a
+                push    bc
+                call    NotePaintSelection
+                pop     bc
                 jp      WinPrint
 
 NotePaintAddr:
@@ -238,6 +248,7 @@ NoteInit:
                 ld      hl,TxtNoteName
                 call    NoteSetName
 NoteNew:
+                call    NoteClearSelection
                 ; Build one blank row, then spread it through the document.
                 xor     a
                 call    NoteBlankRow
@@ -366,6 +377,7 @@ NoteMarkEdited:
                 ld      a,1
                 ld      (NoteEdited),a
                 ld      (NoteModified),a
+                or      a                       ; carry clear: the edit went in
                 ret
 
 NoteBlankRow:
@@ -741,6 +753,31 @@ NoteKey:
                 xor     a
                 ld      (NoteEdited),a
                 ld      a,(NoteChar)
+                cp      KEY_SELECT
+                jp      z,NoteToggleSelection
+                cp      KEY_ESC
+                jr      nz,NkSelectionEdit
+                call    NoteClearSelection
+                jr      NkView
+NkSelectionEdit:
+                cp      KEY_DELETE
+                jr      z,NkEraseSelection
+                cp      KEY_ENTER
+                jr      z,NkReplaceSelection
+                cp      ' '
+                jr      c,NkNavigation
+                cp      128
+                jr      nc,NkNavigation
+NkReplaceSelection:
+                push    af
+                call    NoteEraseSelection
+                pop     af
+                jr      NkNavigation
+NkEraseSelection:
+                call    NoteEraseSelection
+                jr      nz,NkView
+                ld      a,KEY_DELETE
+NkNavigation:
                 cp      KEY_LEFT
                 jr      nz,NkNotL
                 call    NoteLeft
@@ -777,6 +814,12 @@ NkNotEnt:
                 jr      nc,NkNone
                 call    NoteInsert
 NkView:
+                ld      a,(NoteAnchor)
+                bit     7,a
+                jr      z,NkScroll
+                ld      hl,(NoteCX)
+                ld      (NoteEnd),hl
+NkScroll:
                 call    NoteScroll
                 ld      a,1
                 ret
@@ -876,6 +919,7 @@ NoteLoadFile:
                 ld      bc,NOTESIZE
                 ldir
                 call    NoteSanitise
+                call    NoteClearSelection
                 xor     a
                 ld      (NoteCX),a
                 ld      (NoteCY),a
@@ -1007,8 +1051,9 @@ NoteMenuNew:
                 ld      a,APP_NOTE
                 call    WndOpen
                 ret     c
+NoteComposeLater:
                 ; Compose now, then restore the desktop and blit next frame,
-                ; as for SETTINGS. Do not compose the new buffer twice.
+                ; as for SETTINGS. Mouse selection uses the same frame split.
                 call    WinDraw
                 ld      a,(WndCur)
                 ld      b,a
@@ -1158,6 +1203,199 @@ NmoOk:
 
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
+
+; ---- The EDIT menu: CUT, COPY and PASTE (GRAPH+E, Y, P) through one
+; clipboard shared by every notepad, ClipBuf and ClipLen. The text is
+; the selection's cells with a CLIP_CR for every hard line break it
+; crosses; a line-ending chunk loses its padding, a continued chunk
+; is text through to its 14th cell. Each action wants the front
+; window to be a notepad and does nothing otherwise, like the menu
+; items that have nothing to act on.
+CLIP_CR         equ     13
+CLIPSIZE        equ     NOTEROWS*NOTECOLS       ; 224, the document budget
+
+NoteMenuCopy:
+                call    NoteIsFront
+                ret     nz
+                jp      NoteClipCopy
+
+NoteMenuCut:
+                call    NoteIsFront
+                ret     nz
+                call    NoteClipCopy
+                ret     c                       ; nothing copied, nothing cut
+                call    NoteEraseSelection
+                jp      NoteRefresh
+
+; The clipboard goes in at the caret, through NoteInsert and NoteEnter
+; as if typed, over a selection if there is one. Everything that could
+; change is saved first, and a byte that does not fit puts it all back
+; and says so: no half pasted text.
+NoteMenuPaste:
+                call    NoteIsFront
+                ret     nz
+                ld      a,(ClipLen)
+                or      a
+                ret     z
+                ld      hl,NoteBuf
+                ld      de,CmdBuf               ; free: no dialogue is open
+                ld      bc,NOTESIZE
+                ldir
+                ld      hl,NoteCX
+                ld      de,CmdWork              ; 13 bytes, NOTECURSZ of them
+                ld      bc,NOTECURSZ
+                ldir
+                call    NoteEraseSelection
+                xor     a
+                ld      (ClipIx),a
+NpaLoop:
+                ld      a,(ClipIx)
+                ld      hl,ClipLen
+                cp      (hl)
+                jr      z,NoteRefresh
+                ld      hl,ClipBuf
+                ld      c,a
+                ld      b,0
+                add     hl,bc
+                inc     a
+                ld      (ClipIx),a
+                ld      a,(hl)
+                cp      CLIP_CR
+                jr      z,NpaBreak
+                call    NoteInsert
+                jr      nc,NpaLoop
+                jr      NpaFull
+NpaBreak:
+                call    NoteEnter
+                jr      nc,NpaLoop
+NpaFull:
+                ld      hl,CmdBuf
+                ld      de,NoteBuf
+                ld      bc,NOTESIZE
+                ldir
+                ld      hl,CmdWork
+                ld      de,NoteCX
+                ld      bc,NOTECURSZ
+                ldir
+                ld      hl,TxtNoteFull
+                ld      de,0
+                jp      DlgAlert
+TxtNoteFull:    defb    "DOCUMENT FULL",0
+
+; The caret back in view, the buffer composed now and the desktop
+; and blit next frame, the split mouse selection uses: a paste of
+; HELLO measured 7.3 ms (1.8 of them the snapshot) before the 6 ms
+; compose, and the repaint on top of that dropped a frame at 50 Hz.
+NoteRefresh:
+                call    NoteScroll
+                call    RowsAddLive
+                jp      NoteComposeLater
+
+; A = a packed endpoint (NotePack). Returns A = its chunk row.
+NoteUnpackRow:
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ret
+
+; The selection into the clipboard. It is built in CmdBuf, which
+; holds the most a selection can give (224 cells and 15 breaks), and
+; moved when it fits: carry, and the clipboard as it was, when it
+; does not or when there is no selection.
+NoteClipCopy:
+                call    NoteSelectionBounds
+                scf
+                ret     z
+                ld      a,c
+                ld      (NoteChar),a            ; the exclusive upper endpoint
+                call    NoteUnpackRow
+                ld      (NoteExtendRow),a       ; and its row
+                ld      a,b
+                and     $0F
+                ld      (NoteJoinAt),a          ; the first chunk's start column
+                ld      a,b
+                call    NoteUnpackRow
+                ld      (NoteRowIx),a
+                ld      de,CmdBuf
+NccChunk:
+                push    de                      ; the row routines take DE
+                ld      a,(NoteRowIx)
+                call    NoteLinkAddr
+                ld      a,(hl)
+                ld      (NoteOldLink),a
+                ld      a,(NoteRowIx)
+                ld      hl,NoteExtendRow
+                cp      (hl)
+                ld      a,NOTECOLS              ; a chunk before the last: all of it
+                jr      c,NccEnd
+                ld      a,(NoteChar)
+                and     $0F                     ; the last: up to the endpoint
+NccEnd:
+                cp      NOTECOLS
+                jr      nz,NccCopy
+                ld      a,(NoteOldLink)
+                or      a
+                ld      a,NOTECOLS
+                jr      nz,NccCopy              ; a continued chunk is all text
+                ld      a,(NoteRowIx)
+                call    NoteLineLen             ; a line's end, without its padding
+NccCopy:
+                ld      hl,NoteJoinAt
+                sub     (hl)
+                jr      c,NccSkip               ; the start is past the text
+                jr      z,NccSkip
+                ld      c,a
+                ld      b,0
+                ld      a,(NoteRowIx)
+                call    NoteRowAddr
+                ld      a,(NoteJoinAt)
+                add     a,l
+                ld      l,a
+                jr      nc,NccFrom
+                inc     h
+NccFrom:
+                pop     de
+                ldir
+                push    de
+NccSkip:
+                pop     de
+NccBreak:
+                xor     a
+                ld      (NoteJoinAt),a          ; later chunks start at column 0
+                ld      a,(NoteRowIx)
+                ld      hl,NoteExtendRow
+                cp      (hl)
+                jr      nc,NccDone              ; the last chunk is in
+                inc     a
+                ld      (NoteRowIx),a
+                ld      a,(NoteOldLink)
+                or      a
+                jr      nz,NccChunk             ; the line goes on in the next chunk
+                ld      a,CLIP_CR
+                ld      (de),a
+                inc     de
+                jr      NccChunk
+NccDone:
+                ld      hl,CmdBuf
+                ex      de,hl
+                or      a
+                sbc     hl,de                   ; the length, at most 239
+                ld      a,l
+                cp      CLIPSIZE+1
+                ccf
+                ret     c                       ; more than the clipboard holds
+                ld      (ClipLen),a
+                or      a
+                ret     z                       ; padding alone: an empty clipboard
+                ld      c,a
+                ld      b,0
+                ld      de,ClipBuf
+                ld      hl,CmdBuf
+                ldir
+                or      a
+                ret
 
 ; Scroll model: count hard lines, not the chunks of a long line.
 NoteScrollInfo:
@@ -1311,3 +1549,258 @@ NoteOverwriteAnswer:
                 or      a
                 jp      nz,NcaGo
                 ret
+
+; Four per-instance bytes. Endpoints are chunk cells; bit 7 of the
+; anchor X enables keyboard marking, anchor Y=$FF means no selection.
+NoteClearSelection:
+                xor     a
+                ld      (NoteAnchor),a
+                ld      (NoteEnd),a
+                ld      (NoteEnd+1),a
+                dec     a
+                ld      (NoteAnchor+1),a
+                ret
+NoteToggleSelection:
+                ld      hl,NoteAnchor
+                bit     7,(hl)
+                jr      z,NselStart
+                res     7,(hl)
+                ld      a,1
+                ret
+NselStart:
+                ld      hl,(NoteCX)
+                ld      (NoteEnd),hl
+                set     7,l
+                ld      (NoteAnchor),hl
+                ld      a,1
+                ret
+
+; Pack chunk Y and X into a sortable byte (terminators are skipped).
+NotePack:
+                ld      a,h
+                rlca
+                rlca
+                rlca
+                rlca
+                ld      h,a
+                ld      a,l
+                and     $0F
+                add     a,h
+                ret
+; NZ = nonempty, B = lower endpoint, C = exclusive upper endpoint.
+NoteSelectionBounds:
+                ld      hl,(NoteAnchor)
+                ld      a,h
+                cp      $FF
+                jr      z,NselEmpty
+                call    NotePack
+                ld      b,a
+                ld      hl,(NoteEnd)
+                call    NotePack
+                ld      c,a
+                cp      b
+                ret     z
+                ret     nc
+                ld      c,b
+                ld      b,a
+                or      1
+                ret
+NselEmpty:
+                xor     a
+                ret
+
+; Prepare only the clipped chunk. WinPrint writes the inverse-bank codes
+; to the window buffer, which the compositor copies through ShadowNT.
+NotePaintSelection:
+                push    hl
+                ld      a,(WndZ)
+                ld      hl,WndCur
+                cp      (hl)
+                jr      nz,NpsPlain
+                call    NoteSelectionBounds
+                jr      z,NpsPlain
+                pop     hl
+                push    hl
+                ld      de,NoteBuf
+                or      a
+                sbc     hl,de
+                ld      a,l
+                cp      c
+                jr      nc,NpsPlain
+                or      $0F
+                dec     a                       ; exclusive chunk text end
+                cp      b
+                jr      c,NpsPlain
+                jr      z,NpsPlain
+                cp      c
+                jr      c,NpsWhole
+                jr      z,NpsWhole
+NpsPartial:
+                ld      a,l
+                pop     hl
+                ld      de,NotePaintBuf
+NpsLoop:
+                push    af
+                cp      b
+                jr      c,NpsNormal
+                cp      c
+                jr      nc,NpsNormal
+                ld      a,(hl)
+                or      a
+                jr      z,NpsEnd
+                or      INVBANK
+                jr      NpsPut
+NpsNormal:
+                ld      a,(hl)
+                or      a
+                jr      z,NpsEnd
+NpsPut:
+                ld      (de),a
+                inc     de
+                inc     hl
+                pop     af
+                inc     a
+                jr      NpsLoop
+NpsEnd:
+                ld      (de),a
+                pop     af
+                ld      hl,NotePaintBuf
+                ret
+NpsWhole:
+                ld      a,l
+                cp      b
+                jr      c,NpsPartial
+                ld      a,INVBANK
+                ld      (PrintInv),a
+NpsPlain:
+                pop     hl
+                ret
+
+; Delete backwards so the lower endpoint remains stable while chunks
+; above it are reclaimed and hard line breaks are joined.
+NoteEraseSelection:
+                call    NoteSelectionBounds
+                jr      nz,NesSelected
+                call    NoteClearSelection
+                xor     a
+                ret
+NesSelected:
+                ld      a,b
+                push    af
+                ld      a,c
+                and     $0F
+                ld      (NoteCX),a
+                ld      a,c
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ld      (NoteCY),a
+NesLoop:
+                pop     af
+                push    af
+                ld      b,a
+                ld      hl,(NoteCX)
+                call    NotePack
+                cp      b
+                jr      c,NesDone
+                jr      z,NesDone
+                call    NoteBack
+                jr      NesLoop
+NesDone:
+                pop     af
+                call    NoteClearSelection
+                ld      a,1
+                or      a
+                ret
+
+NoteMouseStart:
+                call    NoteClearSelection
+                call    NoteMousePosition
+                ld      hl,(NoteCX)
+                ld      (NoteAnchor),hl
+                ld      (NoteEnd),hl
+                ld      a,1
+                ld      (NoteMouse),a
+                jr      NmouseTouch
+NoteMouseFrame:
+                ld      a,(NoteMouse)
+                or      a
+                ret     z
+                ld      a,(RepaintDue)
+                or      a
+                ret     nz
+                call    NoteIsFront
+                ret     nz
+                ld      hl,(NoteCX)
+                push    hl
+                call    NoteMousePosition
+                pop     de
+                ld      hl,(NoteCX)
+                ld      (NoteEnd),hl
+                or      a
+                sbc     hl,de
+                ret     z
+NmouseTouch:
+                call    NoteScroll
+                call    RowsAddLive
+                jp      NoteComposeLater
+
+; Pointer cells are clamped to the viewport. Holding beyond the top or
+; bottom advances one logical row each frame, even without new motion.
+NoteMousePosition:
+                call    NoteMeasure
+                ld      a,(PtrX)
+                rrca
+                rrca
+                rrca
+                and     31
+                ld      hl,WinX
+                sub     (hl)
+                sub     1
+                jr      nc,NmpX
+                xor     a
+NmpX:
+                ld      b,a
+                ld      a,(WinW)
+                sub     2
+                cp      b
+                jr      nc,NmpColumn
+                ld      b,a
+NmpColumn:
+                ld      a,(NoteLeftCol)
+                add     a,b
+                ld      (NoteCursorX),a
+                ld      a,(PtrY)
+                rrca
+                rrca
+                rrca
+                and     31
+                ld      hl,WinY
+                sub     (hl)
+                sub     1
+                jr      nc,NmpY
+                ld      a,(NoteTop)
+                or      a
+                jr      z,NmpGoto
+                dec     a
+                jr      NmpGoto
+NmpY:
+                ld      b,a
+                ld      a,(WinH)
+                sub     2
+                cp      b
+                jr      nc,NmpRow
+                ld      b,a
+NmpRow:
+                ld      a,(NoteTop)
+                add     a,b
+                ld      b,a
+                ld      a,(NoteRows)
+                dec     a
+                cp      b
+                jr      c,NmpGoto
+                ld      a,b
+NmpGoto:
+                jp      NoteGotoLine

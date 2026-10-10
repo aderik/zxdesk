@@ -819,8 +819,24 @@ WtShift:
 
 ; A = slot: only its title row is redrawn. A focus change flips two
 ; title bars and nothing else, and the calendar's interior was
-; measured at six milliseconds to rebuild.
+; measured at six milliseconds to rebuild. Notepad also repaints its
+; content, because only the front instance displays selection inversion.
 WndTouchCap:
+                push    af
+                call    WndRecAt
+                ld      de,WR_APP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,AppNote
+                or      a
+                sbc     hl,de
+                jr      nz,WtcOther
+                pop     af
+                jp      WndTouch
+WtcOther:
+                pop     af
                 ld      hl,WndCapDirty
                 jr      WtSet
 

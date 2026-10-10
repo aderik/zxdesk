@@ -110,7 +110,7 @@ item, save-under out of the shadow):
 | subject | what is checked |
 |---|---|
 | menu-open | a press on FILE opens menu 2: the name table equals the oracle built from the MenuDefs read out of the ROM, title inverted, six item rows |
-| menu-open-1/4 | ZX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
+| menu-open-1/5 | MSX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
 | menu-pick | FILE then a press on row 3 picks SAVE (item 2 of menu 2), the menu closes |
 | menu-restore | after the pick the name table is byte for byte the boot one again |
 | menu-away | VIEW then a press on the desktop: no pick, closed, restored |
@@ -143,9 +143,11 @@ produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
 K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
-window that says which icons are on the desktop.
-HELP > KEYS opens the list, with the calendar's keys, as a window;
-at 21 rows it opens at row 2, the lowest it fits.
+window that says which icons are on the desktop. E, Y and P are CUT,
+COPY and PASTE (see "Clipboard and the EDIT menu").
+HELP > KEYS opens the list, with the calendar's keys, as a window of
+two columns, 27 by 16 at (2, 4): nineteen GRAPH letters no longer
+fit the desktop's 22 rows in one.
 333 ROM bytes, no RAM.
 
 | subject | asserts |
@@ -1141,3 +1143,153 @@ Focused verification (the full `test-all.sh` is the pipeline's):
 Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2 were not available
 in this environment; the disk-only subjects (`dsk-boot-*`, the seeded
 version 5 boots) run there in the pipeline.
+## lf-1526: Notepad selection
+
+SELECT toggles marking at the caret; holding it does not repeat the
+toggle. While marking, SHIFT+arrows extend the selection with KEY PTR ON,
+and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
+drag selects whole cells, and dragging beyond the viewport scrolls it.
+SELECT again stops extending while retaining the selection. ESC or a
+click without dragging clears it. Typing replaces it; BS and DEL delete
+it. HELP > KEYS now includes SELECT MARK.
+
+Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
+in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
+no selection. Continuation chunks remain part of the same logical line.
+Selection uses the existing inverse bank, only in the front window.
+Focus changes recompose Notepad content so the background loses inversion
+without losing its selection. Mouse composition and desktop repaint use
+successive frames; all output still goes through the shadow nametable.
+
+`./test.sh --note-selection` adds 17 assertions, also included in the
+pipeline's default suite. They compare memory and compositor bytes for
+keyboard/mouse equivalence, both KEY PTR modes, SELECT toggling and repeat
+suppression, replacement, BS/DEL, ESC/click clearing, per-instance focus,
+reverse selection across chunks, three-line deletion and drag scrolling.
+The three-line deletion compares all 256 document bytes.
+
+Focused verification:
+
+| Configuration | Selection | Existing width/chunk checks | Existing application checks |
+|---|---:|---:|---:|
+| C-BIOS_MSX1_EU, 50 Hz | 17 | 16 | 7 |
+| C-BIOS_MSX1_JP, 60 Hz | 17 | — | — |
+
+Keyboard and mouse selection both have nametable CRC32 **f4052d28**.
+Replacement with X gives document CRC32 **fb9f7a1f**; BS/DEL give
+**3bc1feef**; deletion across three logical lines including a continuation
+chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
+**2d1d3048**. HELP > KEYS has CRC32 **91f6a615**. The drag-scroll subject
+measures **Dropped = 0** on both frequencies; this is not a claim about
+all editing operations or window sizes.
+
+The actual checkout base is `666af80`, whose assembled normal/TEST ROMs
+use **15,483 / 16,760 bytes**. This change adds **512 ROM bytes**:
+normal **15,995**, TEST **17,272**. Normal page 1 has **389 bytes** left;
+page 2 was already mapped. Static RAM grows **20 bytes** (four live state
+bytes, one mouse capture byte, fifteen paint scratch bytes), to **3,563**
+normal / **6,295** TEST. Normal heap capacity falls by 20 to **8,725**
+bytes without disk or **3,340** with disk. Each Notepad's existing state
+allocation grows **4 bytes**, from **278 to 282**, with no new allocation.
+The additional HELP row uses **15 extra heap bytes** while that window
+is open. Padded ROM CRC32: normal **82db8c77**, TEST **6d2aed3f**.
+
+The full five-configuration `test-all.sh` is left to the pipeline, as
+required by this implementation run's focused-tests-only instruction.
+No real-ROM matrix results are claimed here.
+
+## Clipboard and the EDIT menu (lf-1528)
+
+The bar is MSX DESK, FILE, EDIT, VIEW, HELP, two spaces apart from
+column 0 (the titles sit at 0, 10, 16, 22 and 28; FILE's cell did not
+move, VIEW's and HELP's did, and the subjects that press them moved
+with them). EDIT holds CUT, COPY, PASTE and UNDO; UNDO has no action
+until the undo ticket. GRAPH+E, GRAPH+Y and GRAPH+P are the keys, the
+free letters once X C T W N O S K L F G I V R D were taken, and HELP >
+KEYS lists them.
+
+One clipboard for every notepad: `ClipBuf`, 224 bytes, the document's
+text budget, and `ClipLen`. COPY takes the selection's cells from the
+lower endpoint to the upper, a byte 13 for every hard line break it
+crosses; a line-ending chunk loses its padding, a continued chunk is
+text through to its 14th cell, so a cut and a paste give the document
+back. It is built in `CmdBuf` (free: no dialogue is open while a menu
+item or a shortcut runs) and moved when it fits; a selection of padding
+alone leaves an empty clipboard, and the one selection that cannot fit,
+all sixteen chunks full with fifteen breaks, leaves the clipboard as it
+was and cuts nothing. CUT is COPY and the selection's erase. PASTE goes
+in at the caret through `NoteInsert` and `NoteEnter`, byte by byte as
+if typed, over a selection if there is one; the document and the
+thirteen cursor, flag and selection bytes (`NOTECURSZ`) are saved in
+`CmdBuf` and `CmdWork` first, and a byte that does not fit puts all of
+it back and opens DOCUMENT FULL: no half pasted text. Nothing to act on
+(no selection, an empty clipboard, no notepad in front) does nothing.
+
+After a cut or a paste the buffer is composed in the same frame and
+the desktop repaint and blit happen in the next, the split mouse
+selection uses. Measured with breakpoints on the 50 Hz machine: a
+paste of HELLO into HELLO WORLD at the caret is 7.3 ms (1.8 ms the
+snapshot, 3.9 ms the one insert that opens a continuation chunk, the
+same cost a typed 15th character pays) and the compose 6.1 ms; with
+the repaint on top that frame was 25.0 ms and dropped, with the split
+it ends at 14.4 ms and the next at 10.5 ms, 0 dropped. A typed key is
+16.0 ms and ENTER 20.7 ms in the same window (ENTER drops a frame
+already; so does every key once a second notepad is open, which is
+what `clip-paste2` and `clip-full` report as Dropped).
+
+`./test.sh --clipboard` (in the default suite):
+
+| subject | asserts |
+|---|---|
+| clip-bar, clip-menu | the boot name table with the five titles equals the compositor (crc32 bda22fd6 on C-BIOS), and EDIT open equals it painted from the ROM's MenuDefs (da32df12) |
+| clip-copy | HELLO selected, GRAPH+Y: ClipBuf HELLO, ClipLen 5, the 256 document bytes and the selection unchanged |
+| clip-cut, clip-cut-menu | GRAPH+E and EDIT > CUT: the document ` WORLD` (3bc1feef), clipboard HELLO, caret (0, 0), no selection, the screen as composed |
+| clip-paste2, clip-paste2-menu | copied in notepad 1, GRAPH+N, pasted in notepad 2 by key and by menu: notepad 2's 256 bytes are `HELLO` (3771117c), caret (5, 0), HELLO and the caret in its window, notepad 1's state block untouched |
+| clip-lines, clip-lines-cut, clip-lines-back | `B`, a break, `C` out of AB / CD: clipboard `B\rC`; pasted into a new notepad two lines (51b8db0c); cut, `AD` (ac2ff1c8); pasted back, AB / CD again (e1909815) |
+| clip-replace | pasted over WORLD: HELLO HELLO (53f0cc97) |
+| clip-empty, clip-nosel | an empty clipboard pasted and cut without a selection change nothing; COPY without a selection keeps HELLO; EDIT > UNDO is picked and does nothing |
+| clip-full, clip-full-after | HELLO pasted into 220 cells: DOCUMENT FULL, the 256 bytes identical (9845f0e9), caret (10, 15); OK and a key go on from there |
+| clip-keys | HELP > KEYS equals the two-column compositor window (a0bf828e) |
+
+Two things the merge with lf-1526 turned up, both fixed here:
+
+- `NoteMouse` was never initialised; openMSX fills RAM with $FF, so
+  until the first button release every frame moved the caret to the
+  pointer's cell. Typing after GRAPH+N without a mouse (the saveas and
+  print subjects) came out reversed at (6, 4). Init clears it.
+- The TEST build died on Roms_MSX1 with Roms_Disk within a frame of
+  its marker, before any subject: SP run down to $D029, PC in KEYINT,
+  the disk ROM in page 1. H.TIMI was a JP to IrqTick in page 1, and a
+  disk driver runs through an inter-slot call with the disk ROM mapped
+  there; an interrupt then executed the disk ROM's bytes at that
+  address. The baseline survived with IrqTick at $416E and died at
+  $4174, by what those bytes are. An inter-slot hook (RST $30) fixed it
+  but cost the 60 Hz resize release frame its last few dozen
+  microseconds (`resize-screen-edge` Dropped 1, `h.timi` 61 against
+  60), so IrqTick now sits at the end of the ROM, in page 2, which no
+  inter-slot call switches, and `build()` fails if it is not there.
+  The TEST heap subject's blocks went to 128, 96 and 64 for the 347
+  bytes left under the disk ROM.
+
+Not fixed, and not from this ticket: `sel-scroll`, lf-1526's drag
+scroll, drops 11 frames on the 60 Hz C-BIOS machine on main plus
+lf-1526 alone as well (measured in a scratch worktree without this
+change).
+
+Measured against the merged base (main `0ed9256` with `91a76a2`,
+17,678 / 18,967 ROM bytes, 3,598 / 6,330 RAM): normal ROM **18,088
+bytes (+410)**, TEST **19,377 (+410)**; static RAM **+226 bytes**
+(ClipBuf 224, ClipLen, ClipIx), to **3,824** normal and **6,556** TEST;
+heap **8,464 / 3,079** bytes without / with the disk ROM (TEST **5,732
+/ 347**). No heap allocation; the KEYS window's buffer is 27 by 16
+while open. Padded ROM crc32: normal **b9c82371**, TEST **38926789**.
+
+Focused verification (the full `test-all.sh` is the pipeline's):
+
+| Configuration | Groups | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--clipboard`, `--arrange`, `--sound-only`, `--resize-scroll`, `--saveas`, `--print`, `--desktop`, `--browse`, `--note-load`, `--settings`, `--dialogs`, `--delete`, `--open-ui`, `--note-width`, `--note-selection`, boot/mouse/keys/menus | 16, 106, 11, 20, 21, 18, 17, 23, 44, 153, 30, 11, 4, 16, 17, 35 |
+| C-BIOS_MSX1_JP, 60 Hz | `--clipboard`, `--arrange`, `--resize-scroll`, `--saveas`, `--print`, `--note-selection` | 16, 106, 20, 21, 18, 16 of 17 (`sel-scroll`) |
+| Roms_MSX1 | `--clipboard`, `--tape`, `--arrange` | 16, 13, 106 |
+| Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--desktop`, `--note-width`, `--saveas`, `--print`, `--delete`, `--open-ui` | 168, 16, 55, 18, 16, 21, 17, 11, 4 |
+| Roms_MSX2 | `--clipboard`, `--arrange` | 16, 106 |

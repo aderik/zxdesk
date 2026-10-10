@@ -11,16 +11,19 @@
 ;
 ;  O is new: the ZX's F was its file manager, which here is the
 ;  commander, and the MSX has an OPEN. D opens the DESKTOP window,
-;  which icons are on the desktop, as it did on the ZX.
+;  which icons are on the desktop, as it did on the ZX. E, Y and P
+;  are CUT, COPY and PASTE, the EDIT menu (note.inc).
 ;
 ;  A shortcut does not repeat when held, so holding GRAPH and N
 ;  opens one notepad rather than filling the window table.
 ; ============================================================
 SC_BASE         equ     $80
-SCCOUNT         equ     15
+SCCOUNT         equ     18
 
-; The letters, in code order: the Nth letter is SC_BASE+N.
-ScLetters:      defb    "XCTWNOSKLFGIVRD"
+; The letters, in code order: the Nth letter is SC_BASE+N. E, Y and P
+; are the EDIT menu: the free letters once X C T W N O S K L F G I V R
+; D were taken (CUT, COPY and PASTE start with letters in use).
+ScLetters:      defb    "XCTWNOSKLFGIVRDEYP"
 
 ; ------------------------------------------------------------
 ;  ScDispatch
@@ -65,6 +68,9 @@ ScTable:
                 defw    NoteMenuSaveAs          ; V
                 defw    NoteMenuPrint           ; R
                 defw    DskSetOpen              ; D
+                defw    NoteMenuCut             ; E
+                defw    NoteMenuCopy            ; Y
+                defw    NoteMenuPaste           ; P
 
 ; The window at the back comes to the front, so pressing it again and
 ; again walks the whole z order rather than swapping two for ever.
@@ -82,10 +88,15 @@ WndNext:
 
 ; ------------------------------------------------------------
 ;  HELP, KEYS: the list, as a window. No state and no key vector:
-;  there is nothing to type at a list.
+;  there is nothing to type at a list. Two columns: the GRAPH
+;  letters alone are nineteen rows, more than the desktop's 22
+;  rows hold with a title and a bottom, so the second column takes
+;  the window keys and the first the files, the EDIT keys, SELECT
+;  and the calendar.
 ; ------------------------------------------------------------
-KEYSW           equ     15
-KEYSH           equ     21
+KEYSW           equ     27
+KEYSH           equ     16
+KEYSCOL2        equ     13
 
 KeysOpen:
                 ld      a,APP_KEYS
@@ -95,6 +106,11 @@ KeysDraw:
                 xor     a
                 ld      (PrintInv),a
                 ld      hl,KeysText
+                ld      c,1
+                call    KdColumn
+                ld      hl,KeysText2
+                ld      c,KEYSCOL2
+KdColumn:
                 ld      b,1
 KdLoop:
                 ld      a,(hl)
@@ -102,7 +118,6 @@ KdLoop:
                 ret     z                       ; an empty string ends it
                 push    bc
                 push    hl
-                ld      c,1
                 call    WinPrint
                 pop     hl
 KdSkip:
@@ -123,6 +138,15 @@ KeysText:
                 defb    "V SAVE AS",0
                 defb    "R PRINT",0
                 defb    "W CLOSE",0
+                defb    "E CUT",0
+                defb    "Y COPY",0
+                defb    "P PASTE",0
+                defb    "SELECT MARK",0
+                defb    "CALENDAR:",0
+                defb    ", . MONTH",0
+                defb    "< > YEAR",0
+                defb    0
+KeysText2:
                 defb    "X NEXT WINDOW",0
                 defb    "C CASCADE",0
                 defb    "T TILE",0
@@ -132,7 +156,4 @@ KeysText:
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
-                defb    "CALENDAR:",0
-                defb    ", . MONTH",0
-                defb    "< > YEAR",0
                 defb    0

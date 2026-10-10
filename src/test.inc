@@ -210,16 +210,18 @@ TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
                 ; build includes the tape buffer as well as the test records,
-                ; and the desktop icons took the middle block from 200 to 160.
-                ld      bc,256
+                ; the desktop icons took the middle block from 200 to 160, and
+                ; the clipboard's 226 bytes left 347 under a disk ROM, so the
+                ; three are halved to 128, 96 and 64.
+                ld      bc,128
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,160
+                ld      bc,96
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,128
+                ld      bc,64
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl
@@ -232,7 +234,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,159
+                ld      bc,95
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree

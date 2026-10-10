@@ -81,7 +81,7 @@ AppSettings:    defw    1, SetRow, SetInit, SetDraw
                 ; The shortcut list: nothing to type at and nothing to lose.
 AppKeys:        defw    0, 0, 0, KeysDraw
                 defw    0, TxtKeysTitle
-                defb    16, 2, KEYSW, KEYSH     ; 21 rows: row 2 is as low as it goes
+                defb    2, 4, KEYSW, KEYSH      ; two columns, 27 by 16
                 defw    0, 0, 0
                 defb    0
                 ; The desktop's shortcuts as toggles: a byte of focus a window.

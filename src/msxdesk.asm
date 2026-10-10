@@ -260,7 +260,17 @@ _ram            defl    _ram+size
                 var     NoteModified, 1
                 var     NoteLeftCol, 1
                 var     NoteBackend, 1
+                var     NoteAnchor, 2          ; X (bit 7 = marking), chunk Y ($FF = none)
+                var     NoteEnd, 2             ; X, chunk Y; exclusive endpoint
 NOTESTSZ        equ     _ram-NoteState
+NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a paste's rollback
+                ; the clipboard, one for every notepad: the document's 224
+                ; text cells, a hard line break as CLIP_CR between them
+                var     ClipBuf, NOTEROWS*NOTECOLS
+                var     ClipLen, 1
+                var     ClipIx, 1       ; the byte a paste is at
+                var     NoteMouse, 1
+                var     NotePaintBuf, 15
                 var     NoteCursorX, 1
                 var     NoteCursorY, 1
                 var     NoteRows, 1
@@ -536,6 +546,8 @@ Start:
                 ld      (LastHit),a
                 ld      (DskDrag),a
                 ld      (MnLastMenu),a
+                ld      (ClipLen),a             ; an empty clipboard
+                ld      (NoteMouse),a           ; RAM comes up $FF: no drag until a press
                 dec     a
                 ld      (MenuPick),a
                 xor     a
@@ -578,6 +590,7 @@ MainLoop:
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
+                call    NoteMouseFrame
                 call    ClkService      ; the minute may have rolled
                 call    WinRedraw       ; whatever changed, recomposed once
                 ld      hl,(Frames)
@@ -589,6 +602,18 @@ MainLoop:
 ;  H.TIMI. The BIOS interrupt handler saves every register
 ;  before calling the hook, so unlike the ZX handler this one
 ;  can use HL. INC HL still leaves the flags alone.
+;
+;  IrqTick itself is at the end of the ROM, in page 2: a disk
+;  driver runs through an inter-slot call with the disk ROM in
+;  page 1, and an interrupt then took this JP into whatever the
+;  disk ROM has at the address. Measured on Roms_MSX1 with
+;  Roms_Disk: the TEST build survived that with IrqTick at $416E
+;  and died at $4174 (SP run down to $D029, PC in KEYINT, the
+;  disk ROM in page 1), the bytes there being what the jump
+;  landed on. CALSLT switches only the page its target is in, so
+;  page 2 stays this cartridge's throughout; an inter-slot hook
+;  instead cost the 60 Hz resize release frame its last few dozen
+;  microseconds. The build asserts the page.
 ; ------------------------------------------------------------
 SetupIrq:
                 di
@@ -597,12 +622,6 @@ SetupIrq:
                 ld      hl,IrqTick
                 ld      (HTIMI+1),hl
                 ei
-                ret
-
-IrqTick:
-                ld      hl,(IrqCnt)
-                inc     hl
-                ld      (IrqCnt),hl
                 ret
 
 ; Counts the frames the loop reached; the difference from IrqCnt is
@@ -1221,7 +1240,7 @@ InitScreen:
                 call    FillRow
                 ld      hl,TxtMenu
                 ld      b,MENUROW
-                ld      c,1
+                ld      c,0                     ; five titles fill the row
                 call    PrintStr
                 call    DrawDesktop
                 ld      a,' '+INVBANK           ; the status band is inverted
@@ -1333,7 +1352,7 @@ LoadSprite:
 
 ; ---- Data
 TxtMarker:      defb    "ZXMSX",0
-TxtMenu:        defb    "MSX DESK  FILE   VIEW   HELP",0
+TxtMenu:        defb    "MSX DESK  FILE  EDIT  VIEW  HELP",0
 
 ; The measured default ramp: pixels per frame as the hold builds.
 AccelTabs:      defb    1,1,2,2,3
@@ -1411,6 +1430,14 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "desktop.inc"
                 include "dsksetup.inc"
                 include "test.inc"
+
+; In page 2, see SetupIrq: the hook's JP must land in a page no
+; inter-slot call switches away.
+IrqTick:
+                ld      hl,(IrqCnt)
+                inc     hl
+                ld      (IrqCnt),hl
+                ret
 
 RomEnd:
                 defs    $C000-RomEnd,$FF
