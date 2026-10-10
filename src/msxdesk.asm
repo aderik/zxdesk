@@ -158,7 +158,8 @@ _ram            defl    _ram+size
                 var     BkCode, BKCODESZ
                 var     BkPage, 1       ; the window page of the next transfer
                 var     BkSlot, 1       ; its slot id
-                var     BkSeg, 1        ; its mapper segment, $FF for none
+                var     BkSeg, 1        ; its mapper segment
+                var     BkSegOff, 1     ; nonzero: no segment, a plain slot
                 var     BkDirn, 1       ; 0 bank to buffer, 1 buffer to bank
                 var     BkWin, 2        ; the window address
                 var     BkSource, 1     ; 0 none, 1 hidden pages, 2 mapper
