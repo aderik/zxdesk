@@ -197,7 +197,8 @@ _ram            defl    _ram+size
                 var     ArrI, 1
                 var     ArrTab, 2
                 var     WndCur, 1
-                var     Resizing, 1     ; 0 idle, 1 held, 2 composed: defer blit
+                var     Resizing, 1     ; 0 idle, 1 held, 3 allocated: compose next
+                                        ; frame, 2 composed: blit next frame
                 var     ScrFirst, 1
                 var     ScrShow, 1
                 var     ScrThumb, 1

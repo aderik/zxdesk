@@ -851,10 +851,15 @@ WinRedraw:
                 ret     nz                      ; keep the save-under stable
                 ld      a,(Resizing)
                 cp      2
-                jr      nz,WrdReady
-                xor     a
-                ld      (Resizing),a
-                ret                             ; replacement composed this frame
+                jr      c,WrdReady              ; idle or held
+                jr      z,WrdCompose
+                ld      a,2                     ; 3, allocated this frame: the
+                ld      (Resizing),a            ; next one composes
+                ret
+WrdCompose:
+                xor     a                       ; composed here, blitted next
+                ld      (Resizing),a            ; frame by the pending repaint
+                jp      WinDraw
 WrdReady:
                 ld      a,(RepaintDue)
                 cp      2

@@ -198,8 +198,12 @@ Drag the bottom-right grip and release to resize in cells, with a minimum
 of 6 columns by 4 rows and the desktop as the outer limit. The pointer
 hotspot reaches column 31 and row 22 so every grip remains accessible.
 The old buffer is freed through `WndAllocBuf`; allocation failure restores
-the old dimensions and buffer size. Buffer composition and desktop repaint
-use successive frames, keeping large resizes within the tested frame budget.
+the old dimensions and buffer size. Allocation, buffer composition and
+desktop repaint use three successive frames, keeping large resizes within
+the tested frame budget: with lf-1527 the release frame of the 24x17
+resize measured 15.9 ms on the 60 Hz machine (allocation 1.1 ms, the
+compose 13.0 ms) and dropped a frame once the main loop grew by a few
+dozen microseconds, so the compose moved to the frame after the release.
 
 Notepad's right frame column contains up/down arrows, a track and a position
 marker. Arrows move the view by one line; clicking above/below the marker
@@ -1107,9 +1111,9 @@ over the icon desktop, so every window test now also checks that the
 icons stay under the windows.
 
 Measured against `8118c5d`: the normal ROM goes from 15,870 to
-**17,159 bytes (+1,289)**; page 1 was 514 bytes from full, so the code
-now runs 775 bytes into page 2, which `Start` maps before anything
-there is reached. The TEST ROM goes from 17,147 to **18,445 bytes**.
+**17,166 bytes (+1,296)**; page 1 was 514 bytes from full, so the code
+now runs 782 bytes into page 2, which `Start` maps before anything
+there is reached. The TEST ROM goes from 17,147 to **18,452 bytes**.
 Static RAM grows **35 bytes** (18 for the table inside the SETTINGS
 record, 17 of slot, drag and focus scratch), to **3,578 bytes**
 (TEST **6,310**); the heap is **8,710 bytes** without a disk ROM and
