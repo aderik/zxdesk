@@ -3413,13 +3413,13 @@ def note_selection_checks(syms, fails):
     # once took the pointer for a large cell and ran to the bottom/right.
     def dragged(dx, dy, hold):
         return point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
-                        (hold, f'mouse_move {dx} {dy}'), (5, 'exec xdotool mouseup 1'),
+                        (5, f'mouse_move {dx} {dy}'), (hold, 'exec xdotool mouseup 1'),
                         (10, 'set ::throttle off')]
     rows = base + sum((typed(str(i)) + (tap(7, 128) if i < 9 else []) for i in range(10)), [])
-    r = Run(syms, rows + dragged(0, -48, 25), 'sel-scroll-up', files={})
+    r = Run(syms, rows + dragged(0, -48, 30), 'sel-scroll-up', files={})
     check(fails, 'sel-scroll-up', r.peek('NoteTop') == 0
           and r.bytes('NoteAnchor', 4) == bytes((0, 3, 0, 0)),
-          f"top {r.peek('NoteTop')}, anchor/end {r.bytes('NoteAnchor', 4).hex()}")
+          f"top {r.peek('NoteTop')}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, pointer y {r.peek('PtrY')}")
     wide = base + typed(long_text.decode())
     point = [(5, f"debug write memory {syms['PtrX']} 80; debug write memory {syms['PtrY']} 56")]
     r = Run(syms, wide + dragged(-48, 0, 10), 'sel-scroll-left', files={})
