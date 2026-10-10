@@ -297,6 +297,6 @@ CkaSet:
 
 ClockOpen:
                 ld      a,APP_CLOCK
-                jp      WndOpen
+                jp      WndOpenLater
 
 TxtClockTitle:  defb    "CLOCK",0
