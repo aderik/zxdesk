@@ -1356,8 +1356,8 @@ backend of lf-1525 moved the RAM layout again):
 
 | Configuration | Group | Assertions |
 |---|---|---:|
-| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--print` | 17, 18 |
-| C-BIOS_MSX1_JP, 60 Hz | `--note-selection` | 17 |
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--print`, `--resize-scroll` | 17, 23, 20 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-selection`, `--resize-scroll` | 17, 20 |
 | Roms_MSX1 + Roms_Disk | `--settings` (the TEST build's heap subject) | 170 |
 | Roms_MSX1 + Mapper512 | `--bank` | 20 |
 
@@ -1388,13 +1388,24 @@ the blit 1.6 ms), and both drop 11 of the preamble's 23 key frames at
 owner. The drag's own frames are at most 13.2 ms. This is not a claim
 about other editing operations or window sizes.
 
+The chunk painter leaves the selection code alone when the anchor row
+is $FF, which is the usual case: one load, an INC and a jump, 27 T a
+chunk, where the call into the painter and its two checks cost 240 T
+for the same answer. Measured on the 60 Hz machine with breakpoints
+on every chunk of the `resize-screen-edge` compose, a 24 by 17
+Notepad: a chunk took 427 us on main (`8fefef5`), 495 us with the call
+and 440 us with the early-out, so the compose frame went from 14,420
+to 15,607 us and dropped one frame, and is 14,665 us now, none
+dropped. A front window with a selection still pays the 68 us a chunk
+while it is drawn.
+
 The mouse capture byte is cleared at `Start`, with `DskDrag`: openMSX
 fills RAM with a pattern, and on the rebased layout the byte came up set,
 so the caret followed the idle pointer until the first release, which
 reversed the typed text in the `--print` subjects.
 
-Measured against `40b7e5a`: normal ROM **19,318 → 19,833 bytes (+515)**,
-TEST **21,055 → 21,570 (+515)**; both run on into page 2, which `Start`
+Measured against `8fefef5`: normal ROM **19,353 → 19,875 bytes (+522)**,
+TEST **21,090 → 21,612 (+522)**; both run on into page 2, which `Start`
 maps. Static RAM grows **20 bytes** (four live state bytes, one mouse
 capture byte, fifteen paint scratch bytes), **3,759 → 3,779** normal and
 **6,491 → 6,511** TEST. The heap falls by 20: **8,529 → 8,509** bytes
@@ -1402,7 +1413,7 @@ without a disk ROM, **3,144 → 3,124** with one (TEST **5,797 → 5,777 /
 412 → 392**). Each Notepad's existing state allocation grows **4
 bytes**, from **278 to 282**, with no new allocation. The KEYS window at
 22 rows uses **15 more heap bytes** than main's 21 while it is open.
-Padded ROM CRC32: normal **ae86c09a**, TEST **ed042bf7** (main: a3e64a62, 8ee3ab2d).
+Padded ROM CRC32: normal **673eee09**, TEST **ecc22aa8**.
 
 The full six-configuration `test-all.sh` is left to the pipeline, as
 required by this implementation run's focused-tests-only instruction.

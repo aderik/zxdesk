@@ -205,8 +205,11 @@ NpcColumn:
                 inc     c
                 xor     a
                 ld      (PrintInv),a
-                push    bc
-                call    NotePaintSelection
+                ld      a,(NoteAnchor+1)        ; $FF: nothing selected, the
+                inc     a                       ; usual case. 27 T a chunk
+                jp      z,WinPrint              ; against 240 for the call:
+                push    bc                      ; a full-screen compose at
+                call    NotePaintSelection      ; 60 Hz dropped a frame.
                 pop     bc
                 jp      WinPrint
 
