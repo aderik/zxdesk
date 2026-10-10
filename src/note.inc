@@ -1752,6 +1752,9 @@ NmouseTouch:
 
 ; Pointer cells are clamped to the viewport. Holding beyond the top or
 ; bottom advances one logical row each frame, even without new motion.
+; Left of the interior the caret takes the first visible column, and
+; NoteHScroll brings the earlier columns back. SCF + SBC: one borrow
+; for cell - Win - 1, so a pointer above or left is not a large cell.
 NoteMousePosition:
                 call    NoteMeasure
                 ld      a,(PtrX)
@@ -1760,8 +1763,8 @@ NoteMousePosition:
                 rrca
                 and     31
                 ld      hl,WinX
-                sub     (hl)
-                sub     1
+                scf
+                sbc     a,(hl)
                 jr      nc,NmpX
                 xor     a
 NmpX:
@@ -1781,8 +1784,8 @@ NmpColumn:
                 rrca
                 and     31
                 ld      hl,WinY
-                sub     (hl)
-                sub     1
+                scf
+                sbc     a,(hl)
                 jr      nc,NmpY
                 ld      a,(NoteTop)
                 or      a
