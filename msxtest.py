@@ -664,13 +664,13 @@ def cal_win(x, y, sel=1, year=1980, month=1):
     return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(year, month, sel))
 
 
-KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
+KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
              b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT",
              b"CALENDAR:", b", . MONTH", b"< > YEAR"]
 
 
 def keys_win(x, y):
-    return (x, y, 15, 19, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+    return (x, y, 15, 20, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
 
 
 def about_win(x, y):
@@ -1048,7 +1048,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, front=True):
         lines = [(1, 1, b"DISK" if EXT else b"RAM", active == 0),
                  (1, 16, b"RAM", active == 1), (8, 1, status, False),
-                 (9, 1, b"TAB PANE SHIFT+ARROWS R LIST", False),
+                 (9, 1, b"TAB PANE P PRN R LIST", False),
                  (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
         for pane, names in enumerate((left, right)):
             start = top if pane == active else 0
@@ -1808,7 +1808,7 @@ def arrange_checks(syms, fails):
     steps = opens[0] + cmd + opens[2] + opens[3] + tile
     lines = [(1, 1, b"DISK" if EXT else b"RAM", True), (1, 16, b"RAM", False),
              (2, 1, b"(EMPTY)", True), (2, 16, b"(EMPTY)", False),
-             (8, 1, b"READY", False), (9, 1, b"TAB PANE SHIFT+ARROWS R LIST", False),
+             (8, 1, b"READY", False), (9, 1, b"TAB PANE P PRN R LIST", False),
              (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
     arranged = [windows[0], (0, 0, 30, 12, b"COMMANDER", lines), windows[2], windows[3]]
     want = compose(expected_nt(), [g + w[4:] for g, w in zip(reversed(tiled(4)), arranged)])
@@ -2471,10 +2471,113 @@ def saveas_checks(syms, fails):
           and r.nt() == expected_nt(), "SAVE and SAVE AS ignore a closed document")
 
 
+def print_checks(syms, fails):
+    def tap(row, mask, mod=0):
+        return [(3, f"key_down 6 {mod}; key_down {row} {mask}"),
+                (3, f"key_up {row} {mask}; key_up 6 {mod}")]
+    def text(value):
+        return sum((tap((ord(c)-65+22)//8, 1 << ((ord(c)-65+22)%8)) for c in value), [])
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")] + tap(6, 2)
+    enter = tap(7, 128)
+    new = tap(4, 8, 4)
+    shortcut = tap(4, 128, 4)  # GRAPH+R
+    base = new + text("HI") + enter + text("THERE")
+    document = note_width_document([b"HI", b"THERE"])
+    for name, steps, expected in [
+        ("print-note", base + shortcut, b"HI\r\nTHERE\r\n\f"),
+        ("print-menu", base + press(88, 3) + press(96, 43), b"HI\r\nTHERE\r\n\f"),
+        ("print-long", new + text("ABCDEFGHIJKLMNOPQRST") + enter + enter + text("Z") + shortcut,
+         b"ABCDEFGHIJKLMNOPQRST\r\n\r\nZ\r\n\f"),
+        ("print-empty", new + shortcut, b"\f"),
+        ("print-front", base + new + text("SECOND") + shortcut, b"SECOND\r\n\f"),
+        ("print-cmd", base + tap(5, 8, 4) + text("LETTER") + enter
+         + tap(3, 8, 4) + text("P") + text("C"), b"HI\r\nTHERE\r\n\f"),
+    ]:
+        log = os.path.join(OUT, name, "printer.log")
+        setup = [(1, f"set printerlogfilename {log}; plug printerport logger")]
+        r = Run(syms, setup + steps + [(10, "unplug printerport")], name, files={})
+        data = open(log, "rb").read()
+        check(fails, name, data == expected and r.peek("DgOpenFlag") == 0,
+              f"printer bytes {data!r}, crc32 {zlib.crc32(data):08x}")
+        if name in ("print-note", "print-menu"):
+            check(fails, name+"-intact", r.bytes("NoteBuf", 256) == document
+                  and r.peek("NoteModified") == 1 and r.peek("NoteSaved") == 0,
+                  f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
+        if name == "print-cmd":
+            stored = read_disk_image(DISK).get("LETTER") if EXT else r.bytes("RamHeap", 256)
+            check(fails, name+"-source", stored == document and r.peek("CmdStatus") == 1
+                  and r.peek("CmdBk1") == syms["ST_PRINT"], "source unchanged, target PRN, COPIED")
+
+    for busy in (False, True):
+        name = "print-cmd-busy" if busy else "print-cmd-raw"
+        log = os.path.join(OUT, name, "printer.log")
+        setup = [] if busy else [(1, f"set printerlogfilename {log}; plug printerport logger")]
+        # Save via UI first; replace its contents with a short raw stream only
+        # for this byte-stream backend test (normal document copy above is UI).
+        steps = base + tap(5, 8, 4) + text("LETTER") + enter
+        if not busy:
+            if EXT:
+                # The disk case's document transfer is already covered above.
+                continue
+            steps += [(1, f"debug write memory {syms['RamDir']+13} 3; "
+                          f"debug write memory {syms['RamDir']+14} 0; "
+                          f"debug write_block memory {syms['RamHeap']} [binary format H* 414243]")]
+        steps += tap(3, 8, 4) + text("P") + text("C")
+        r = Run(syms, setup + steps + [(10, "" if busy else "unplug printerport")], name, files={})
+        check(fails, name, (r.peek("DgOpenFlag") == 1 and
+                           (read_disk_image(DISK).get("LETTER") if EXT else r.bytes("RamHeap",256)) == document)
+              if busy else open(log,"rb").read() == b"ABC\f" and r.peek("CmdStatus") == 1,
+              "busy preserves source" if busy else "raw stream ABC + FF")
+
+    timing = [(1, f"debug set_bp {syms['NoteMenuPrint']} {{}} {{set ::printstart [machine_info time]}}; "
+                  f"debug set_bp {syms['PrintAlert']} {{}} {{note \"print_us [expr {{round(([machine_info time]-$::printstart)*1000000)}}]\"}}")]
+    r = Run(syms, base + timing + shortcut + [(10, "")], "print-busy")
+    import re
+    elapsed = list(map(int, re.findall(r"print_us (\d+)", r.log)))
+    check(fails, "print-busy", bool(elapsed) and max(elapsed) < 1000000
+          and r.peek("DgOpenFlag") == 1 and r.bytes("NoteBuf",256) == document
+          and r.peek("NoteModified") == 1, f"alert after {elapsed} us, document preserved")
+    # Inject a BIOS output failure after readiness, not a storage success stub.
+    scratch = syms["CmdBuf"]
+    fault = [(1, f"debug write_block memory {scratch} [binary format H* 37c9]; "
+                 f"set ::printed 0; debug set_bp 165 {{}} {{incr ::printed; if {{$::printed == 4}} {{reg PC {scratch}}}}}")]
+    log = os.path.join(OUT, "print-error", "printer.log")
+    r = Run(syms, [(1, f"set printerlogfilename {log}; plug printerport logger")]
+            + base + fault + shortcut + [(10, "unplug printerport")], "print-error")
+    check(fails, "print-error", r.peek("DgOpenFlag") == 1 and r.bytes("NoteBuf",256) == document
+          and r.peek("NoteModified") == 1
+          and open(log, "rb").read() == b"HI\r",
+          "LPTOUT carry after three bytes opens alert; document preserved")
+    # Registry metadata plus actual OPEN and SETTINGS routes remain on storage.
+    rom = open(ROM, "rb").read()
+    pos = syms["StRegistry"] - ROMBASE
+    entries = {}
+    while rom[pos] != 255:
+        entries[rom[pos]] = rom[pos+1]
+        pos += syms["STREGSZ"]
+    r = Run(syms, tap(4, 16, 4) + [(10, "")], "print-caps-open")
+    check(fails, "print-caps", entries[8] == 1 and r.peek("CmdBrowse") == 1
+          and r.peek("CmdBk0") != 8, f"registry {entries}, OPEN backend {r.peek('CmdBk0')}")
+    for n in range(3):
+        r = Run(syms, tap(3, 16, 4) + tap(7, 8)*2 + enter*n + [(10, "")],
+                f"print-caps-settings-{n}")
+        check(fails, f"print-caps-settings-{n}", r.peek("StBackend") in (1, 5)
+              and r.peek("SetBackend") in (1, 5), f"SETTINGS backend {r.peek('StBackend')}")
+    r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "print-keys")
+    want = compose(expected_nt(), [keys_win(16,3)])
+    check(fails, "print-keys", r.nt() == want,
+          f"KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--print"]:
+        print_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--saveas"]:
         saveas_checks(syms, fails)
         return bool(fails)
@@ -2527,6 +2630,7 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    print_checks(syms, fails)
     saveas_checks(syms, fails)
     delete_checks(syms, fails)
     sound_checks(syms, fails)

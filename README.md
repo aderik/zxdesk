@@ -142,7 +142,7 @@ modifier. GRAPH+letter decodes to a code from $81 up that no text table
 produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
-K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS. R (PRINT) and D (desktop shortcuts) wait for those features.
+K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS and R is PRINT. D (desktop shortcuts) waits for that feature.
 HELP > KEYS opens the list, with the calendar's keys, as a window.
 333 ROM bytes, no RAM.
 
@@ -972,3 +972,43 @@ The additional HELP > KEYS row increases that window's heap buffer by
 **15 bytes** while it is open; document state size is unchanged.
 
 Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
+
+## Printer (lf-1524)
+
+FILE > PRINT and GRAPH+R print the front notepad through the write-only
+`ST_PRINT` (8) backend. In COMMANDER, **P** toggles the opposite pane
+between PRN and RAM; **C** copies the selected file there. A 256-byte
+notepad is printed as logical lines, joining continuation chunks and
+omitting empty trailing lines; each line ends in CR LF and the job ends
+in FF. Other files within the commander's existing 256-byte copy limit
+are sent as raw bytes followed by FF. Printing never changes the source.
+PRN has only `STCAP_WRITE`, no directory, and is excluded from FILE > OPEN
+and SETTINGS > BACKEND. HELP > KEYS includes R PRINT.
+
+The backend uses inter-slot CALSLT calls to BIOS LPTSTT ($00A8) and
+LPTOUT ($00A5). It checks readiness before opening and before each output
+byte, and reports `PRINTER NOT READY` for busy status or output carry.
+[C-BIOS implements both calls](https://github.com/cbios/cbios/blob/master/src/main.asm);
+its LPTOUT implementation includes a busy loop, hence the explicit status
+check. The logger subjects run on C-BIOS as well as the real BIOS machines;
+no alternate printer port driver is needed.
+
+`./test.sh --print` uses openMSX `plug printerport logger` and
+`set printerlogfilename` to assert complete output bytes. Subjects cover
+the menu, shortcut, front document, empty document, continuation lines,
+internal empty lines, commander copy from a UI-saved document, raw streams,
+unplugged printer, injected LPTOUT carry after three bytes, capabilities,
+settings cycling and the KEYS name table. No screenshot is an assertion.
+
+Measured against repository base `666af80`: normal ROM **15,483 → 15,870
+bytes (+387)**, leaving **514 bytes** in page 1. TEST ROM **16,760 → 17,147
+bytes (+387)**. Static RAM remains **3,543 bytes (+0)** (TEST **6,275**),
+and the normal heap budget remains **8,745 bytes** without disk or **3,360**
+with disk. Printing allocates **0 heap bytes**. The expanded KEYS window
+uses **15 additional heap bytes** while open.
+
+The print-note and print-cmd byte stream `HI\r\nTHERE\r\n\f` has CRC32
+**6cea7f8e**; the unchanged document CRC32 is **b1bdd139**. The long-line
+stream has CRC32 **bddae9d6**, and HELP > KEYS **f3f4bf42**.
+The focused machine results are recorded in the commit message. The full
+suite is left to the pipeline as required by this implementation run.

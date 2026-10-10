@@ -1365,6 +1365,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "kbd.inc"
                 include "heap.inc"
                 include "storage.inc"
+                include "printer.inc"
                 include "disk.inc"
                 include "tape.inc"
                 include "settings.inc"

@@ -102,6 +102,9 @@ StRegistry:
                 defb    ST_TAPE, STCAP_WRITE|STCAP_PERSIST
                 defw    TapeOpen, TapeClose, TapeRead, TapeWrite, StNoDir
                 defw    StNoDelete
+                defb    ST_PRINT, STCAP_WRITE
+                defw    PrintOpen, PrintClose, StNoDelete, PrintWrite, StNoDir
+                defw    StNoDelete
                 defb    $FF
 
 ; A backend that cannot enumerate says so rather than being absent
