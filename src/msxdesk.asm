@@ -152,6 +152,35 @@ _ram            defl    _ram+size
                 var     RamCnt, 2
                 var     RamDir, RAMFILES*RAMENTSZ
                 var     RamHeap, RAMFILES*RAMCHUNK
+                ; the bank backend: the transfer routine runs from RAM
+                ; because it switches the page the ROM sits in
+                var     BkCode, BKCODESZ
+                var     BkPage, 1       ; the window page of the next transfer
+                var     BkSlot, 1       ; its slot id
+                var     BkSeg, 1        ; its mapper segment, $FF for none
+                var     BkDirn, 1       ; 0 bank to buffer, 1 buffer to bank
+                var     BkWin, 2        ; the window address
+                var     BkSource, 1     ; 0 none, 1 hidden pages, 2 mapper
+                var     BkBlocks, 2     ; 256 byte blocks in the bank
+                var     BkSumBlocks, 2  ; the first hold a byte per entry, its name's hash
+                var     BkDirBlocks, 2  ; then the directory
+                var     BkDataBlock, 2  ; the first block that holds a file
+                var     BkFiles, 2      ; how many, one block each
+                var     BkPageTab, 3    ; source 1: the page behind each 16K
+                var     BkSlotTab, 3    ; and its slot id
+                var     BkMapSlot, 1    ; source 2: the mapper's slot id
+                var     BkSkip, 5       ; its segments the system uses, ascending, $FF end
+                var     BkSegHome, 1    ; the segment the window page had
+                var     BkProbe, 1      ; the byte every probe aims at
+                var     BkTop, 2        ; entries ever used
+                var     BkFreeHint, 2   ; no entry below this one is free
+                var     BkMode, 1       ; the open file's mode, 0 for none
+                var     BkEntry, 2      ; its directory entry
+                var     BkPos, 2
+                var     BkCache, 2      ; the directory chunk in BkDirBuf, $FFFF none
+                var     BkDirBuf, BKCHUNK
+                var     BkIdx, 2
+                var     BkTmp, 2
                 ; menus, the part hit testing reads
                 var     MenuOpen, 1
                 var     MnX, 1
@@ -1383,6 +1412,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "note.inc"
                 include "commander.inc"
                 include "shortcut.inc"
+                include "bank.inc"
                 include "test.inc"
 
 RomEnd:

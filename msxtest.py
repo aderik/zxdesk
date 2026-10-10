@@ -26,7 +26,9 @@ TROM = os.path.join(BUILD, "msxtest.rom")   # the TEST=1 build: the subjects run
 TSYM = os.path.join(BUILD, "msxtest.sym")
 OUT = os.path.join(BUILD, "out")
 MACHINE = os.environ.get("MSX_MACHINE", "C-BIOS_MSX1_EU")
-EXT = os.environ.get("MSX_EXT", "")        # e.g. Roms_Disk: a disk interface in slot 1
+EXTS = [e for e in os.environ.get("MSX_EXT", "").split(",") if e]   # extensions, e.g. Roms_Disk, Mapper512
+EXT = "Roms_Disk" if "Roms_Disk" in EXTS else ""   # the disk interface in slot 1, when there is one
+MAPPER = "Mapper512" if "Mapper512" in EXTS else ""   # a 512K mapper cartridge in slot 1
 DISK = os.path.join(BUILD, "disk.dsk")       # the 720K image the disk backend writes
 
 ROMBASE = 0x4000
@@ -201,7 +203,11 @@ class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
 
-    def __init__(self, syms, steps, name, rom=ROM, files=None):
+    def __init__(self, syms, steps, name, rom=ROM, files=None, setup=(), guard=120):
+        """`setup`: Tcl run at start up, before the machine boots, for
+        breakpoints that must be there before the TEST build's subjects,
+        which run before the first frame a step could see. `guard`: the
+        driver's real time limit in seconds."""
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
@@ -217,17 +223,21 @@ class Run:
                 f.write(f"  {{{frames} {{{cmd}}}}}\n")
             f.write("}\n")
         env = dict(os.environ, MSXTEST_OUT=out, MSXTEST_STEPS=steps_path,
-                   MSXTEST_FRAMES=str(syms["Frames"]),
+                   MSXTEST_FRAMES=str(syms["Frames"]), MSXTEST_GUARD=str(guard),
                    SDL_AUDIODRIVER="dummy", HOME=os.environ.get("HOME", "/tmp"))
         # The cartridge goes in slot 2 so a disk interface extension takes
         # slot 1 and the BIOS runs its init first: it must lower HIMEM and
         # plant the BDOS jump before this ROM's Init reads them.
         cmd = ["openmsx", "-machine", MACHINE, "-cartb", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
+        for ext in EXTS:
+            cmd += ["-ext", ext]
+        for tcl in setup:
+            cmd += ["-command", tcl]
         if EXT:
             make_disk_image(DISK, files)
-            cmd += ["-ext", EXT, "-diska", DISK]
-        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=180)
+            cmd += ["-diska", DISK]
+        r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=guard + 60)
         logp = os.path.join(out, "log.txt")
         self.log = open(logp).read() if os.path.exists(logp) else ""
         if r.returncode != 0 or "shot:" not in self.log:
@@ -469,7 +479,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 256, 200, 128
+    A, B, C = 160, 120, 96          # what fits the TEST build's heap behind a disk ROM
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -1014,6 +1024,332 @@ def open_ui_checks(syms, fails):
                   f"expected {zlib.crc32(document):08x}; windows {r.peek('WndCount')}")
 
 
+CMD_HELP1, CMD_HELP2 = b"TAB PANE P PRN B BANK R LIST", b"ENTER OPEN C COPY D DELETE"
+
+
+def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, devs=None):
+    """The two pane Commander as composed: device names over the panes
+    (the boot backend and RAM unless said otherwise), the listings, the
+    status and the two help rows."""
+    devs = devs or (b"DISK" if EXT else b"RAM", b"RAM")
+    lines = [(1, 1, devs[0], active == 0), (1, 16, devs[1], active == 1), (8, 1, status, False),
+             (9, 1, CMD_HELP1, False), (10, 1, CMD_HELP2, False)]
+    for pane, names in enumerate((left, right)):
+        start = top if pane == active else 0
+        names = names[start:start + 6]
+        for i, name in enumerate(names or ["(EMPTY)"]):
+            lines.append((2 + i, 1 if pane == 0 else 16, name.encode(),
+                          pane == active and i + start == selection))
+    return (1, 3, 30, 12, b"COMMANDER", lines)
+
+
+def doc(name):
+    """A 256 byte document whose first line is the name."""
+    return name.encode().ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+
+
+def seed_ram_steps(syms, files):
+    """The RAM backend's directory and chunks seeded with up to four files."""
+    directory, data = bytearray(64), bytearray(1024)
+    for i, (name, content) in enumerate(files.items()):
+        assert i < 4 and len(content) <= 256
+        directory[i * 16:i * 16 + len(name)] = name.encode()
+        directory[i * 16 + 13:i * 16 + 15] = len(content).to_bytes(2, "little")
+        directory[i * 16 + 15] = 1
+        data[i * 256:i * 256 + len(content)] = content
+    return [(5, f"debug write_block memory {syms['RamDir']} [binary format H* {directory.hex()}]; "
+                f"debug write_block memory {syms['RamHeap']} [binary format H* {data.hex()}]")]
+
+
+# ---- the bank backend: a RAM disk in the memory the desktop cannot see
+def bank_kb(r):
+    return r.peek("BkBlocks", 2) // 4
+
+
+def ring_step(device, back=False):
+    """SETTINGS > BACKEND and Commander's B go round RAM, BANK and DISK,
+    those that are there. Every machine in the matrix hides at least 48K
+    behind the BIOS and the cartridge, so BANK always is."""
+    ring = [1, 4] + ([5] if EXT else [])
+    return ring[(ring.index(device) + (-1 if back else 1)) % len(ring)]
+
+
+BANK_DEVICE = "Mapper512" if MAPPER else "Main RAM"   # the openMSX debuggable the bank lives in
+
+
+def bank_dump_step(frames=5):
+    """The whole of that device into bank.bin, so the directory and the
+    files are asserted from the memory itself, not through the ROM."""
+    return [(frames, f'set f [open $::out/bank.bin wb]; puts -nonewline $f '
+                     f'[debug read_block {{{BANK_DEVICE}}} 0 [debug size {{{BANK_DEVICE}}}]]; close $f')]
+
+
+def bank_geometry(r):
+    """Blocks, summary blocks, directory blocks and files, as BkInit
+    works them out: a summary block per 256 blocks, a directory block
+    per seventeen of the rest, a file per block left."""
+    blocks = r.peek("BkBlocks", 2)
+    sumblocks = (blocks + 255) // 256
+    dirblocks = (blocks - sumblocks + 16) // 17
+    return blocks, sumblocks, dirblocks, blocks - sumblocks - dirblocks
+
+
+def bank_hash(name):
+    """BkHash: a rotate left and an exclusive or per byte of the thirteen
+    byte zero padded name; 1 where that gives 0."""
+    h = 0
+    for c in name.encode().ljust(13, b"\0"):
+        h = (((h << 1) | (h >> 7)) & 255) ^ c
+    return h or 1
+
+
+def bank_offset(r, block):
+    """Where a block is in the device: the ROM's mapping done again here,
+    a hidden page or a mapper segment past the ones the system keeps."""
+    if r.peek("BkSource") == 1:
+        page = r.bytes("BkPageTab", 3)[block >> 6]
+        return page * 0x4000 + (block & 63) * 256
+    seg = block >> 6
+    for kept in r.bytes("BkSkip", 4):
+        if kept == 255:
+            break
+        if seg >= kept:
+            seg += 1
+    return seg * 0x4000 + (block & 63) * 256
+
+
+def bank_files(r, name):
+    """The dumped bank's directory as {name: (entry, bytes)}: entry n is
+    sixteen bytes at n*16 of the directory blocks, its data block n past
+    them. Asserts the summary along the way: byte n of the summary blocks
+    is the name's hash for a used entry and 0 for a free one."""
+    bank = open(os.path.join(OUT, name, "bank.bin"), "rb").read()
+    blocks, sumblocks, dirblocks, files = bank_geometry(r)
+    out = {}
+    for i in range(files):
+        p = bank_offset(r, sumblocks + (i >> 4)) + (i & 15) * 16
+        ent = bank[p:p + 16]
+        summary = bank[bank_offset(r, i >> 8) + (i & 255)]
+        if ent[15]:
+            size = int.from_bytes(ent[13:15], "little")
+            q = bank_offset(r, sumblocks + dirblocks + i)
+            fname = ent[:13].split(b"\0")[0].decode()
+            assert summary == bank_hash(fname), f"{name}: entry {i} {fname} summary {summary:#x}"
+            out[fname] = (i, bank[q:q + size])
+        else:
+            assert summary == 0, f"{name}: free entry {i} has summary {summary:#x}"
+    return out
+
+
+def bank_checks(syms, fails):
+    """Detection, interrupts during a copy, Commander RAM/DISK <-> BANK,
+    and the full save/close/reopen route on the bank."""
+    import re
+    print("bank:")
+    def press(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+    def tap(row, mask, shift=False):
+        return [(5, f"key_down {row} {mask}" + ("; key_down 6 1" if shift else "")),
+                (3, f"key_up {row} {mask}" + ("; key_up 6 1" if shift else ""))]
+    regs_note = 'catch {binary scan [debug read_block {MapperIO} 0 4] H* x; note "mapperio $x"}'
+    r = Run(syms, [(10, regs_note)] + bank_dump_step(), "bank-detect")
+    source, blocks = r.peek("BkSource"), r.peek("BkBlocks", 2)
+    regs = re.search(r"mapperio (\w+)", r.log)
+    regs = bytes.fromhex(regs.group(1)) if regs else None
+    if MAPPER or MACHINE == "Roms_MSX2":
+        # source B: the mapper's segments less the ones under the four
+        # pages. The MSX2 BIOS lays them out 3, 2, 1, 0 and openMSX's
+        # MapperIO debuggable shows what was written; a mapper cartridge
+        # on an MSX1 starts with segment 0 under every page (openMSX's
+        # MSXMemoryMapperBase::reset, and the MSX1 BIOS never writes the
+        # registers; the debuggable shows random bits for those), so one
+        # segment is kept out of 32. Where page 3 really is comes from the
+        # dumped device: the segment that holds the work RAM's marker.
+        size = 512 if MAPPER else 128
+        bank = open(os.path.join(OUT, "bank-detect", "bank.bin"), "rb").read()
+        page3 = [s for s in range(size // 16) if bank[s * 0x4000:s * 0x4000 + 8] == r.ram[:8]]
+        kept = [0, 1, 2, 3] if MACHINE == "Roms_MSX2" else [0]
+        want = (size // 16 - len(kept)) * 64
+        ok = (source == 2 and blocks == want and r.bytes("BkSkip", 4) == bytes(kept + [255] * (4 - len(kept)))
+              and page3 == [kept[0] if MAPPER else 0] and r.peek("BkMapSlot") == (1 if MAPPER else 0x8B)
+              and r.peek("BkSegHome") == (0 if MAPPER else 1)
+              and (regs == bytes((3, 2, 1, 0)) if MACHINE == "Roms_MSX2" else True)
+              and blocks // 4 == (496 if MAPPER else 64))
+        detail = (f"source {source}, {blocks // 4} KB of a {size}K mapper in slot {r.peek('BkMapSlot'):#04x}, "
+                  f"page 3 in segment {page3}, kept out {list(r.bytes('BkSkip', 4))}, home segment {r.peek('BkSegHome')}, "
+                  f"MapperIO {regs.hex()}")
+    else:
+        # source A: pages 0-2 of slot 3's 64K, behind the BIOS and this cartridge
+        ok = (source == 1 and blocks == 192 and r.bytes("BkPageTab", 3) == bytes((0, 1, 2))
+              and r.bytes("BkSlotTab", 3) == bytes((3, 3, 3)) and blocks // 4 == 48)
+        detail = (f"source {source}, {blocks // 4} KB: pages {tuple(r.bytes('BkPageTab', 3))} "
+                  f"of slots {tuple(r.bytes('BkSlotTab', 3))}")
+    check(fails, "bank-detect", ok, detail)
+    _, sumblocks, dirblocks, files = bank_geometry(r)
+    check(fails, "bank-format", bank_files(r, "bank-detect") == {} and r.peek("BkTop", 2) == 0
+          and r.peek("BkSumBlocks", 2) == sumblocks and r.peek("BkDirBlocks", 2) == dirblocks
+          and r.peek("BkDataBlock", 2) == sumblocks + dirblocks
+          and r.peek("BkFiles", 2) == files and r.peek("StBackend") == (5 if EXT else 1),
+          f"{sumblocks} summary and {dirblocks} directory blocks, {files} files, no entry used, "
+          f"boot backend {r.peek('StBackend')}")
+
+    # A document saved to the bank a second time, GRAPH+S with no dialogue
+    # in the way, while the clock runs and RIGHT is held: the transfers'
+    # DI windows are measured at the routine's DI and EI, the clock's
+    # seconds follow the interrupt count, the pointer the frames held, and
+    # not one frame is dropped from the held key on. The first save goes
+    # through the name dialogue, whose closing frame measures 19.5 ms on
+    # RAM at 50 Hz and 22.4 ms with the bank's 3.7 ms of transfers in it,
+    # and opening the clock is an 18.6 ms frame: at 60 Hz both drop on RAM
+    # as well, so the drop count starts after them. (The Commander's copy,
+    # below, is the same story: its 30 by 12 repaint is a 20 ms frame with
+    # no bank in it.)
+    enter, tab, delete, yes = tap(7, 128), tap(7, 8), tap(3, 2), tap(5, 64)
+    to_bank = press(20, 4) + press(30, 20) + tab * 2
+    device = 5 if EXT else 1
+    while device != 4:
+        to_bank += enter
+        device = ring_step(device)
+    to_bank += tap(7, 4)
+    file_new = press(88, 3) + press(96, 11)
+    file_save = press(88, 3) + press(96, 27)
+    file_open = press(88, 3) + press(96, 19)
+    view_clock = press(140, 3) + press(148, 11)
+    typed = file_new + tap(3, 0x20) + tap(3, 0x40)
+    timing = [(1, f"debug set_bp {syms['BkCode']} {{}} {{set ::bkstart [machine_info time]}}; "
+                  f"debug set_bp {syms['BkCode'] + syms['BkOEi']} {{}} "
+                  f"{{note \"bank_us [expr {{round(([machine_info time] - $::bkstart) * 1000000)}}]\"}}")]
+    graph_x = [(5, "key_down 6 4; key_down 5 0x20"), (3, "key_up 5 0x20; key_up 6 4")]
+    reset_drops = [(5, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0; "
+                       f"debug write memory {syms['DropN']} 0")]
+    steps = (timing + to_bank + typed + file_save + input_note_name() + tap(5, 0x20)
+             + view_clock + tap(8, 0x20, shift=True) + graph_x + reset_drops
+             + [(5, "key_down 8 0x80"), (5, "key_down 6 4; key_down 5 1"), (3, "key_up 5 1; key_up 6 4"),
+                (10, "key_up 8 0x80"), (20, "")] + bank_dump_step())
+    r = Run(syms, steps, "bank-irq", files={})
+    hz50 = bool(r.bios[0x2B] & 0x80)
+    since_set = r.peek("IrqCnt", 2) - r.peek("ClkSetAt", 2)
+    windows = [int(m) for m in re.findall(r"bank_us (\d+)", r.log)]
+    hx = r.peek("HeldX")
+    document = b"HIX".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+    stored = bank_files(r, "bank-irq")
+    check(fails, "bank-irq", r.peek("Dropped", 2) == 0 and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 0
+          and stored == {"NOTE": (0, document)} and r.peek("WndCount") == 2
+          and r.peek("ClkH") == 13 and r.peek("ClkM") * 60 + r.peek("ClkS") == clock_model(since_set, hz50)
+          and 15 <= hx <= 25 and r.ptr()[0] == min(255, 148 + ramp(hx))
+          and len(windows) >= 3 and max(windows) < 2500,
+          f"Dropped {r.peek('Dropped', 2)}{' at frames ' + str(list(r.bytes('DropLog', 2 * r.peek('DropN'))[::2])) if r.peek('DropN') else ''}, "
+          f"saved {r.peek('NoteSaved')}, clock {r.peek('ClkH')}:{r.peek('ClkM'):02d}:{r.peek('ClkS'):02d} "
+          f"over {since_set} interrupts, pointer {r.ptr()} for {hx} frames of RIGHT, "
+          f"{len(windows)} DI windows, longest {max(windows) if windows else 0} us")
+
+    # Commander: B takes the other pane round RAM, BANK and DISK; C copies
+    # there and back, so the bytes come back through the bank.
+    fixtures = {name: doc(name) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
+    left = list(fixtures)
+    open_cmd = press(140, 3) + press(148, 51)
+    B, C = tap(2, 0x80), tap(3, 1)
+    def run(steps, name):
+        return Run(syms, seed_ram_steps(syms, {} if EXT else fixtures) + open_cmd + steps + [(15, "")]
+                   + bank_dump_step(), name, files=fixtures)
+    def screen(r, name, windows):
+        want = compose(expected_nt(), windows)
+        check(fails, name, r.nt() == want, f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    devs = {1: b"RAM", 4: b"BANK", 5: b"DISK", 8: b"PRN"}
+    device = 1
+    for n in range(3):
+        device = ring_step(device)
+        r = run(B * (n + 1), f"bank-cmd-ring-{n}")
+        right = left if device == (5 if EXT else 1) else []   # the same device lists the same files
+        screen(r, f"bank-cmd-ring-{n}", [cmdwin(left, right, devs=(devs[5 if EXT else 1], devs[device]))])
+        check(fails, f"bank-cmd-ring-{n}-pane", r.peek("CmdBk1") == device and r.peek("CmdBk0") == (5 if EXT else 1),
+              f"B {n + 1} times: panes {r.peek('CmdBk0')}, {r.peek('CmdBk1')}")
+    r = run(tap(4, 0x20) + B, "bank-cmd-from-prn")
+    check(fails, "bank-cmd-from-prn", r.peek("CmdBk1") == 1, f"PRN then B: pane {r.peek('CmdBk1')}")
+    r = run(B + C, "bank-cmd-copy")
+    screen(r, "bank-cmd-copy", [cmdwin(left, ["ALPHA"], status=b"COPIED", devs=(devs[5 if EXT else 1], b"BANK"))])
+    check(fails, "bank-cmd-copy-bytes", bank_files(r, "bank-cmd-copy") == {"ALPHA": (0, fixtures["ALPHA"])}
+          and r.peek("StBackend") == (5 if EXT else 1)
+          and (read_disk_image(DISK) == fixtures if EXT else r.bytes("RamHeap", 1024) == b"".join(fixtures.values())),
+          "ALPHA's 256 bytes in the bank's first block, source and global backend unchanged")
+    r = run(B + C + C, "bank-cmd-exists")
+    screen(r, "bank-cmd-exists", [cmdwin(left, ["ALPHA"], status=b"TARGET EXISTS", devs=(devs[5 if EXT else 1], b"BANK"))])
+    r = run(B + C + delete + yes + tab + C, "bank-cmd-back")
+    screen(r, "bank-cmd-back", [cmdwin(left, ["ALPHA"], active=1, status=b"COPIED", devs=(devs[5 if EXT else 1], b"BANK"))])
+    back = read_disk_image(DISK) if EXT else {left[i]: r.bytes("RamHeap", 1024)[i * 256:(i + 1) * 256] for i in range(4)
+                                               if r.bytes("RamDir", 64)[i * 16 + 15]}
+    check(fails, "bank-cmd-back-bytes", back == fixtures and bank_files(r, "bank-cmd-back") == {"ALPHA": (0, fixtures["ALPHA"])},
+          f"ALPHA deleted from {'disk' if EXT else 'RAM'} and copied back from the bank: {sorted(back)}")
+
+    # The whole route on the bank: SETTINGS > BACKEND to BANK, type, save,
+    # edit, close and discard, FILE > OPEN, the document is the saved one.
+    document = b"HI".ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
+    steps = (to_bank + typed + file_save + input_note_name() + tap(5, 0x20) + press(66, 50) + press(60, 98)
+             + file_open + enter + [(15, "")] + bank_dump_step())
+    r = Run(syms, steps, "bank-note", files={})
+    want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 0, 0, title=b"NOTE")])
+    check(fails, "bank-note", r.peek("StBackend") == 4 and r.peek("NoteBackend") == 4
+          and r.bytes("NoteBuf", 256) == document and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1
+          and r.peek("WndCount") == 1 and r.nt() == want
+          and bank_files(r, "bank-note") == {"NOTE": (0, document)},
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, backend {r.peek('NoteBackend')}, "
+          f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    r = Run(syms, to_bank + typed + file_save + input_note_name() + file_open + [(15, "")], "bank-picker")
+    want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"NOTE"),
+                                   (2, 4, 30, 12, b"COMMANDER", [(1, 1, b"BANK", True), (2, 1, b"NOTE", True), (2, 22, b"00256", True),
+                                                                 (8, 1, b"READY", False), (9, 1, b"SHIFT+ARROWS ENTER OPEN", False),
+                                                                 (10, 1, b"[OPEN] DELETE REMOVE R LIST", False)])])
+    check(fails, "bank-picker", r.nt() == want and r.peek("CmdBrowse") == 1 and r.peek("CmdBk0") == 4,
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+
+def bank_test_checks(tsyms, fails):
+    """The TEST build's bank subjects: a hundred files written under DI
+    with the BIOS work area and the ROM snapshotted either side, then the
+    bank filled until STERR_FULL, the directory counted, a delete, the
+    entry reused; the dumped bank is parsed here as the oracle."""
+    print("bank, test build:")
+    snap = ('set f [open $::out/sys{n}.bin wb]; puts -nonewline $f [debug read_block memory 0xF380 0xC80]; '
+            'puts -nonewline $f [debug read_block memory 0x4000 0x8000]; close $f')
+    # The breakpoints go once the second snapshot is taken: openMSX runs
+    # many times slower with one armed, and filling a 512K bank is 1,800
+    # files, each open a walk of the whole directory through the window.
+    bps = [f"set ::sysbp0 [debug set_bp {tsyms['TbsStart']} {{}} {{{snap.format(n=0)}}}]",
+           f"set ::sysbp1 [debug set_bp {tsyms['TbsEnd']} {{}} {{{snap.format(n=1)}; "
+           f"debug remove_bp $::sysbp0; debug remove_bp $::sysbp1}}]"]
+    r = Run(tsyms, [(60, "")] + bank_dump_step(), "bank-subjects", rom=TROM, setup=bps,
+            guard=600 if MAPPER else 120)
+    out = os.path.join(OUT, "bank-subjects")
+    sys0 = open(os.path.join(out, "sys0.bin"), "rb").read()
+    sys1 = open(os.path.join(out, "sys1.bin"), "rb").read()
+    trom = open(TROM, "rb").read()
+    rec = r.bytes("TbResults", 27)
+    check(fails, "bank-sys", rec[26] == 100 and len(sys0) == 0xC80 + 0x8000 and sys0 == sys1
+          and sys0[0xC80:] == trom and r.peek("TestDone") == 1,
+          f"{rec[26]} files written under DI; $F380-$FFFF and the ROM {'identical' if sys0 == sys1 else 'DIFFER'} "
+          f"before and after, work area crc32 {zlib.crc32(sys0[:0xC80]):08x}")
+    blocks, sumblocks, dirblocks, files = bank_geometry(r)
+    got = dict(wrote=int.from_bytes(rec[0:2], "little"), read=int.from_bytes(rec[2:4], "little"), bad=rec[4], err=rec[5],
+               filled=int.from_bytes(rec[6:8], "little"), full=rec[8], dirn=rec[9], deleted=rec[10], reused=rec[11],
+               name=rec[12:25].split(b"\0")[0], bad2=rec[25])
+    want = dict(wrote=64, read=64, bad=0, err=0, filled=files - 101, full=tsyms["STERR_FULL"], dirn=min(files, 255),
+                deleted=0, reused=103, name=b"NEW", bad2=0)
+    check(fails, "bank-rw", got == want, f"{blocks} blocks, {files} files: {got}")
+    # the directory and every file, from the memory itself
+    stored = bank_files(r, "bank-subjects")
+    def pattern(name):
+        return bytes(j ^ ord(name[-1]) for j in range(256))
+    expected = {f"S{i:04d}": (i, pattern(f"S{i:04d}")) for i in range(100)}
+    expected["BANKTEST"] = (100, bytes((1 + 7 * k) & 255 for k in range(64)))
+    expected.update({f"F{i:04d}": (101 + i, pattern(f"F{i:04d}")) for i in range(files - 101)})
+    del expected["F0002"]
+    expected["NEW"] = (103, b"")
+    check(fails, "bank-dir", stored == expected and r.peek("BkTop", 2) == files,
+          f"{len(stored)} files in the dumped bank, {len(expected)} expected; high water {r.peek('BkTop', 2)}")
+
+
 def commander_checks(syms, fails, vram0, browse_only=False):
     print("commander:")
     nt0 = vram0[NT:NT + COLS * ROWS]
@@ -1027,36 +1363,14 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     open_cmd = press(140, 3) + press(148, 51)
     enter, down, tab = tap(7, 128), tap(8, 64, True), tap(7, 8)
     copy, delete, yes, no = tap(3, 1), tap(3, 2), tap(5, 64), tap(4, 8)
-    def doc(name):
-        return name.encode().ljust(14) + b"\0\0" + (b" " * 14 + b"\0\0") * 15
     fixtures = {name: doc(name) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
     def seed_ram(files):
-        directory, data = bytearray(64), bytearray(1024)
-        for i, (name, content) in enumerate(files.items()):
-            assert i < 4 and len(content) <= 256
-            directory[i * 16:i * 16 + len(name)] = name.encode()
-            directory[i * 16 + 13:i * 16 + 15] = len(content).to_bytes(2, "little")
-            directory[i * 16 + 15] = 1
-            data[i * 256:i * 256 + len(content)] = content
-        return [(5, f"debug write_block memory {syms['RamDir']} [binary format H* {directory.hex()}]; "
-                    f"debug write_block memory {syms['RamHeap']} [binary format H* {data.hex()}]")]
+        return seed_ram_steps(syms, files)
     def run(steps, name, files=fixtures, ram=None):
         if ram is None:
             ram = {} if EXT else files
         return Run(syms, seed_ram(ram) + open_cmd + steps + [(15, "")], name,
                    files=files if EXT else None)
-    def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, front=True):
-        lines = [(1, 1, b"DISK" if EXT else b"RAM", active == 0),
-                 (1, 16, b"RAM", active == 1), (8, 1, status, False),
-                 (9, 1, b"TAB PANE P PRN R LIST", False),
-                 (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
-        for pane, names in enumerate((left, right)):
-            start = top if pane == active else 0
-            names = names[start:start + 6]
-            for i, name in enumerate(names or ["(EMPTY)"]):
-                lines.append((2 + i, 1 if pane == 0 else 16, name.encode(),
-                              pane == active and i + start == selection))
-        return (1, 3, 30, 12, b"COMMANDER", lines)
     def screen(r, name, windows):
         want = compose(nt0, windows)
         check(fails, name, r.nt() == want,
@@ -1473,20 +1787,22 @@ def settings_checks(syms, fails):
         return [(3, f"key_down {row} {mask}{extra}"), (3, f"key_up {row} {mask}{release}")]
 
     opened = press(20, 4) + press(30, 20)
-    def lines_for(speed, inv, device, focus, sound=1, keyptr=1, lattice=1):
+    def lines_for(speed, inv, device, focus, sound=1, keyptr=1, lattice=1, kb=0):
         labels = [b"[SLOW]", b"[MED ]", b"[FAST]"]
         buttons = [labels[speed], b"[ON  ]" if inv else b"[OFF ]",
-                   b"[DISK]" if device == 5 else b"[RAM ]",
+                   {5: b"[DISK]", 4: b"[BANK]"}.get(device, b"[RAM ]"),
                    b"[ON  ]" if sound else b"[OFF ]", b"[ON  ]" if keyptr else b"[OFF ]",
                    (b"[NONE]", b"[DOTS]", b"[GRID]")[lattice], b"[SAVE]", b"[DONE]"]
         lines = [(i + 1, 1, label, False) for i, label in enumerate(
             (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR", b"LATTICE"))]
         lines += [(i + 1, 16, label, i == focus) for i, label in enumerate(buttons)]
+        if device == 4:                 # the bank's size follows the label
+            lines.append((3, 9, f"{kb} KB".encode(), False))
         return lines
 
     def verify(steps, name, speed, inv, device, focus, closed=False, sound=1, keyptr=1, lattice=1):
         r = Run(syms, steps + [(10, "")], name)
-        lines = lines_for(speed, inv, device, focus, sound, keyptr, lattice)
+        lines = lines_for(speed, inv, device, focus, sound, keyptr, lattice, kb=bank_kb(r))
         want = compose(expected_nt(), [] if closed else [(6, 6, 24, 10, b"SETTINGS", lines)])
         pattern = (bytes(8), bytes((0xaa, 0x55) * 4), bytes((0xff, 0x55) * 4))[lattice]
         tiles = pattern + b"\xff" + pattern[1:]
@@ -1519,9 +1835,11 @@ def settings_checks(syms, fails):
         elif row == 1:
             inv ^= 1
         elif row == 2:
-            device = 5 if EXT and device == 1 else 1
+            device = ring_step(device)
         r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 7)
     # Keyboard increment, wrap, decrement, focus in both directions, SAVE and DONE.
+    # The backend goes round RAM, BANK and DISK (where present) both ways
+    # and is left on RAM.
     steps = list(opened)
     cases = [(tap(7, 128), 2, 0, backend, 0),
              (tap(8, 128, True), 0, 0, backend, 0),
@@ -1530,8 +1848,14 @@ def settings_checks(syms, fails):
              (tap(7, 128), 2, 1, backend, 1),
              (tap(8, 16, True), 2, 0, backend, 1),
              (tap(7, 8), 2, 0, backend, 2),
-             (tap(7, 128), 2, 0, 1 if EXT else backend, 2),
-             (tap(8, 32, True), 2, 0, 1, 1),
+             (tap(7, 128), 2, 0, ring_step(backend), 2),
+             (tap(8, 16, True), 2, 0, backend, 2),
+             (tap(7, 128), 2, 0, ring_step(backend), 2)]
+    device = ring_step(backend)
+    while device != 1:
+        device = ring_step(device)
+        cases.append((tap(7, 128), 2, 0, device, 2))
+    cases += [(tap(8, 32, True), 2, 0, 1, 1),
              (tap(7, 128), 2, 1, 1, 1),
              (tap(7, 8) * 5, 2, 1, 1, 6),
              (tap(7, 128), 2, 1, 1, 6)]
@@ -1546,7 +1870,7 @@ def settings_checks(syms, fails):
     # Two instances share values, including the hidden window's cached buffer,
     # but retain separate button focus. Exercise both keyboard and mouse paths.
     for control in ("key", "click"):
-        for row, values in enumerate(((2, 0, backend), (1, 1, backend), (1, 0, 1))):
+        for row, values in enumerate(((2, 0, backend), (1, 1, backend), (1, 0, ring_step(backend)))):
             rear_focus = (row + 1) % 3
             two = [(5, "plug joyporta mouse")] + opened + tap(7, 8) * rear_focus + opened
             two += tap(7, 8) * row + tap(7, 128) if control == "key" else click(row, 8, 7)
@@ -1560,7 +1884,7 @@ def settings_checks(syms, fails):
                 record = syms["WndTab"] + slot * syms["WNDRECSZ"]
                 buf = r.peek16_at(record + syms["WR_BUFP"]) - WORK
                 state = r.peek16_at(record + syms["WR_STATEP"]) - WORK
-                want = window_buffer(24, 10, b"SETTINGS", slot == 1, lines_for(*values, focus))
+                want = window_buffer(24, 10, b"SETTINGS", slot == 1, lines_for(*values, focus, kb=bank_kb(r)))
                 actual = r.ram[buf:buf + len(want)]
                 check(fails, name + f"-buffer-{slot}", actual == want and r.ram[state] == focus,
                       f"crc32 {zlib.crc32(actual):08x}, expected {zlib.crc32(want):08x}; focus {r.ram[state]}")
@@ -1808,8 +2132,8 @@ def arrange_checks(syms, fails):
     steps = opens[0] + cmd + opens[2] + opens[3] + tile
     lines = [(1, 1, b"DISK" if EXT else b"RAM", True), (1, 16, b"RAM", False),
              (2, 1, b"(EMPTY)", True), (2, 16, b"(EMPTY)", False),
-             (8, 1, b"READY", False), (9, 1, b"TAB PANE P PRN R LIST", False),
-             (10, 1, b"ENTER OPEN C COPY D DELETE", False)]
+             (8, 1, b"READY", False), (9, 1, CMD_HELP1, False),
+             (10, 1, CMD_HELP2, False)]
     arranged = [windows[0], (0, 0, 30, 12, b"COMMANDER", lines), windows[2], windows[3]]
     want = compose(expected_nt(), [g + w[4:] for g, w in zip(reversed(tiled(4)), arranged)])
     r = Run(syms, steps + [(15, "")], "arrange-commander", files={})
@@ -2563,8 +2887,8 @@ def print_checks(syms, fails):
     for n in range(3):
         r = Run(syms, tap(3, 16, 4) + tap(7, 8)*2 + enter*n + [(10, "")],
                 f"print-caps-settings-{n}")
-        check(fails, f"print-caps-settings-{n}", r.peek("StBackend") in (1, 5)
-              and r.peek("SetBackend") in (1, 5), f"SETTINGS backend {r.peek('StBackend')}")
+        check(fails, f"print-caps-settings-{n}", r.peek("StBackend") in (1, 4, 5)
+              and r.peek("SetBackend") in (1, 4, 5), f"SETTINGS backend {r.peek('StBackend')}")
     r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "print-keys")
     want = compose(expected_nt(), [keys_win(16,3)])
     check(fails, "print-keys", r.nt() == want,
@@ -2575,6 +2899,10 @@ def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--bank"]:
+        bank_checks(syms, fails)
+        bank_test_checks(tsyms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--print"]:
         print_checks(syms, fails)
         return bool(fails)
@@ -2630,6 +2958,8 @@ def main():
         window_checks(syms, fails, vram0)
         app_checks(syms, fails, vram0)
         return bool(fails)
+    bank_checks(syms, fails)
+    bank_test_checks(tsyms, fails)
     print_checks(syms, fails)
     saveas_checks(syms, fails)
     delete_checks(syms, fails)
