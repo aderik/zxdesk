@@ -327,6 +327,8 @@ MnActions:
                 defw    NoteMenuSave            ; FILE, SAVE
                 defb    2,3
                 defw    NoteMenuSaveAs
+                defb    2,4
+                defw    NoteMenuPrint
                 defb    2,5
                 defw    NoteMenuDelete           ; FILE, DELETE
                 defb    3,0
