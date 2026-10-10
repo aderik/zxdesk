@@ -719,7 +719,7 @@ def cal_win(x, y, sel=1, year=1980, month=1):
 
 KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
              b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT", b"D DESKTOP",
-             b"HOME ROW START", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+             b"SELECT MARK", b"HOME ROW START", b"CAL , . MONTH", b"CAL < > YEAR"]
 KEYS_Y = 1      # 22 rows: the lowest row the list fits at
 
 
@@ -2632,8 +2632,9 @@ def wrap_layout(doc, cx, cy, width):
     at pos+width. The caret belongs to the last row starting at or
     before it, and to the next row's first cell when its column would
     be the width, with a row added for it at the end of its line.
-    Returns the rows' texts and the caret's (row, column)."""
-    rows, caret, first = [], None, 0
+    Returns the rows' texts, the caret's (row, column) and, a row at
+    a time, the packed cell (chunk*16+column) of each character."""
+    rows, caret, first, packed = [], None, 0, []
     while first < 16:
         last = first
         while last < 15 and doc[last * 16 + 15] == 1:
@@ -2658,21 +2659,31 @@ def wrap_layout(doc, cx, cy, width):
             if cur and x >= s:
                 caret = (len(rows), x - s)
             rows.append(text[s:e])
+            packed.append([(first + k // 14) * 16 + k % 14 for k in range(s, e)])
         if cur and caret[1] == width:
             caret = (caret[0] + 1, 0)
             if caret[0] == len(rows):
                 rows.append(b"")
+                packed.append([])
         first = last + 1
-    return rows, caret
+    return rows, caret, packed
 
 
-def wrap_win(doc, cx, cy, top, x=8, y=6, w=NOTE_W, h=NOTE_H, title=b"NOTEPAD"):
-    """A wrapped notepad window for compose(), with its rows and caret."""
+def wrap_win(doc, cx, cy, top, x=8, y=6, w=NOTE_W, h=NOTE_H, title=b"NOTEPAD", sel=None):
+    """A wrapped notepad window for compose(), with its rows and caret;
+    `sel` = (lower, upper) packed cells: those are shown inverted and the
+    caret is not, as the ROM has it in the front window."""
     width, vis = w - 2, h - 2
-    rows, caret = wrap_layout(doc, cx, cy, width)
+    rows, caret, packed = wrap_layout(doc, cx, cy, width)
     lines = [(1 + i, 1, (rows[top + i] if top + i < len(rows) else b"").ljust(width), False) for i in range(vis)]
     lines += [(-1, top, b"", False), (-2, len(rows), b"", False)]
-    if top <= caret[0] < top + vis:
+    if sel is not None:
+        for i in range(vis):
+            if top + i < len(rows):
+                for col, (ch, cell) in enumerate(zip(rows[top + i], packed[top + i])):
+                    if sel[0] <= cell < sel[1]:
+                        lines.append((1 + i, 1 + col, bytes((ch,)), True))
+    elif top <= caret[0] < top + vis:
         lines.append((1 + caret[0] - top, 1 + caret[1], rows[caret[0]][caret[1]:caret[1] + 1] or b" ", True))
     return (x, y, w, h, title, lines), rows, caret
 
@@ -2735,12 +2746,12 @@ def wrap_checks(syms, fails):
     up, down, home, esc, enter = s.up, s.down, s.home, s.esc, s.enter
     words, wall, timing = s.words, s.wall, s.timing
 
-    def view(name, steps, typed, cx, cy, top, w=NOTE_W, h=NOTE_H, wrap=1, rows_want=None, caret_want=None):
+    def view(name, steps, typed, cx, cy, top, w=NOTE_W, h=NOTE_H, wrap=1, rows_want=None, caret_want=None, sel=None):
         """One boot: the document is the typed lines, the screen the
         compositor's wrapped window, the caret and the counts the oracle's."""
         r = Run(syms, timing + steps + [(10, "")], name, files={})
         doc = note_width_document(typed)
-        win, rows, caret = wrap_win(doc, cx, cy, top, w=w, h=h)
+        win, rows, caret = wrap_win(doc, cx, cy, top, w=w, h=h, sel=sel)
         if rows_want is not None:                            # the oracle agrees with the ticket
             assert rows == rows_want + [b""] * (len(rows) - len(rows_want)), (rows, rows_want)
         if caret_want is not None:
@@ -2784,6 +2795,13 @@ def wrap_checks(syms, fails):
     view("wrap-up-up", typed + up + up, [words], 9, 0, 0, caret_want=(0, 9))      # X 9
     view("wrap-down", typed + up + up + down + down, [words], 1, 2, 0, caret_want=(2, 9))   # X 29
     view("wrap-home", typed + up + up + down + down + home, [words], 6, 1, 0, caret_want=(2, 0))  # X 20
+    # a selection across two break points (lf-1526): SELECT at the end,
+    # then two rows up marks X 9 to 29, and both parts show inverted
+    select = tap(7, 64)
+    r = view("wrap-select", typed + select + up + up, [words], 9, 0, 0, caret_want=(0, 9),
+             sel=(0x09, 0x22))
+    check(fails, "wrap-select-marks", r.bytes("NoteAnchor", 4) == bytes((0x82, 2, 9, 0)),
+          f"anchor/end {r.bytes('NoteAnchor', 4).hex()}, expected 82020900")
     view("wrap-long-up", new + text(wall.decode()) + up, [wall], 6, 0, 0, caret_want=(0, 6))
     view("wrap-long-down", new + text(wall.decode()) + up + down, [wall], 6, 1, 0, caret_want=(1, 6))
     # WRAP off, as the SETTINGS button leaves it: the lf-1219 display, the
@@ -2819,9 +2837,9 @@ def wrap_checks(syms, fails):
     # both machines, no frame dropped
     for name, line in (("wrap-full", b"I" * 224), ("wrap-full-spaces", b"I " * 112)):
         typing = new + text(line.decode())
-        rows, caret = wrap_layout(note_width_document([line]), 14, 15, 14)
+        rows, caret, _ = wrap_layout(note_width_document([line]), 14, 15, 14)
         view(name + "-typed", typing, [line], 14, 15, caret[0] - 6)
-        rows, caret = wrap_layout(note_width_document([line]), 14, 15, 4)
+        rows, caret, _ = wrap_layout(note_width_document([line]), 14, 15, 4)
         r = view(name, typing + s.to_minimum + shifted(8, 128), [line], 14, 15, caret[0] - 1, w=6, h=4)
         check(fails, name + "-rows", len(rows) == 57 and caret == (56, 0) and r.peek("NoteRows") == 57,
               f"{len(rows)} rows, caret {caret}")
@@ -3375,6 +3393,114 @@ def desktop_checks(syms, fails):
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
+def note_selection_checks(syms, fails):
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n, shift=True):
+        return ([(5, 'key_down 6 1')] if shift else []) + tap(8, mask)*n + (
+            [(5, 'key_up 6 1')] if shift else [])
+    r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
+            + click(196, 3) + click(204, 11) + [(10, '')], 'sel-help')
+    expected = compose(expected_nt(), [keys_win(16, KEYS_Y)])
+    check(fails, 'sel-help', r.nt() == expected,
+          f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
+    hello = base + typed('HELLO WORLD') + arrows(16, 11)
+    selected = hello + tap(7, 64) + arrows(128, 5)
+    document = note_width_document([b'HELLO WORLD'])
+    want = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', [
+        (1, 1, b'HELLO WORLD', False), (1, 1, b'HELLO', True), (-2, 16, b'', False)])])
+    def selection(name, steps):
+        r = Run(syms, steps + [(10, '')], name, files={})
+        check(fails, name, r.bytes('NoteBuf', 256) == document and r.nt() == want
+              and (r.peek('NoteAnchor') & 127, r.peek('NoteAnchor', 2) >> 8,
+                   r.peek('NoteEnd'), r.peek('NoteEnd', 2) >> 8) == (0, 0, 5, 0),
+              f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"anchor/end {r.bytes('NoteAnchor', 4).hex()}")
+        return r
+    selection('sel-keys', selected)
+    off = [(5, f"debug write memory {syms['SetKeyPtr']} 0")]
+    off_wrap = [(5, f"debug write memory {syms['SetWrap']} 0")]
+    selection('sel-keys-pointer-off', hello + off + tap(7, 64) + arrows(128, 5, False))
+    # Whole-cell mouse selection at text origin (9,7), through five cells.
+    point = [(5, f"debug write memory {syms['PtrX']} 72; debug write memory {syms['PtrY']} 56")]
+    drag = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
+                    (5, 'mouse_move 80 0'), (5, 'exec xdotool mouseup 1'),
+                    (10, 'set ::throttle off')]
+    selection('sel-mouse', hello + drag)
+    for name, ending, expected in [
+            ('sel-type', tap(5, 32), b'X WORLD'),
+            ('sel-bs', tap(7, 32), b' WORLD'),
+            ('sel-del', tap(8, 8), b' WORLD')]:
+        r = Run(syms, selected + ending + [(10, '')], name, files={})
+        want_doc = note_width_document([expected])
+        check(fails, name, r.bytes('NoteBuf', 256) == want_doc
+              and r.peek('NoteAnchor', 2) >> 8 == 255,
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(want_doc):08x}")
+    for name, ending in [('sel-escape', tap(7, 4)), ('sel-click', click(72, 56))]:
+        r = Run(syms, selected + ending + [(10, '')], name, files={})
+        check(fails, name, r.bytes('NoteBuf', 256) == document
+              and (r.peek('NoteAnchor', 2) >> 8 == 255 or
+                   r.bytes('NoteAnchor', 2) == r.bytes('NoteEnd', 2)),
+              'selection cleared, document retained')
+    selection('sel-toggle', selected + tap(7, 64))
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    for name, extra, front in [('sel-instance-back', shortcut(4, 8), False),
+                                ('sel-instance-front', shortcut(4, 8) + shortcut(5, 32), True)]:
+        r = Run(syms, selected + extra + [(10, '')], name, files={})
+        buf = r.peek16_at(syms['WndTab'] + 6)
+        state = r.peek16_at(syms['WndTab'] + 10)
+        offset = syms['NoteAnchor'] - syms['NoteState']
+        text = r.ram[buf-0xc000+17:buf-0xc000+28]
+        expected = bytes(c | (128 if front and i < 5 else 0)
+                         for i, c in enumerate(b'HELLO WORLD'))
+        saved = r.ram[state-0xc000+offset:state-0xc000+offset+4]
+        check(fails, name, text == expected and saved == bytes((128, 0, 5, 0)),
+              f"buffer crc32 {zlib.crc32(text):08x}/{zlib.crc32(expected):08x}, state {saved.hex()}")
+    selection('sel-select-held', hello + [(30, 'key_down 7 64'), (5, 'key_up 7 64')]
+              + arrows(128, 5))
+    # A reverse selection spanning chunks, with the prefix scrolled out.
+    # A long line scrolled sideways is the lf-1219 display: WRAP off.
+    long_text = b'ABCDEFGHIJKLMNOPQRSTUVWX'
+    reverse = base + off_wrap + typed(long_text.decode()) + tap(7, 64) + arrows(16, 9)
+    r = Run(syms, reverse + [(10, '')], 'sel-chunks', files={})
+    painted = [(1, 1, long_text[2:], False), (1, 14, long_text[15:], True),
+               (-2, 15, b'', False)]
+    expected = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', painted)])
+    check(fails, 'sel-chunks', r.nt() == expected and r.peek('NoteLeftCol') == 2
+          and r.bytes('NoteBuf', 256) == note_width_document([long_text]),
+          f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
+    r = Run(syms, reverse + tap(5, 32) + [(10, '')], 'sel-chunks-type', files={})
+    expected = note_width_document([long_text[:15] + b'X'])
+    check(fails, 'sel-chunks-type', r.bytes('NoteBuf', 256) == expected,
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
+    # Select backwards across two hard breaks and a continuation chunk.
+    # UP is a logical line here, not a screen row: WRAP off.
+    lines = base + off_wrap + typed('AB') + tap(7, 128) + typed('C'*20) + tap(7, 128) + typed('DE')
+    across = lines + tap(7, 64) + arrows(32, 2) + arrows(16, 1)
+    r = Run(syms, across + tap(7, 32) + [(10, '')], 'sel-lines', files={})
+    expected = note_width_document([b'A'])
+    check(fails, 'sel-lines', r.bytes('NoteBuf', 256) == expected,
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
+    scroll = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
+                       (25, 'mouse_move 0 128'), (5, 'exec xdotool mouseup 1'),
+                       (10, 'set ::throttle off')]
+    # Dropped counts the drag alone. A typed key frame with the icons under
+    # the window is 15.7 to 16.3 ms, measured on main as here, and at 60 Hz
+    # the preamble drops frames before the drag begins.
+    settle = [(5, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0")]
+    r = Run(syms, hello + settle + scroll, 'sel-scroll', files={})
+    check(fails, 'sel-scroll', r.peek('NoteTop') > 0 and r.peek('NoteEnd', 2) >> 8 > 6
+          and r.peek('Dropped', 2) == 0,
+          f"top {r.peek('NoteTop')}, end {r.bytes('NoteEnd', 2).hex()}, Dropped {r.peek('Dropped', 2)}")
+
+
 def main():
     syms, tsyms = build()
     ensure_display()
@@ -3388,6 +3514,9 @@ def main():
         return bool(fails)
     if sys.argv[1:] == ["--print"]:
         print_checks(syms, fails)
+        return bool(fails)
+    if sys.argv[1:] == ["--note-selection"]:
+        note_selection_checks(syms, fails)
         return bool(fails)
     if sys.argv[1:] == ["--saveas"]:
         saveas_checks(syms, fails)
@@ -3452,6 +3581,7 @@ def main():
     sound_checks(syms, fails)
     note_width_checks(syms, fails)
     wrap_checks(syms, fails)
+    note_selection_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)

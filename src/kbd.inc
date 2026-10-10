@@ -26,6 +26,7 @@ KEY_DOWN        equ     4
 KEY_DELETE      equ     8
 KEY_HOME        equ     11              ; the notepad's start of the screen row
 KEY_ENTER       equ     13
+KEY_SELECT      equ     5
 KEY_ESC         equ     27
 
 KBDROWS         equ     9
@@ -109,9 +110,13 @@ KbdDecode:
                 jr      z,KbdLook
                 ld      de,KbdShiftT
 KbdLook:
+                ld      a,(SetKeyPtr)
+                or      a
+                jr      z,KbdAppArrows
                 ld      a,(DgOpenFlag)
                 or      a
                 jr      z,KbdLookup
+KbdAppArrows:
                 ld      a,l
                 cp      68
                 jr      c,KbdLookup
@@ -144,7 +149,7 @@ KbdBase:
                 defb    'K','L','M','N','O','P','Q','R'
                 defb    'S','T','U','V','W','X','Y','Z'
                 defb    0,0,0,0,0,0,0,0
-                defb    0,0,KEY_ESC,9,0,KEY_DELETE,0,KEY_ENTER
+                defb    0,0,KEY_ESC,9,0,KEY_DELETE,KEY_SELECT,KEY_ENTER
                 defb    ' ',KEY_HOME,0,KEY_DELETE,0,0,0,0
 
 KbdShiftT:
@@ -155,7 +160,7 @@ KbdShiftT:
                 defb    'K','L','M','N','O','P','Q','R'
                 defb    'S','T','U','V','W','X','Y','Z'
                 defb    0,0,0,0,0,0,0,0
-                defb    0,0,KEY_ESC,9,0,KEY_DELETE,0,KEY_ENTER
+                defb    0,0,KEY_ESC,9,0,KEY_DELETE,KEY_SELECT,KEY_ENTER
                 defb    ' ',KEY_HOME,0,KEY_DELETE,KEY_LEFT,KEY_UP,KEY_DOWN,KEY_RIGHT
 
 ; Called once a frame. Posts EV_KEY on a fresh press, then again on a
@@ -179,6 +184,8 @@ KbdPoll:
                 cp      c
                 jr      nz,KbpNew
                 ld      a,c                     ; a shortcut does not repeat
+                cp      KEY_SELECT
+                ret     z
                 cp      SC_BASE+1
                 ret     nc
                 ld      a,(KbdTimer)

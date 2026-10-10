@@ -132,8 +132,8 @@ KeysText:
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
+                defb    "SELECT MARK",0
                 defb    "HOME ROW START",0      ; the notepad, with WRAP the screen row
-                defb    "CALENDAR:",0
-                defb    ", . MONTH",0
-                defb    "< > YEAR",0
+                defb    "CAL , . MONTH",0      ; the calendar's, in the two rows
+                defb    "CAL < > YEAR",0       ; the list has left
                 defb    0

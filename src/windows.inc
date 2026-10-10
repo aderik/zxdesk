@@ -871,25 +871,53 @@ WtShift:
                 ld      (hl),a
                 ret
 
-; A = slot: only its title row is redrawn. A focus change flips two
-; title bars and nothing else, and the calendar's interior was
-; measured at six milliseconds to rebuild.
 ; A = slot: its title row changes hands, between the front's inverted
 ; bank and the plain one. The row is flipped in place, cells 1 to W-1
 ; (the close box stays), which is what WinDrawCap would compose for
 ; the new front, so no state is loaded for it: with a notepad behind
 ; the window that opened, the select for its cap alone was 2.2 ms
 ; of a frame measured at 15.3 ms. No buffer yet: nothing to flip, the
-; composition draws the row as it should be.
+; composition draws the row as it should be. A notepad with a
+; selection is recomposed instead (WndTouch): only the front instance
+; shows the selection inverted.
 WndTouchCap:
                 ld      hl,WndCur
                 cp      (hl)
                 jr      nz,WtcSlot
+                push    af
+                ld      a,(NoteAnchor+1)        ; the live record and state
+                ld      c,a
+                ld      hl,(WinApp)
+                call    WtcNoteSel
+                jr      z,WtcTouch
+                pop     af
                 ld      hl,(WinBufP)
                 ld      a,(WinW)
                 jr      WtcFlip
 WtcSlot:
+                push    af
                 call    WndRecAt
+                push    hl
+                ld      de,WR_STATEP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,NoteAnchor+1-NoteState
+                add     hl,de
+                ld      c,(hl)                  ; its NoteAnchor Y, if a notepad
+                pop     hl
+                push    hl
+                ld      de,WR_APP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ex      de,hl
+                call    WtcNoteSel
+                pop     hl
+                jr      z,WtcTouch
+                pop     af
                 push    hl
                 ld      de,WR_BUFP
                 add     hl,de
@@ -915,14 +943,32 @@ WtcLoop:
                 inc     hl
                 djnz    WtcLoop
                 ret
+WtcTouch:
+                pop     af
+                jp      WndTouch
+; HL = an application, C = the state's NoteAnchor Y: Z when it is a
+; notepad with a selection.
+WtcNoteSel:
+                ld      de,AppNote
+                or      a
+                sbc     hl,de
+                ret     nz
+                ld      a,c
+                inc     a                       ; $FF: none
+                jr      z,WtcNone
+                xor     a                       ; Z: a selection
+                ret
+WtcNone:
+                or      1
+                ret
 
 ; Slot A's rows, from the table; RowsAddSlotText for its content alone.
 RowsAddSlot:
                 call    RowsSlot
-                jr      RowsAdd
+                jp      RowsAdd
 RowsAddSlotText:
                 call    RowsSlot
-                jr      RowsAddText
+                jp      RowsAddText
 RowsSlot:
                 call    WndRecAt
                 inc     hl

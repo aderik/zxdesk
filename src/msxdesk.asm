@@ -291,7 +291,11 @@ _ram            defl    _ram+size
                 var     NoteModified, 1
                 var     NoteLeftCol, 1
                 var     NoteBackend, 1
+                var     NoteAnchor, 2          ; X (bit 7 = marking), chunk Y ($FF = none)
+                var     NoteEnd, 2             ; X, chunk Y; exclusive endpoint
 NOTESTSZ        equ     _ram-NoteState
+                var     NoteMouse, 1
+                var     NotePaintBuf, 15
                 var     NoteCursorX, 1
                 var     NoteCursorY, 1
                 var     NoteRows, 1
@@ -576,6 +580,7 @@ Start:
                 xor     a
                 ld      (LastHit),a
                 ld      (DskDrag),a
+                ld      (NoteMouse),a           ; no notepad drag at the start
                 ld      (MnLastMenu),a
                 dec     a
                 ld      (MenuPick),a
@@ -619,6 +624,7 @@ MainLoop:
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
+                call    NoteMouseFrame
                 call    ClkService      ; the minute may have rolled
                 call    WinRedraw       ; whatever changed, recomposed once
                 ld      hl,(Frames)
