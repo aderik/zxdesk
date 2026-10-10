@@ -181,13 +181,15 @@ TsetDesk:                                       ; to the desktop
                 ld      de,TsetApplied+17
                 ld      bc,SETSIZE
                 ldir
-                ; Leave a non-default, valid record on the disk image.
+                ; Leave a non-default, valid record on the disk image, with
+                ; the default icons again: the clamp above left six at (30, 20).
                 ld      a,ST_RAM
                 ld      (SetBackend),a
                 ld      a,2
                 ld      (SetSpeed),a
                 xor     a
                 ld      (SetInvertY),a
+                call    DskInit
                 call    SetApply
                 jp      SetSave
 TsetSnapshot:
