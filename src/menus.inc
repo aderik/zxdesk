@@ -1,6 +1,8 @@
 ; ============================================================
 ;  Menus
-;  The ZX pull downs on the cell grid. A menu definition is six
+;  The ZX pull downs on the cell grid: MSX DESK, FILE, EDIT, VIEW
+;  and HELP, two spaces apart, which fills the row from column 0.
+;  A menu definition is six
 ;  bytes as before: the title's column and width on the bar, the
 ;  drop's width, the item count, and a pointer to the items,
 ;  null terminated strings laid end to end. The drop is one cell
@@ -15,15 +17,17 @@ MNDEFSZ         equ     6
 MNSAVESZ        equ     10*6            ; the widest drop by the tallest
 
 MenuDefs:
-                defb    1,8,10,2
+                defb    0,8,10,2
                 defw    MnItems1
-                defb    10,6,8,6
+                defb    10,4,8,6
                 defw    MnItems2
-                defb    17,6,10,6
+                defb    16,4,6,4
                 defw    MnItems3
-                defb    24,6,8,2
+                defb    22,4,10,6
                 defw    MnItems4
-MNCOUNT         equ     4
+                defb    28,4,8,2
+                defw    MnItems5
+MNCOUNT         equ     5
 
 MnItems1:       defb    "ABOUT",0
                 defb    "SETTINGS",0
@@ -33,13 +37,17 @@ MnItems2:       defb    "NEW",0
                 defb    "SAVE AS",0
                 defb    "PRINT",0
                 defb    "DELETE",0
-MnItems3:       defb    "CLOCK",0
+MnItems3:       defb    "CUT",0
+                defb    "COPY",0
+                defb    "PASTE",0
+                defb    "UNDO",0                ; no action yet: the undo ticket
+MnItems4:       defb    "CLOCK",0
                 defb    "CALENDAR",0
                 defb    "CASCADE",0
                 defb    "TILE",0
                 defb    "DESKTOP",0
                 defb    "COMMANDER",0
-MnItems4:       defb    "KEYS",0
+MnItems5:       defb    "KEYS",0
                 defb    "ABOUT",0
 
 ; Which title is under cell column B? Returns A = index+1, or zero.
@@ -332,19 +340,25 @@ MnActions:
                 defb    2,5
                 defw    NoteMenuDelete           ; FILE, DELETE
                 defb    3,0
-                defw    ClockOpen               ; VIEW, CLOCK
+                defw    NoteMenuCut             ; EDIT, CUT
                 defb    3,1
-                defw    WndOpenCal              ; VIEW, CALENDAR
+                defw    NoteMenuCopy            ; EDIT, COPY
                 defb    3,2
-                defw    WndCascade
-                defb    3,3
-                defw    WndTile
-                defb    3,4
-                defw    DskSetOpen              ; VIEW, DESKTOP
-                defb    3,5
-                defw    CommanderOpen
+                defw    NoteMenuPaste           ; EDIT, PASTE; UNDO has no action
                 defb    4,0
-                defw    KeysOpen                ; HELP, KEYS
+                defw    ClockOpen               ; VIEW, CLOCK
                 defb    4,1
+                defw    WndOpenCal              ; VIEW, CALENDAR
+                defb    4,2
+                defw    WndCascade
+                defb    4,3
+                defw    WndTile
+                defb    4,4
+                defw    DskSetOpen              ; VIEW, DESKTOP
+                defb    4,5
+                defw    CommanderOpen
+                defb    5,0
+                defw    KeysOpen                ; HELP, KEYS
+                defb    5,1
                 defw    AboutOpen               ; HELP, ABOUT
                 defb    $FF

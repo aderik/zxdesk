@@ -212,16 +212,17 @@ TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
                 ; build includes the tape buffer, the bank's transfer routine
-                ; and directory cache, the desktop icons and the test records.
-                ld      bc,160
+                ; and directory cache, the desktop icons, the clipboard and the
+                ; test records: 166 bytes under a disk ROM, so 48, 40 and 32.
+                ld      bc,48
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,120
+                ld      bc,40
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,96
+                ld      bc,32
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl
@@ -234,7 +235,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,119
+                ld      bc,39
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree
