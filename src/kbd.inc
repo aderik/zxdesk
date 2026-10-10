@@ -108,6 +108,14 @@ KbdDecode:
                 jr      z,KbdLook
                 ld      de,KbdShiftT
 KbdLook:
+                ld      a,(DgOpenFlag)
+                or      a
+                jr      z,KbdLookup
+                ld      a,l
+                cp      68
+                jr      c,KbdLookup
+                ld      de,KbdShiftT
+KbdLookup:
                 add     hl,de
                 ld      a,(hl)
                 ret

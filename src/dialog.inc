@@ -24,10 +24,15 @@ DlgAlert:
                 ld      (DgAfter),bc
                 ld      a,1
 DgOpen:
+                ld      (DgMode),a
                 push    af
                 ld      a,SND_BEEP
                 call    SndPlay
                 pop     af
+                cp      4
+                jr      c,DgCountReady
+                ld      a,2
+DgCountReady:
                 ld      (DgCount),a
                 ld      (DgLine1),hl
                 ld      (DgLine2),de
@@ -88,6 +93,12 @@ DgFillCell:
                 ld      hl,(DgLine2)
                 ld      b,DGY+2
                 call    DgText
+                ld      a,(DgMode)
+                cp      4
+                jp      z,DgInputPaint
+                ld      hl,DgOverwrite
+                cp      5
+                jr      z,DgLabels
                 ld      hl,DgAnswers
                 ld      a,(DgCount)
                 cp      2
@@ -136,6 +147,9 @@ DgText:
                 jp      PrintStr
 
 DgPress:
+                ld      a,(DgMode)
+                cp      4
+                ret     z
                 push    bc
                 call    HitTest
                 pop     bc
@@ -155,6 +169,11 @@ DgPress:
 
 ; SHIFT+arrows follows the desktop convention; TAB cycles, ESC stays.
 DgKey:
+                ld      b,a
+                ld      a,(DgMode)
+                cp      4
+                ld      a,b
+                jp      z,DgInputKey
                 cp      KEY_ESC
                 jr      z,DgCancel
                 cp      KEY_ENTER
@@ -228,3 +247,145 @@ DgNoCallback:
 DgAnswers:      defb    "CANCEL",0,"DISCARD",0,"SAVE",0
 DgDelete:       defb    "CANCEL",0,"DELETE",0
 DgOk:           defb    "OK",0
+
+; Reusable modal text field. HL = caption, BC = answer callback;
+; DE = validator (HL = candidate string, carry = reject). Buffer and
+; cursor belong to the dialog, outside its 140-byte save-under.
+DgTextBuf       equ     CmdBuf+160
+DgTextOld       equ     CmdBuf+173
+DlgInput:
+                ld      (DgValidate),de
+                ld      (DgAfter),bc
+                xor     a
+                ld      (DgTextBuf),a
+                ld      (DgCursor),a
+                ld      (DgLength),a
+                ld      de,0
+                ld      a,4
+                jp      DgOpen
+DlgOverwrite:
+                ld      (DgAfter),bc
+                ld      a,5
+                jp      DgOpen
+DgOverwrite:    defb    "CANCEL",0,"OVERWRITE",0
+DgInputHelp:    defb    "ENTER SAVE ESC BACK",0
+DgInputPaint:
+                ld      hl,DgTextBuf
+                ld      b,DGY+2
+                call    DgText
+                ld      a,(DgCursor)
+                add     a,DGX+1
+                ld      c,a
+                ld      b,DGY+2
+                call    CellAddr
+                ld      a,(hl)
+                xor     INVBANK
+                ld      (hl),a
+                ld      hl,DgInputHelp
+                ld      b,DGY+5
+                jp      DgText
+DgInputKey:
+                cp      KEY_ESC
+                jp      z,DgCancel
+                cp      KEY_ENTER
+                jp      z,DiSubmit
+                cp      KEY_LEFT
+                jp      z,DiLeft
+                cp      KEY_RIGHT
+                jp      z,DiRight
+                cp      KEY_DELETE
+                jp      z,DiBack
+                cp      '!'
+                ret     c
+                cp      127
+                ret     nc
+                ld      (DgChar),a
+                ld      a,(DgLength)
+                cp      12
+                ret     nc
+                ld      hl,DgTextBuf
+                ld      de,DgTextOld
+                ld      bc,13
+                ldir
+                ld      a,(DgLength)
+                ld      e,a
+                ld      d,0
+                ld      hl,DgTextBuf
+                add     hl,de
+                ld      a,(DgCursor)
+                ld      b,a
+                ld      a,(DgLength)
+                sub     b
+                inc     a
+                ld      c,a
+                ld      b,0
+                ld      d,h
+                ld      e,l
+                inc     de
+                lddr
+                inc     hl
+                ld      a,(DgChar)
+                ld      (hl),a
+                call    DiValidate
+                jr      nc,DiAccepted
+                ld      hl,DgTextOld
+                ld      de,DgTextBuf
+                ld      bc,13
+                ldir
+                ret
+DiAccepted:
+                ld      hl,DgLength
+                inc     (hl)
+                ld      hl,DgCursor
+                inc     (hl)
+                jp      DgPaint
+DiValidate:
+                ld      hl,(DgValidate)
+                push    hl
+                ld      hl,DgTextBuf
+                ret
+DiSubmit:
+                call    DiValidate
+                ret     c
+                ld      a,(DgLength)
+                or      a
+                ret     z
+                ld      a,1
+                jp      DgAnswer
+DiLeft:
+                ld      hl,DgCursor
+                ld      a,(hl)
+                or      a
+                ret     z
+                dec     (hl)
+                jp      DgPaint
+DiRight:
+                ld      a,(DgLength)
+                ld      hl,DgCursor
+                cp      (hl)
+                ret     z
+                inc     (hl)
+                jp      DgPaint
+DiBack:
+                ld      a,(DgCursor)
+                or      a
+                ret     z
+                dec     a
+                ld      (DgCursor),a
+                ld      e,a
+                ld      d,0
+                ld      hl,DgTextBuf
+                add     hl,de
+                ld      d,h
+                ld      e,l
+                inc     hl
+DiShift:
+                ld      a,(hl)
+                ld      (de),a
+                inc     hl
+                inc     de
+                or      a
+                jr      nz,DiShift
+                ld      hl,DgLength
+                dec     (hl)
+                jp      DgPaint

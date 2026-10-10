@@ -142,8 +142,7 @@ modifier. GRAPH+letter decodes to a code from $81 up that no text table
 produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
-K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. The ZX's V (SAVE
-AS), R (PRINT) and D (desktop shortcuts) wait for those features.
+K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS. R (PRINT) and D (desktop shortcuts) wait for those features.
 HELP > KEYS opens the list, with the calendar's keys, as a window.
 333 ROM bytes, no RAM.
 
@@ -159,7 +158,7 @@ Applications (phase 4 so far: `note.inc`, `clock.inc`):
 | subject | what is checked |
 |---|---|
 | note-type | FILE > NEW, then H, I, ENTER, X, backspace: the document reads `HI` on row 0, cursor at (0, 1), the window shows the seven rows and the inverted cursor |
-| note-file | H SPACE I, FILE > SAVE, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `H I` again |
+| note-file | H SPACE I, FILE > SAVE, NOTE ENTER, XX, FILE > OPEN: the RAM backend holds `NOTE`, 256 bytes, and the document is `H I` again |
 | note-space | H SPACE I with the pointer over the note body gives `H I`, cursor 3, name-table crc32 85d6c290 on C-BIOS; holding SPACE repeats text without button events |
 | clock-face | VIEW > CLOCK, SHIFT+UP, 3100 frames: 13:01:01 on the 50 Hz machine, 13:00:51 on the 60 Hz one, the face as composed |
 | clock-rate | the ROM's second counting run in Python for an hour of true PAL (180,572) or NTSC (215,722) interrupts: 3599 s and 3600 s |
@@ -915,3 +914,61 @@ Commander scratch beyond the dialogue's 140-byte save-under.
 The full `test-all.sh` was not run here: this implementation run permits
 only focused tests. The new subjects are included in the default suite
 for the pipeline. The local ignored `roms` symlink is not committed.
+
+
+## SAVE AS (lf-1523)
+
+FILE > SAVE AS and GRAPH+V open a modal filename field. Type a name,
+use BS and LEFT/RIGHT (SHIFT is optional), then ENTER to save or ESC to
+cancel. SAVE also asks for a name for a new document. RAM and cassette
+names have at most 12 characters plus the terminator; disk names use
+8.3 components. The field accepts uppercase letters, digits, underscore,
+hyphen and a separating dot. Invalid input, including `*`, is refused.
+Existing RAM/disk names require OVERWRITE, with CANCEL initially selected.
+Successful saves and loads display the document name in its window title.
+The document keeps its own storage backend, as with ordinary SAVE.
+
+`DlgInput` in `src/dialog.inc` takes a caption, answer callback and
+candidate-validator callback. It owns a twelve-character insertion field,
+cursor and rollback buffer in the unused part of `CmdBuf`; rendering goes
+through `ShadowNT`. No VRAM output routine or output spacing changes.
+SAVE AS commits `NoteName` only after the write and close succeed.
+
+Focused validation (the implementation-run instruction reserves the full
+`test-all.sh` suite for the pipeline):
+
+| Configuration | `--saveas` assertions |
+|---|---:|
+| C-BIOS_MSX1_EU, 50 Hz | 21 |
+| C-BIOS_MSX1_JP, 60 Hz | 21 |
+| Roms_MSX1 | 21 |
+| Roms_MSX1 + Roms_Disk | 21 |
+| Roms_MSX2 | 21 |
+
+These subjects exercise menu and GRAPH input, insertion/backspace/cursor
+movement, backend length limits, cancellation, overwrite decisions,
+failed writes, separate documents, renamed copies, HELP > KEYS and
+save/edit/reopen. Disk checks also compare both untouched fixture files.
+Additional modified test groups passed: C-BIOS EU `--apps` (7),
+`--dialogs` (30), `--note-load` (44), `--delete` (11) and `--open-ui` (4);
+MSX1 with disk `--commander` (55) and `--open-ui` (4); MSX1 `--tape` (13).
+The modified tape subjects use real BIOS recording and playback: LETTER
+is saved, edited and reopened; a second route closes and reopens NOTE.
+All 256 bytes are compared, and Python independently decodes the recorded
+WAV header and payload. The cassette filename limit is asserted as well.
+
+Measured document CRC32 is `9fbabb8f` for LETTER, `708c69bf` after the edit
+and overwrite; its saved title screen is `eaf22d9c`. The tape document
+CRC32 is `9a0f1306`. HELP > KEYS has nametable CRC32 `7d64da57`.
+
+Assembling checkout base `ed02ada` gives 14,826 normal ROM bytes, rather
+than the earlier 14,639 quoted in the ticket. This change adds **649 ROM
+bytes**, giving **15,475**, with **909 bytes** left in page 1. The TEST
+ROM grows by the same amount to **16,752 bytes** (page 2 is mapped).
+Static RAM grows **7 bytes**, from 3,536 to **3,543**. Available normal
+heap shrinks by 7 to **8,745 bytes**, or **3,360** with the disk ROM.
+The dialog adds **0 heap allocations** and reuses 26 scratch bytes.
+The additional HELP > KEYS row increases that window's heap buffer by
+**15 bytes** while it is open; document state size is unchanged.
+
+Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
