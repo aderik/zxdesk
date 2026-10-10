@@ -273,12 +273,52 @@ def check(fails, name, ok, detail):
         fails.append(name)
 
 
-def expected_nt():
-    """The screen the ROM paints, built here from the same layout rules."""
+# ---- desktop icons: the oracle's copy of DskConst and DskDefault. An
+# icon is two by two tiles from T_ICON (four a shape) with its label
+# centred under it, kept on the screen; present, x, y are the three
+# bytes an entry the SETTINGS record carries.
+DESK_ICONS = [(b"NOTEPAD", 0), (b"CLOCK", 1), (b"CALENDAR", 2), (b"COMMANDER", 3), (b"SETTINGS", 0), (b"ABOUT", 0)]
+DESK_DEFAULT = [(1, 1, 2), (1, 1, 6), (1, 1, 10), (1, 1, 14), (1, 1, 18), (1, 10, 18)]
+T_ICON = 0x88
+SET_VERSION = 5
+
+
+def desk_table(**changes):
+    """The default table with entries replaced: desk_table(clock=(0, 1, 6))."""
+    names = ["notepad", "clock", "calendar", "commander", "settings", "about"]
+    return [changes.get(n, e) for n, e in zip(names, DESK_DEFAULT)]
+
+
+def desk_bytes(table=None):
+    return b"".join(bytes(e) for e in (table or DESK_DEFAULT))
+
+
+def set_record(speed, inv, device, sound=1, keyptr=1, lattice=1, table=None):
+    """A version 5 SETTINGS record: the eight header bytes and the icons."""
+    return bytes((0x4D, SET_VERSION, speed, inv, device, sound, keyptr, lattice)) + desk_bytes(table)
+
+
+def paint_icons(nt, table=None):
+    """The icons under everything else, as DskPaintRows lays them."""
+    nt = bytearray(nt)
+    for (label, shape), (present, x, y) in zip(DESK_ICONS, table or DESK_DEFAULT):
+        if not present:
+            continue
+        base = T_ICON + shape * 4
+        nt[y * COLS + x:y * COLS + x + 2] = bytes((base, base + 1))
+        nt[(y + 1) * COLS + x:(y + 1) * COLS + x + 2] = bytes((base + 2, base + 3))
+        lx = min(max(0, x + 1 - len(label) // 2), COLS - len(label))
+        nt[(y + 2) * COLS + lx:(y + 2) * COLS + lx + len(label)] = label
+    return bytes(nt)
+
+
+def expected_nt(table=None):
+    """The screen the ROM paints, built here from the same layout rules:
+    the bar, the rule, the lattice with the icons on it, the status band."""
     bar = bytearray(b" " * COLS)
     bar[1:1 + 28] = b"MSX DESK  FILE   VIEW   HELP"
     rows = [bytes(bar), bytes([0x81]) * COLS] + [bytes([0x80]) * COLS] * 21 + [bytes([0xA0]) * COLS]
-    return b"".join(rows)
+    return paint_icons(b"".join(rows), table)
 
 
 def ramp(frames):
@@ -443,17 +483,18 @@ def test_build_checks(tsyms, fails):
           and r.bytes("NoteBuf", 256) == bytes((-i) % 256 for i in range(256)),
           "full/short writes, partial reads, EOF and invalid/closed handles; 256 pattern bytes")
     backend = 5 if EXT else 1
-    saved = bytes((0x4D, 4, 2, 0, 1, 1, 1, 1))
-    default = bytes((0x4D, 4, 1, 0, backend, 1, 1, 1))
+    saved = bytes((0x4D, SET_VERSION, 2, 0, 1, 1, 1, 1))
+    default = bytes((0x4D, SET_VERSION, 1, 0, backend, 1, 1, 1))
     check(fails, "settings-roundtrip", r.bytes("TsetResults", 18) == (b"\0" + saved) * 2,
           "SetSave, clear record, SetLoad: " + r.bytes("TsetResults", 18).hex())
     check(fails, "settings-headers", r.bytes("TsetResults", 36)[18:] == (b"\1" + default) * 2,
           "wrong magic and version both return carry and defaults")
     check(fails, "settings-apply", r.peek("AccelPtr", 2) == tsyms["AccelTabs"] + 10,
           "fast ramp selected")
-    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default
-    check(fails, "settings-input", r.bytes("TsetApplied", 25) == applied,
-          "three ramps, Y negation on/off, invalid payload clamped: " + r.bytes("TsetApplied", 25).hex())
+    # every icon byte 255: present clamps to 1, x to 30, y to the lowest row a slot fits
+    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default + bytes((1, 30, 20)) * 6
+    check(fails, "settings-input", r.bytes("TsetApplied", 43) == applied,
+          "three ramps, Y negation on/off, invalid payload and icons clamped: " + r.bytes("TsetApplied", 43).hex())
     check(fails, "settings-backend", r.peek("StBackend") == 1,
           "save restores selected RAM backend, including on disk")
     parsed = r.bytes("CmdBuf", 120)
@@ -469,7 +510,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 256, 200, 128
+    A, B, C = 256, 160, 128
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -523,7 +564,7 @@ def test_build_checks(tsyms, fails):
     if disk:
         files = read_disk_image(DISK)
         names = sorted(files)
-        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and files["SETTINGS"] == bytes((0x4D, 4, 2, 0, 1, 1, 1, 1)),
+        check(fails, "store-disk", names == ["NOTE1", "NOTE3", "NOTE4", "SETTINGS"] and files["SETTINGS"] == set_record(2, 0, 1),
               f"on the image: {[(n, len(files[n])) for n in names]}")
 
     # app model: the calendar's state saved and loaded back
@@ -665,12 +706,13 @@ def cal_win(x, y, sel=1, year=1980, month=1):
 
 
 KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
-             b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT",
+             b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT", b"D DESKTOP",
              b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+KEYS_Y = 2      # 21 rows: the lowest row the list fits at
 
 
 def keys_win(x, y):
-    return (x, y, 15, 20, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+    return (x, y, 15, 21, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
 
 
 def about_win(x, y):
@@ -766,7 +808,7 @@ def window_checks(syms, fails, vram0):
 
     # HELP, KEYS opens the list
     r = Run(syms, press_at(196, 3) + press_at(204, 11) + [(10, "")], "keys-win")
-    want = compose(nt0, [keys_win(16, 3)])
+    want = compose(nt0, [keys_win(16, KEYS_Y)])
     check(fails, "keys-win", r.peek("WndCount") == 1 and r.nt() == want,
           f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
@@ -1460,7 +1502,7 @@ def settings_checks(syms, fails):
     lattice_checks(syms, fails)
     keyptr_checks(syms, fails)
     backend = 5 if EXT else 1
-    defaults = bytes((0x4D, 4, 1, 0, backend, 1, 1, 1))
+    defaults = bytes((0x4D, SET_VERSION, 1, 0, backend, 1, 1, 1))
     def press(x, y):
         return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}"),
                 (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
@@ -1492,7 +1534,7 @@ def settings_checks(syms, fails):
         tiles = pattern + b"\xff" + pattern[1:]
         check(fails, name, zlib.crc32(r.nt()) == zlib.crc32(want)
               and all(r.vram[bank+0x400:bank+0x410] == tiles for bank in (0, 0x800, 0x1000))
-              and r.bytes("SetRec", 8) == bytes((0x4d, 4, speed, inv, device, sound, keyptr, lattice))
+              and r.bytes("SetRec", 8) == bytes((0x4d, SET_VERSION, speed, inv, device, sound, keyptr, lattice))
               and r.peek("StBackend") == device
               and r.peek("AccelPtr", 2) == syms["AccelTabs"] + speed * 5,
               f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; record {r.bytes('SetRec', 8).hex()}")
@@ -1538,10 +1580,10 @@ def settings_checks(syms, fails):
     for n, (keys, speed, inv, device, focus) in enumerate(cases):
         steps += keys
         r = verify(steps, f"settings-key-{n}", speed, inv, device, focus)
-    saved = bytes((0x4d, 4, 2, 1, 1, 1, 1, 1))
+    saved = set_record(2, 1, 1)
     def file_bytes(r):
-        return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", 8)
-    check(fails, "settings-ui-save", file_bytes(r) == saved, "SAVE writes changed record")
+        return read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", len(saved))
+    check(fails, "settings-ui-save", file_bytes(r) == saved, "SAVE writes changed record, icons included")
 
     # Two instances share values, including the hidden window's cached buffer,
     # but retain separate button focus. Exercise both keyboard and mouse paths.
@@ -1552,9 +1594,9 @@ def settings_checks(syms, fails):
             two += tap(7, 8) * row + tap(7, 128) if control == "key" else click(row, 8, 7)
             name = f"settings-two-{control}-{row}"
             r = Run(syms, two + [(10, "")], name)
-            expected = bytes((0x4d, 4, *values, 1, 1, 1))
+            expected = set_record(*values)
             check(fails, name + "-record", r.peek("WndCount") == 2
-                  and r.bytes("WndZ", 2) == bytes((1, 0)) and r.bytes("SetRec", 8) == expected,
+                  and r.bytes("WndZ", 2) == bytes((1, 0)) and r.bytes("SetRec", len(expected)) == expected,
                   f"two windows, record {r.bytes('SetRec', 8).hex()}")
             for slot, focus in ((0, rear_focus), (1, row)):
                 record = syms["WndTab"] + slot * syms["WNDRECSZ"]
@@ -1589,7 +1631,7 @@ def settings_checks(syms, fails):
     # SAVE with sound OFF, clear all eight bytes, then load through real storage.
     off = opened + tap(7, 8) * 3 + tap(7, 128) + tap(7, 8) * 3 + tap(7, 128)
     r = verify(off, "settings-sound-save", 1, 0, backend, 6, sound=0)
-    check(fails, "settings-sound-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 0, 1, 1)),
+    check(fails, "settings-sound-file", file_bytes(r) == set_record(1, 0, backend, sound=0),
           "SAVE persists SOUND OFF")
     off += [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                        f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 128)
@@ -1602,7 +1644,7 @@ def settings_checks(syms, fails):
         verify(base + again, "settings-keyptr-wrap-" + control, 1, 0, backend, 4)
     off = opened + tap(7, 8) * 4 + tap(7, 128) + tap(7, 8) * 2 + tap(7, 128)
     r = verify(off, "settings-keyptr-save", 1, 0, backend, 6, keyptr=0)
-    check(fails, "settings-keyptr-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 1, 0, 1)),
+    check(fails, "settings-keyptr-file", file_bytes(r) == set_record(1, 0, backend, keyptr=0),
           "SAVE persists KEY PTR OFF")
     reload = (clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
               f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
@@ -1619,7 +1661,7 @@ def settings_checks(syms, fails):
                    1, 0, backend, 5, lattice=2)
     lattice_save = opened + tap(7, 8) * 5 + tap(7, 128) + tap(7, 8) + tap(7, 128)
     r = verify(lattice_save, "lattice-save", 1, 0, backend, 6, lattice=2)
-    check(fails, "lattice-file", file_bytes(r) == bytes((0x4d, 4, 1, 0, backend, 1, 1, 2)),
+    check(fails, "lattice-file", file_bytes(r) == set_record(1, 0, backend, lattice=2),
           "SAVE persists GRID")
     verify(lattice_save + [(5, reload)] + tap(7, 128), "lattice-reload",
            1, 0, backend, 6, lattice=2)
@@ -1681,31 +1723,42 @@ def settings_checks(syms, fails):
         check(fails, f"settings-mouse-{inv}", r.ptr() == want,
               f"Y invert {inv}, host up 30: pointer {r.ptr()}, expected {want}")
     if EXT:
+        # Every record up to version 4 loads with the default icons; a
+        # version 5 record brings its own, clamped where they are damaged.
+        moved = desk_table(clock=(0, 1, 6), about=(1, 20, 12))
+        v5 = set_record(0, 0, 1, 0, 0, 2, table=moved)
         for name, data, expected in (
-                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 4, 0, 0, 1, 0, 1, 1))),
-                ("v3-off", bytes((0x4D, 3, 0, 0, 1, 0, 0)), bytes((0x4D, 4, 0, 0, 1, 0, 0, 1))),
-                ("v4-grid", bytes((0x4D, 4, 0, 0, 1, 0, 0, 2)), bytes((0x4D, 4, 0, 0, 1, 0, 0, 2))),
+                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 5, 0, 0, 1, 0, 1, 1))),
+                ("v3-off", bytes((0x4D, 3, 0, 0, 1, 0, 0)), bytes((0x4D, 5, 0, 0, 1, 0, 0, 1))),
+                ("v4-grid", bytes((0x4D, 4, 0, 0, 1, 0, 0, 2)), bytes((0x4D, 5, 0, 0, 1, 0, 0, 2))),
                 ("v4-fields", bytes((0x4D, 4, 255, 255, 255, 255, 255, 255)), defaults),
-                ("v4-short", defaults[:-1], defaults),
+                ("v4-short", bytes((0x4D, 4, 1, 0, backend, 1, 1)), defaults),
+                ("v5-icons", v5, v5),
+                ("v5-fields", v5[:8] + bytes(18), bytes((0x4D, 5, 0, 0, 1, 0, 0, 2)) + bytes((0, 0, 1)) * 6),
+                ("v5-clamp", v5[:8] + b"\xff" * 18, bytes((0x4D, 5, 0, 0, 1, 0, 0, 2)) + bytes((1, 30, 20)) * 6),
+                ("v5-short", set_record(1, 0, backend)[:-1], defaults + desk_bytes()),
+                ("v5-long", set_record(1, 0, backend) + b"x", defaults + desk_bytes()),
                 ("v3-short", bytes((0x4D, 3, 0, 0, 1, 0)), defaults),
                 ("v3-long", bytes((0x4D, 3, 0, 0, 1, 0, 0, 1)), defaults),
                 ("v2-long", bytes((0x4D, 2, 0, 0, 1, 0, 0)), defaults),
                 ("v1-long", bytes((0x4D, 1, 0, 0, 1, 0)), defaults),
                 ("v2-short", bytes((0x4D, 2, 0, 0, 1)), defaults),
-                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 4, 0, 0, 1, 1, 1, 1))),
+                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 5, 0, 0, 1, 1, 1, 1))),
                 ("magic", bytes((0, 1, 0, 0, 1)), defaults),
                 ("version", bytes((0x4D, 99, 0, 0, 1)), defaults),
                 ("short", b"M\1", defaults),
-                ("long", defaults + b"x", defaults),
                 ("fields", bytes((0x4D, 1, 255, 255, 255)), defaults)):
             r = Run(syms, [(10, "")], "settings-boot-" + name, files={"SETTINGS": data})
+            expected = expected if len(expected) > 8 else expected + desk_bytes()
             pattern = (bytes(8), bytes((0xaa, 0x55) * 4), bytes((0xff, 0x55) * 4))[expected[7]]
-            check(fails, "settings-boot-" + name, r.bytes("SetRec", 8) == expected
+            table = [tuple(expected[8 + i * 3:11 + i * 3]) for i in range(6)]
+            check(fails, "settings-boot-" + name, r.bytes("SetRec", 26) == expected
                   and all(r.vram[bank+0x400:bank+0x410] == pattern + b"\xff" + pattern[1:]
                           for bank in (0, 0x800, 0x1000))
                   and r.peek("StBackend") == expected[4]
-                  and r.peek("AccelPtr", 2) == syms["AccelTabs"] + 5 * expected[2],
-                  "record " + r.bytes("SetRec", 8).hex())
+                  and r.peek("AccelPtr", 2) == syms["AccelTabs"] + 5 * expected[2]
+                  and r.nt() == expected_nt(table),
+                  f"record {r.bytes('SetRec', 26).hex()}, desktop crc32 {zlib.crc32(r.nt()):08x}")
 
 
 def arrange_checks(syms, fails):
@@ -2448,7 +2501,7 @@ def saveas_checks(syms, fails):
           and r.peek("NoteModified") == 1 and stored(r) == document
           and r.peek("DgCount") == 1, "failed write preserves prior name, dirty state and prior file")
     r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "saveas-keys")
-    want = compose(expected_nt(), [keys_win(16,3)])
+    want = compose(expected_nt(), [keys_win(16, KEYS_Y)])
     check(fails, "saveas-keys", r.nt() == want,
           f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
@@ -2566,15 +2619,183 @@ def print_checks(syms, fails):
         check(fails, f"print-caps-settings-{n}", r.peek("StBackend") in (1, 5)
               and r.peek("SetBackend") in (1, 5), f"SETTINGS backend {r.peek('StBackend')}")
     r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "print-keys")
-    want = compose(expected_nt(), [keys_win(16,3)])
+    want = compose(expected_nt(), [keys_win(16, KEYS_Y)])
     check(fails, "print-keys", r.nt() == want,
           f"KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+
+def desk_win(focus=0, table=None):
+    """The DESKTOP window as DskSetDraw composes it: a label and an
+    [ON  ]/[OFF ] a row, then [SAVE] and [DONE], the focused one inverted."""
+    table = table or DESK_DEFAULT
+    lines = [(1 + i, 1, label, False) for i, (label, _) in enumerate(DESK_ICONS)]
+    buttons = [b"[ON  ]" if e[0] else b"[OFF ]" for e in table] + [b"[SAVE]", b"[DONE]"]
+    lines += [(1 + i, 12, b, i == focus) for i, b in enumerate(buttons)]
+    return (10, 5, 19, 10, b"DESKTOP", lines)
+
+
+def desktop_checks(syms, fails):
+    """Desktop shortcuts: six icons under the windows, opened by a press
+    and release, moved by a drag in whole cells, chosen in VIEW > DESKTOP
+    or GRAPH+D, and kept in the SETTINGS record."""
+    print("desktop:")
+    backend = 5 if EXT else 1
+
+    def point(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")]
+
+    def press(x, y):
+        return point(x, y) + [(5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+
+    def graph(row, bit):
+        return [(5, f"key_down 6 0x04; key_down {row} {bit:#04x}"), (3, f"key_up {row} {bit:#04x}; key_up 6 0x04")]
+
+    def drag(x, y, moves):
+        """CTRL held at (x, y), the host pointer moved (openMSX halves it,
+        so 16 host pixels are a cell), CTRL released."""
+        steps = point(x, y) + [(5, "key_down 6 0x02")]
+        steps += [(5, f"mouse_move {dx} {dy}") for dx, dy in moves]
+        return steps + [(10, "key_up 6 0x02")]
+
+    def table_of(r):
+        return [tuple(r.bytes("DskTab", 18)[i * 3:i * 3 + 3]) for i in range(6)]
+
+    def rec(r, slot):
+        base = syms["WndTab"] + slot * syms["WNDRECSZ"]
+        return tuple(r.ram[base - WORK:base - WORK + 2])
+
+    mouse = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
+
+    # a fresh boot: the six icons on the lattice, their tiles in all three thirds
+    r = Run(syms, [(60, "")], "dsk-init")
+    rom = open(ROM, "rb").read()
+    shapes = rom[syms["DskShapes"] - ROMBASE:syms["DSKSHAPESEND"] - ROMBASE]
+    check(fails, "dsk-init", r.nt() == expected_nt() and table_of(r) == DESK_DEFAULT
+          and all(r.vram[PGT + t * 0x800 + T_ICON * 8:PGT + t * 0x800 + T_ICON * 8 + len(shapes)] == shapes for t in range(3))
+          and r.peek("Dropped", 2) == 0,
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(expected_nt()):08x}; table {table_of(r)}; "
+          f"{len(shapes)} tile bytes at ${T_ICON * 8:04X} in three thirds; {r.peek('Dropped', 2)} dropped")
+
+    # a press and release on CLOCK's top left tile, cell (1, 6): the clock opens in front
+    clock = press(12, 52)
+    r = Run(syms, clock + [(10, "")], "dsk-open")
+    want = compose(expected_nt(), [clock_win(18, 3, 12, 0)])
+    check(fails, "dsk-open", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppClock"] and r.nt() == want,
+          f"{r.peek('WndCount')} window, front ${r.peek('WinApp', 2):04X}, crc32 {zlib.crc32(r.nt()):08x}, "
+          f"expected the clock {zlib.crc32(want):08x}")
+    # the same press on its label, cell (2, 8), opens it too
+    r = Run(syms, press(20, 68) + [(10, "")], "dsk-open-label")
+    check(fails, "dsk-open-label", r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppClock"] and r.nt() == want,
+          f"{r.peek('WndCount')} window, front ${r.peek('WinApp', 2):04X}")
+    # pressed and dragged one cell: no clock, the icon moved
+    r = Run(syms, mouse + drag(12, 52, [(16, 0)]) + [(10, "")], "dsk-open-drag")
+    table = desk_table(clock=(1, 2, 6))
+    check(fails, "dsk-open-drag", r.peek("WndCount") == 0 and table_of(r) == table and r.nt() == expected_nt(table),
+          f"{r.peek('WndCount')} windows, clock at {table_of(r)[1]}, crc32 {zlib.crc32(r.nt()):08x}, "
+          f"expected {zlib.crc32(expected_nt(table)):08x}")
+
+    # dragged five cells right: the new position in RAM and on the screen,
+    # the old slot lattice again, and no frame dropped
+    r = Run(syms, mouse + drag(12, 52, [(80, 0)]) + [(10, "")], "dsk-drag")
+    table = desk_table(clock=(1, 6, 6))
+    check(fails, "dsk-drag", table_of(r) == table and r.nt() == expected_nt(table) and r.peek("WndCount") == 0,
+          f"clock at {table_of(r)[1]}, expected (1, 6, 6); crc32 {zlib.crc32(r.nt()):08x}, "
+          f"expected {zlib.crc32(expected_nt(table)):08x}")
+    check(fails, "dsk-drag-frames", r.peek("Dropped", 2) == 0 and r.peek("Frames", 2) > 40,
+          f"{r.peek('Frames', 2)} frames, {r.peek('Dropped', 2)} dropped")
+    # dragged off the bottom left: clamped so the whole slot stays on the desktop
+    r = Run(syms, mouse + drag(12, 52, [(-64, 128), (-64, 128)]) + [(10, "")], "dsk-drag-clamp")
+    table = desk_table(clock=(1, 0, 20))
+    check(fails, "dsk-drag-clamp", table_of(r) == table and r.nt() == expected_nt(table),
+          f"clock at {table_of(r)[1]}, expected (1, 0, 20); crc32 {zlib.crc32(r.nt()):08x}")
+
+    # the ABOUT window dragged over CALENDAR and COMMANDER and back: the
+    # icons go back under it strip by strip, and the screen ends as it began
+    open_about = press(8, 3) + press(16, 11)
+    before = Run(syms, open_about + [(10, "")], "dsk-under-before")
+    over = drag(100, 100, [(-64, -16), (-64, -16)])         # its title, cell (12, 12), to (0, 10)
+    r = Run(syms, open_about + mouse + over + [(10, "")], "dsk-over")
+    want = compose(expected_nt(), [about_win(0, 10)])
+    check(fails, "dsk-over", rec(r, 0) == (0, 10) and r.nt() == want,
+          f"about at {rec(r, 0)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    back = drag(36, 84, [(64, 16), (64, 16)])
+    r = Run(syms, open_about + mouse + over + back + [(10, "")], "dsk-under")
+    want = compose(expected_nt(), [about_win(8, 12)])
+    check(fails, "dsk-under", rec(r, 0) == (8, 12) and r.nt() == before.nt() and r.nt() == want,
+          f"about back at {rec(r, 0)}, crc32 {zlib.crc32(r.nt()):08x}, before the drag {zlib.crc32(before.nt()):08x}")
+    check(fails, "dsk-under-frames", r.peek("Dropped", 2) == 0 and before.peek("Dropped", 2) == 0,
+          f"{r.peek('Frames', 2)} frames, {r.peek('Dropped', 2)} dropped")
+
+    # VIEW > DESKTOP and GRAPH+D open the same window
+    view_desktop = press(140, 3) + press(148, 43)
+    for name, steps in (("dsk-panel", view_desktop), ("dsk-panel-key", graph(3, 0x02))):
+        r = Run(syms, steps + [(10, "")], name)
+        want = compose(expected_nt(), [desk_win()])
+        check(fails, name, r.peek("WndCount") == 1 and r.peek("WinApp", 2) == syms["AppDesk"] and r.nt() == want,
+              f"{r.peek('WndCount')} window, front ${r.peek('WinApp', 2):04X}, crc32 {zlib.crc32(r.nt()):08x}, "
+              f"expected {zlib.crc32(want):08x}")
+    # CLOCK off: by a press on its button, cell (22, 7), and by TAB, ENTER
+    table = desk_table(clock=(0, 1, 6))
+    off_mouse = view_desktop + press(180, 58)
+    off_key = graph(3, 0x02) + tap(7, 8) + tap(7, 128)
+    for name, steps in (("dsk-toggle-mouse", off_mouse), ("dsk-toggle-key", off_key)):
+        r = Run(syms, steps + [(10, "")], name)
+        want = compose(expected_nt(table), [desk_win(1, table)])
+        check(fails, name, table_of(r) == table and r.nt() == want,
+              f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    # SAVE, on row 7: the SETTINGS record on the device carries the table
+    saved = off_mouse + press(180, 98)
+    record = set_record(1, 0, backend, table=table)
+    r = Run(syms, saved + [(10, "")], "dsk-setup")
+    stored = read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", len(record))
+    want = compose(expected_nt(table), [desk_win(6, table)])
+    check(fails, "dsk-setup", stored == record and r.nt() == want,
+          f"SETTINGS {stored.hex() if stored else None}, expected {record.hex()}")
+    # A restart in place: the table back to the defaults and the record
+    # header cleared, then the real SetLoad, SetApply and a repaint run
+    # in place of the next key. The clock stays off, from the file.
+    scratch = syms["CmdBuf"]
+    code = b"".join(bytes((0xCD, syms[f] & 255, syms[f] >> 8)) for f in ("SetLoad", "SetApply", "WndRepaintAll"))
+    code += bytes((0x3E, 1, 0xC9))
+    clear = "; ".join(f"debug write memory {syms['SetRec'] + i} 0" for i in range(8))
+    reload = (f"debug write_block memory {syms['DskTab']} [binary format H* {desk_bytes().hex()}]; " + clear
+              + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
+              f"debug set_bp {syms['DskSetKey']} {{}} {{reg PC {scratch}}}")
+    r = Run(syms, saved + [(5, reload)] + tap(7, 128) + [(10, "")], "dsk-reload")
+    check(fails, "dsk-reload", table_of(r) == table and r.nt() == want and r.bytes("SetRec", 26) == record,
+          f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    if EXT:
+        # a real restart on the disk machine: the saved record, then a version 4 one
+        r = Run(syms, [(10, "")], "dsk-boot-saved", files={"SETTINGS": record})
+        check(fails, "dsk-boot-saved", table_of(r) == table and r.nt() == expected_nt(table),
+              f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}")
+        r = Run(syms, [(10, "")], "dsk-boot-v4", files={"SETTINGS": bytes((0x4D, 4, 1, 0, 5, 1, 1, 1))})
+        check(fails, "dsk-boot-v4", table_of(r) == DESK_DEFAULT and r.nt() == expected_nt()
+              and r.bytes("SetRec", 26) == set_record(1, 0, 5),
+              f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}")
+    else:
+        # an older SETTINGS file in RAM, eight bytes: the default icons come back
+        legacy = bytes((0x4D, 4, 1, 0, 1, 1, 1, 1))
+        old = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
+               f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 8; " + reload)
+        r = Run(syms, saved + [(5, old)] + tap(7, 128) + [(10, "")], "dsk-reload-v4")
+        want = compose(expected_nt(), [desk_win(6)])
+        check(fails, "dsk-reload-v4", table_of(r) == DESK_DEFAULT and r.nt() == want
+              and r.bytes("SetRec", 26) == set_record(1, 0, 1),
+              f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
 def main():
     syms, tsyms = build()
     ensure_display()
     fails = []
+    if sys.argv[1:] == ["--desktop"]:
+        desktop_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--print"]:
         print_checks(syms, fails)
         return bool(fails)
@@ -2647,6 +2868,7 @@ def main():
     key_checks(syms, fails)
     menu_checks(syms, fails, vram0)
     window_checks(syms, fails, vram0)
+    desktop_checks(syms, fails)
     app_checks(syms, fails, vram0)
     commander_checks(syms, fails, vram0)
     test_build_checks(tsyms, fails)

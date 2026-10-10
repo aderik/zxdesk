@@ -197,7 +197,8 @@ _ram            defl    _ram+size
                 var     ArrI, 1
                 var     ArrTab, 2
                 var     WndCur, 1
-                var     Resizing, 1     ; 0 idle, 1 held, 2 composed: defer blit
+                var     Resizing, 1     ; 0 idle, 1 held, 3 allocated: compose next
+                                        ; frame, 2 composed: blit next frame
                 var     ScrFirst, 1
                 var     ScrShow, 1
                 var     ScrThumb, 1
@@ -330,11 +331,29 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetSound, 1
                 var     SetKeyPtr, 1
                 var     SetLattice, 1
+                var     DskTab, 18      ; DSKTABSZ: the desktop icons, present, x, y each
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1
                 var     AccelPtr, 2
                 var     SetRow, 1
+                ; desktop icons: the slot being worked on, the drag
+                var     DskIx, 1
+                var     DskPx, 1
+                var     DskPy, 1
+                var     DskLx, 1
+                var     DskLen, 1
+                var     DskSx, 1
+                var     DskSw, 1
+                var     DskLabel, 2
+                var     DskBase, 1
+                var     DskDrag, 1      ; the icon being pressed, plus one
+                var     DskMoved, 1
+                var     DskPressX, 1
+                var     DskPressY, 1
+                var     DskOffX, 1      ; the press's cell within the slot
+                var     DskOffY, 1
+                var     DskSetRow, 1    ; the DESKTOP window's focus, per window
 IFDEF TEST
                 var     TestDone, 1
                 var     ThPtr, 6
@@ -472,7 +491,8 @@ Start:
                 call    LoadTiles
                 call    LoadColours
                 call    LoadSprite
-                call    InitScreen
+                ; The desktop is painted after SetLoad: the icons on it
+                ; come out of the SETTINGS record. The display is still off.
                 ld      a,$FF                   ; the whole shadow goes out on
                 ld      (DirtyRows),a           ; the first frame, whatever
                 ld      (DirtyRows+1),a         ; the marks say
@@ -510,9 +530,11 @@ Start:
                 ld      (SetDevice),a
                 call    SetLoad
                 call    SetApply
+                call    InitScreen
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
+                ld      (DskDrag),a
                 ld      (MnLastMenu),a
                 dec     a
                 ld      (MenuPick),a
@@ -1247,6 +1269,9 @@ LtThird:
                 ld      hl,Tiles
                 ld      bc,TILESEND-Tiles
                 call    CopyVram
+                ld      hl,DskShapes            ; the icon tiles follow at T_ICON
+                ld      bc,DSKSHAPESEND-DskShapes
+                call    CopyVram
                 pop     hl
                 ld      bc,$0800
                 add     hl,bc
@@ -1383,6 +1408,8 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "note.inc"
                 include "commander.inc"
                 include "shortcut.inc"
+                include "desktop.inc"
+                include "dsksetup.inc"
                 include "test.inc"
 
 RomEnd:
