@@ -172,6 +172,7 @@ TsetClear:
                 ld      (SetSound),a
                 ld      (SetKeyPtr),a
                 ld      (SetLattice),a
+                ld      (SetWrap),a
                 ld      hl,DskTab               ; and every icon byte: present
                 ld      b,DSKTABSZ              ; becomes 1, x and y are clamped
 TsetDesk:                                       ; to the desktop
@@ -212,7 +213,8 @@ TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
                 ; build includes the tape buffer, the bank's transfer routine
-                ; and directory cache, the desktop icons and the test records.
+                ; and directory cache, the desktop icons and the test records;
+                ; the notepad's wrap flags took the last block from 96 to 88.
                 ld      bc,160
                 ld      a,$10
                 call    HeapAlloc
@@ -221,7 +223,7 @@ TestHeap:
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,96
+                ld      bc,88
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl

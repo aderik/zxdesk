@@ -84,8 +84,8 @@ WndNext:
 ;  HELP, KEYS: the list, as a window. No state and no key vector:
 ;  there is nothing to type at a list.
 ; ------------------------------------------------------------
-KEYSW           equ     15
-KEYSH           equ     21
+KEYSW           equ     16              ; HOME ROW START is fourteen cells
+KEYSH           equ     22
 
 KeysOpen:
                 ld      a,APP_KEYS
@@ -132,6 +132,7 @@ KeysText:
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
+                defb    "HOME ROW START",0      ; the notepad, with WRAP the screen row
                 defb    "CALENDAR:",0
                 defb    ", . MONTH",0
                 defb    "< > YEAR",0
