@@ -1388,12 +1388,15 @@ def bank_checks(syms, fails):
           f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
-def bank_test_checks(tsyms, fails):
-    """The TEST build's bank subjects: a hundred files written under DI
-    with the BIOS work area and the ROM snapshotted either side, then the
-    bank filled until STERR_FULL, the directory counted, a delete, the
-    entry reused; the dumped bank is parsed here as the oracle."""
-    print("bank, test build:")
+def bank_test_checks(tsyms, fails, machine=None):
+    """The TEST build's bank subjects: a hundred files (half the bank's
+    when that is fewer) written under DI with the BIOS work area and the
+    ROM snapshotted either side, then the bank filled until STERR_FULL,
+    the directory counted, a delete, the entry reused; the dumped bank
+    is parsed here as the oracle. `machine`: another config, the subject
+    names get its suffix."""
+    tag = "-mirror" if machine else ""
+    print(f"bank, test build{' on ' + machine if machine else ''}:")
     snap = ('set f [open $::out/sys{n}.bin wb]; puts -nonewline $f [debug read_block memory 0xF380 0xC80]; '
             'puts -nonewline $f [debug read_block memory 0x4000 0x8000]; close $f')
     # The breakpoints go once the second snapshot is taken: openMSX runs
@@ -1402,35 +1405,41 @@ def bank_test_checks(tsyms, fails):
     bps = [f"set ::sysbp0 [debug set_bp {tsyms['TbsStart']} {{}} {{{snap.format(n=0)}}}]",
            f"set ::sysbp1 [debug set_bp {tsyms['TbsEnd']} {{}} {{{snap.format(n=1)}; "
            f"debug remove_bp $::sysbp0; debug remove_bp $::sysbp1}}]"]
-    r = Run(tsyms, [(60, "")] + bank_dump_step(), "bank-subjects", rom=TROM, setup=bps,
-            guard=600 if MAPPER else 120)
-    out = os.path.join(OUT, "bank-subjects")
+    name = "bank-subjects" + tag
+    r = Run(tsyms, [(60, "")] + bank_dump_step(), name, rom=TROM, setup=bps,
+            guard=600 if MAPPER else 120, machine=machine)
+    out = os.path.join(OUT, name)
     sys0 = open(os.path.join(out, "sys0.bin"), "rb").read()
     sys1 = open(os.path.join(out, "sys1.bin"), "rb").read()
     trom = open(TROM, "rb").read()
     rec = r.bytes("TbResults", 27)
-    check(fails, "bank-sys", rec[26] == 100 and len(sys0) == 0xC80 + 0x8000 and sys0 == sys1
-          and sys0[0xC80:] == trom and r.peek("TestDone") == 1,
-          f"{rec[26]} files written under DI; $F380-$FFFF and the ROM {'identical' if sys0 == sys1 else 'DIFFER'} "
-          f"before and after, work area crc32 {zlib.crc32(sys0[:0xC80]):08x}")
     blocks, sumblocks, dirblocks, files = bank_geometry(r)
+    nsys = min(100, files // 2)
+    check(fails, "bank-sys" + tag, rec[26] == nsys and len(sys0) == 0xC80 + 0x8000 and sys0 == sys1
+          and sys0[0xC80:] == trom and r.peek("TestDone") == 1,
+          f"{rec[26]} of {nsys} files written under DI; $F380-$FFFF and the ROM {'identical' if sys0 == sys1 else 'DIFFER'} "
+          f"before and after, work area crc32 {zlib.crc32(sys0[:0xC80]):08x}")
     got = dict(wrote=int.from_bytes(rec[0:2], "little"), read=int.from_bytes(rec[2:4], "little"), bad=rec[4], err=rec[5],
                filled=int.from_bytes(rec[6:8], "little"), full=rec[8], dirn=rec[9], deleted=rec[10], reused=rec[11],
                name=rec[12:25].split(b"\0")[0], bad2=rec[25])
-    want = dict(wrote=64, read=64, bad=0, err=0, filled=files - 101, full=tsyms["STERR_FULL"], dirn=min(files, 255),
-                deleted=0, reused=103, name=b"NEW", bad2=0)
-    check(fails, "bank-rw", got == want, f"{blocks} blocks, {files} files: {got}")
+    want = dict(wrote=64, read=64, bad=0, err=0, filled=files - nsys - 1, full=tsyms["STERR_FULL"], dirn=min(files, 255),
+                deleted=0, reused=nsys + 3, name=b"NEW", bad2=0)
+    check(fails, "bank-rw" + tag, got == want, f"{blocks} blocks, {files} files: {got}")
     # the directory and every file, from the memory itself
-    stored = bank_files(r, "bank-subjects")
+    stored = bank_files(r, name)
     def pattern(name):
         return bytes(j ^ ord(name[-1]) for j in range(256))
-    expected = {f"S{i:04d}": (i, pattern(f"S{i:04d}")) for i in range(100)}
-    expected["BANKTEST"] = (100, bytes((1 + 7 * k) & 255 for k in range(64)))
-    expected.update({f"F{i:04d}": (101 + i, pattern(f"F{i:04d}")) for i in range(files - 101)})
+    expected = {f"S{i:04d}": (i, pattern(f"S{i:04d}")) for i in range(nsys)}
+    expected["BANKTEST"] = (nsys, bytes((1 + 7 * k) & 255 for k in range(64)))
+    expected.update({f"F{i:04d}": (nsys + 1 + i, pattern(f"F{i:04d}")) for i in range(files - nsys - 1)})
     del expected["F0002"]
-    expected["NEW"] = (103, b"")
-    check(fails, "bank-dir", stored == expected and r.peek("BkTop", 2) == files,
+    expected["NEW"] = (nsys + 3, b"")
+    check(fails, "bank-dir" + tag, stored == expected and r.peek("BkTop", 2) == files,
           f"{len(stored)} files in the dumped bank, {len(expected)} expected; high water {r.peek('BkTop', 2)}")
+    # The same on a 16 KB bank: the 32K MSX1 whose page 0 is the bank
+    # (see bank_checks), 58 files.
+    if MACHINE == "C-BIOS_MSX1_EU" and not EXTS and not machine:
+        bank_test_checks(tsyms, fails, "C-BIOS_MSX1_Mirror32")
 
 
 def commander_checks(syms, fails, vram0, browse_only=False):
