@@ -11,6 +11,8 @@ TestRun:
                 call    TestHeap
                 call    TestCalendar
                 call    TestStorage
+                call    TestBankSys
+                call    TestBank
                 call    TestApp
                 call    TestHit
                 call    TestDiskNames
@@ -209,19 +211,18 @@ TsetSnapshot:
 TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
-                ; build includes the tape buffer as well as the test records,
-                ; the desktop icons took the middle block from 200 to 160, and
-                ; the clipboard's 226 bytes left 347 under a disk ROM, so the
-                ; three are halved to 128, 96 and 64.
-                ld      bc,128
+                ; build includes the tape buffer, the bank's transfer routine
+                ; and directory cache, the desktop icons, the clipboard and the
+                ; test records: 166 bytes under a disk ROM, so 48, 40 and 32.
+                ld      bc,48
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,96
+                ld      bc,40
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,64
+                ld      bc,32
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl
@@ -234,7 +235,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,95
+                ld      bc,39
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree
@@ -482,6 +483,247 @@ TxtTsName2:     defb    "NOTE1",0
 TxtTsName3:     defb    "NOTE2",0
 TxtTsName4:     defb    "NOTE3",0
 TxtTsName5:     defb    "NOTE4",0
+
+; ---- The bank. Records at the tail of CmdBuf, after the tape ones:
+;   +0 wrote, +2 read, +4 bytes wrong, +5 open error, +6 files created
+;   before the bank was full, +8 the error then, +9 directory count
+;   (to 255), +10 delete result, +11 the entry the next file took,
+;   +12 that entry's name from StDir, +25 bytes wrong in a full file
+;   read back, +26 files the bank-sys subject wrote
+TbResults       equ     CmdBuf+221              ; after the 21 bytes of TtResults
+TbName          equ     CmdWork                 ; "F0000" and so on
+
+; A hundred files of 256 bytes written with interrupts off throughout:
+; the routine's EI is a NOP while this runs, so the harness can
+; compare the BIOS work area and the ROM before and after without a
+; frame counter moving between the two snapshots.
+TestBankSys:
+                call    BkPresent
+                ret     z
+                call    StIdent
+                push    af
+                ld      a,ST_BANK
+                call    StSelect
+                xor     a
+                ld      (TbResults+26),a
+                ld      (BkCode+BkOEi),a        ; NOP for EI
+                di
+TbsStart:
+                ld      b,100
+TbsLoop:
+                push    bc
+                ld      a,100
+                sub     b
+                call    TbSetName
+                ld      a,'S'                   ; "S0000".."S0099"
+                ld      (TbName),a
+                call    TbWriteFull
+                pop     bc
+                jr      c,TbsEnd
+                ld      hl,TbResults+26
+                inc     (hl)
+                djnz    TbsLoop
+TbsEnd:
+                ld      a,$FB                   ; EI again
+                ld      (BkCode+BkOEi),a
+                ei
+                pop     af
+                jp      StSelect
+
+; A 64 byte round trip, the bank filled until STERR_FULL, the
+; directory counted, a delete, the slot reused, a full file read back.
+TestBank:
+                call    BkPresent
+                ret     z
+                call    StIdent
+                push    af
+                ld      a,ST_BANK
+                call    StSelect
+                ld      hl,TsSrc                ; 64 bytes of pattern
+                ld      b,64
+                ld      a,1
+TbFill:
+                ld      (hl),a
+                inc     hl
+                add     a,7
+                djnz    TbFill
+                ld      hl,TxtTbName
+                ld      b,FA_OVERWRITE
+                call    StOpen
+                jp      c,TbErr
+                ld      (TsHandle),a
+                ld      hl,TsSrc
+                ld      bc,64
+                call    StWrite
+                ld      (TbResults),bc
+                ld      a,(TsHandle)
+                call    StClose
+                ld      hl,TxtTbName
+                ld      b,FA_READ
+                call    StOpen
+                jp      c,TbErr
+                ld      (TsHandle),a
+                ld      hl,TsDst
+                ld      bc,64
+                call    StRead
+                ld      (TbResults+2),bc
+                ld      a,(TsHandle)
+                call    StClose
+                ld      hl,TsSrc
+                ld      de,TsDst
+                ld      b,64
+                call    TbCompare
+                ld      (TbResults+4),a
+                ; files F0000 onwards, each a full block, until it is full
+                ld      hl,0
+                ld      (TbResults+6),hl
+TbMore:
+                call    TbSetNameHL             ; HL = the file number, past 255 on a mapper
+                call    TbWriteFull
+                jr      c,TbFull
+                ld      hl,(TbResults+6)
+                inc     hl
+                ld      (TbResults+6),hl
+                jr      TbMore
+TbFull:
+                ld      (TbResults+8),a
+                ; the directory, to 255
+                xor     a
+TbDir:
+                push    af
+                call    StDir
+                pop     bc
+                ld      a,b
+                jr      c,TbDirDone
+                inc     a
+                jr      nz,TbDir
+                dec     a
+TbDirDone:
+                ld      (TbResults+9),a
+                ld      hl,TxtTbName3
+                call    StDelete
+                ld      a,0
+                jr      nc,TbDeleted
+                inc     a
+TbDeleted:
+                ld      (TbResults+10),a
+                ld      hl,TxtTbNew
+                ld      b,FA_OVERWRITE
+                call    StOpen
+                ld      hl,(BkEntry)
+                ld      a,l
+                ld      (TbResults+11),a
+                ld      a,1
+                call    StClose
+                ld      a,(TbResults+11)
+                call    StDir                   ; the entry F0002 had
+                ld      de,TbResults+12
+                ld      bc,13
+                ldir
+                ; F0001 again, every byte, into the RAM backend's third
+                ; chunk: nothing reads that after TestStorage
+                ld      a,1
+                call    TbSetName
+                ld      a,(TbName+4)
+                call    TbPattern
+                ld      hl,TbName
+                ld      b,FA_READ
+                call    StOpen
+                jp      c,TbErr
+                ld      hl,RamHeap+512
+                ld      bc,256
+                call    StRead
+                ld      a,1
+                call    StClose
+                ld      hl,NoteBuf
+                ld      de,RamHeap+512
+                ld      b,0
+                call    TbCompare
+                ld      (TbResults+25),a
+                pop     af
+                jp      StSelect
+TbErr:
+                ld      (TbResults+5),a
+                pop     af
+                jp      StSelect
+
+; A (or HL) = the file number: TbName = "Fnnnn".
+TbSetName:
+                ld      l,a
+                ld      h,0
+TbSetNameHL:
+                ld      ix,TbName+1
+                ld      de,1000
+                call    CdsDigit
+                ld      de,100
+                call    CdsDigit
+                ld      de,10
+                call    CdsDigit
+                ld      de,1
+                call    CdsDigit
+                ld      (ix+0),0
+                ld      a,'F'
+                ld      (TbName),a
+                ret
+
+; NoteBuf = the pattern for file number A: byte n is n xor the number.
+TbPattern:
+                ld      hl,NoteBuf
+                ld      b,0
+                ld      c,a
+                ld      e,0
+TbPatLoop:
+                ld      a,e
+                xor     c
+                ld      (hl),a
+                inc     hl
+                inc     e
+                djnz    TbPatLoop
+                ret
+
+; The file TbName created with its 256 byte pattern. Carry with the
+; error code when it could not be opened, or when the write or the
+; close went wrong.
+TbWriteFull:
+                ld      a,(TbName+4)            ; the units digit, enough to vary
+                call    TbPattern
+                ld      hl,TbName
+                ld      b,FA_OVERWRITE
+                call    StOpen
+                ret     c
+                ld      hl,NoteBuf
+                ld      bc,256
+                call    StWrite
+                ret     c
+                ld      a,b
+                dec     a
+                or      c
+                jr      nz,TbWriteShort
+                ld      a,1
+                jp      StClose
+TbWriteShort:
+                ld      a,STERR_FULL+100        ; not a code a backend returns
+                scf
+                ret
+
+; B bytes (0 for 256) at HL and DE compared: A = how many differ.
+TbCompare:
+                ld      c,0
+TbCmpLoop:
+                ld      a,(de)
+                cp      (hl)
+                jr      z,TbCmpSame
+                inc     c
+TbCmpSame:
+                inc     hl
+                inc     de
+                djnz    TbCmpLoop
+                ld      a,c
+                ret
+
+TxtTbName:      defb    "BANKTEST",0
+TxtTbName3:     defb    "F0002",0
+TxtTbNew:       defb    "NEW",0
 
 ; The calendar as the live application: a state block from the heap,
 ; init from today, a save, a change, a load that undoes it.

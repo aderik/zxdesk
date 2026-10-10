@@ -133,6 +133,21 @@ NoteDraw:
                 ld      a,(NoteTop)
                 call    NoteScrollTo            ; also measures rows and caret
                 call    NoteHScroll
+                ; Whether any chunk needs the selection painted is decided
+                ; once: the front window with a nonempty selection. Asked
+                ; per chunk it cost a 24x17 compose 0.6 ms of a 15.6 ms
+                ; frame at 60 Hz, and that frame dropped.
+                ld      a,(WndZ)
+                ld      hl,WndCur
+                cp      (hl)
+                ld      a,0
+                jr      nz,NdSelFlag
+                call    NoteSelectionBounds
+                ld      a,0
+                jr      z,NdSelFlag
+                inc     a
+NdSelFlag:
+                ld      (NoteSelDraw),a
                 xor     a
                 ld      (NoteDrawX),a
                 ld      (NoteDrawY),a
@@ -205,6 +220,9 @@ NpcColumn:
                 inc     c
                 xor     a
                 ld      (PrintInv),a
+                ld      a,(NoteSelDraw)
+                or      a
+                jp      z,WinPrint
                 push    bc
                 call    NotePaintSelection
                 pop     bc
