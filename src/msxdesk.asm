@@ -87,6 +87,7 @@ _ram            defl    _ram+size
                 var     Marker, 8       ; "ZXMSX",0 at $C000
                 var     Frames, 2       ; main loop iterations, at $C008
                 var     IrqCnt, 2       ; interrupts taken, counted by H.TIMI
+                var     IrqCode, 8      ; the H.TIMI handler, IRQCODESZ bytes, in RAM
                 var     Dropped, 2      ; frames the loop was late for
                 var     DropLog, 32     ; the frame numbers of the first 16 late ones
                 var     DropN, 1
@@ -618,21 +619,36 @@ MainLoop:
 ;  H.TIMI. The BIOS interrupt handler saves every register
 ;  before calling the hook, so unlike the ZX handler this one
 ;  can use HL. INC HL still leaves the flags alone.
+;
+;  The handler runs from work RAM, not from this ROM: the BDOS
+;  pages the disk ROM into page 1 for the length of a call and
+;  its driver enables interrupts while it waits, so a JP into
+;  page 1 lands in the disk ROM's bytes at that address. Measured
+;  on Roms_MSX1 + Roms_Disk with the hook in ROM: an interrupt
+;  during a directory write ran `ld (hl),c` there, HL on the
+;  kernel's directory buffer, and files vanished whenever the
+;  frame happened to fall in that window.
 ; ------------------------------------------------------------
 SetupIrq:
                 di
-                ld      a,$C3           ; JP IrqTick
-                ld      (HTIMI),a
                 ld      hl,IrqTick
+                ld      de,IrqCode
+                ld      bc,IRQCODESZ
+                ldir
+                ld      a,$C3           ; JP IrqCode
+                ld      (HTIMI),a
+                ld      hl,IrqCode
                 ld      (HTIMI+1),hl
                 ei
                 ret
 
-IrqTick:
+IrqTick:                                ; the template of IrqCode
                 ld      hl,(IrqCnt)
                 inc     hl
                 ld      (IrqCnt),hl
                 ret
+IRQCODESZ       equ     $-IrqTick
+                defs    8-IRQCODESZ     ; negative: the template outgrew IrqCode
 
 ; Counts the frames the loop reached; the difference from IrqCnt is
 ; the number the loop was late for.

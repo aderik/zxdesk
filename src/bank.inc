@@ -202,7 +202,11 @@ BkXfer:
                 ld      a,(BkSource)
                 cp      2
                 jr      z,BkXferMap
-                ; hidden pages: bits 6-7 of the block say which 16K
+                ; hidden pages, from the second block: a disk ROM keeps its
+                ; RST and interrupt vectors in the first 256 bytes of page
+                ; 0's RAM for the time it pages the BIOS out. Then bits 6-7
+                ; of the block say which 16K.
+                inc     de
                 ld      a,e
                 rlca
                 rlca
@@ -374,6 +378,7 @@ BkInitPageNext:
                 ld      l,a
                 ld      h,0
                 call    BkTimes64
+                dec     hl                      ; less the first block, the disk ROM's
                 ld      (BkBlocks),hl
                 ld      a,1
                 ld      (BkSource),a
@@ -1337,9 +1342,13 @@ StAvNo:
                 inc     a
                 ret
 
-; The bank's size as "48 KB" at CmdWork. Returns HL = the text.
+; The bank's size as "48 KB" at CmdWork, rounded up: the hidden pages
+; are a block short of their 48. Returns HL = the text.
 BkKbText:
                 ld      hl,(BkBlocks)
+                inc     hl
+                inc     hl
+                inc     hl
                 srl     h
                 rr      l
                 srl     h

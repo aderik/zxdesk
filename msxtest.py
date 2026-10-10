@@ -1105,7 +1105,8 @@ def seed_ram_steps(syms, files):
 
 # ---- the bank backend: a RAM disk in the memory the desktop cannot see
 def bank_kb(r):
-    return r.peek("BkBlocks", 2) // 4
+    """As SETTINGS shows it, rounded up: the hidden pages are a block short of 48."""
+    return (r.peek("BkBlocks", 2) + 3) // 4
 
 
 def ring_step(device, back=False):
@@ -1149,6 +1150,7 @@ def bank_offset(r, block):
     """Where a block is in the device: the ROM's mapping done again here,
     a hidden page or a mapper segment past the ones the system keeps."""
     if r.peek("BkSource") == 1:
+        block += 1          # the first 256 bytes of page 0 are the disk ROM's vectors
         page = r.bytes("BkPageTab", 3)[block >> 6]
         return page * 0x4000 + (block & 63) * 256
     seg = block >> 6
@@ -1224,9 +1226,9 @@ def bank_checks(syms, fails):
                   f"MapperIO {regs.hex()}")
     else:
         # source A: pages 0-2 of slot 3's 64K, behind the BIOS and this cartridge
-        ok = (source == 1 and blocks == 192 and r.bytes("BkPageTab", 3) == bytes((0, 1, 2))
-              and r.bytes("BkSlotTab", 3) == bytes((3, 3, 3)) and blocks // 4 == 48)
-        detail = (f"source {source}, {blocks // 4} KB: pages {tuple(r.bytes('BkPageTab', 3))} "
+        ok = (source == 1 and blocks == 191 and r.bytes("BkPageTab", 3) == bytes((0, 1, 2))
+              and r.bytes("BkSlotTab", 3) == bytes((3, 3, 3)) and bank_kb(r) == 48)
+        detail = (f"source {source}, {blocks} blocks, {bank_kb(r)} KB: pages {tuple(r.bytes('BkPageTab', 3))} "
                   f"of slots {tuple(r.bytes('BkSlotTab', 3))}")
     check(fails, "bank-detect", ok, detail)
     _, sumblocks, dirblocks, files = bank_geometry(r)
@@ -3120,6 +3122,7 @@ def main():
     if sys.argv[1:] == ["--bank"]:
         bank_checks(syms, fails)
         bank_test_checks(tsyms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--desktop"]:
         desktop_checks(syms, fails)
         return bool(fails)

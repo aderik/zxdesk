@@ -1156,7 +1156,12 @@ larger:
   chip), then the primary slots that are not expanded and, when page
   3's is, its secondary slots from `EXPTBL`/`SLTTBL`. An expanded slot
   other than page 3's is not probed: reaching its register means
-  switching page 3 itself, which nothing in RAM can do.
+  switching page 3 itself, which nothing in RAM can do. The first
+  block of the first hidden page is left alone: a disk ROM keeps its
+  RST and interrupt vectors in the first 256 bytes of page 0's RAM for
+  the time it pages the BIOS out (measured on Roms_MSX1 + Roms_Disk:
+  formatting that block corrupted the FAT buffer and lost files), so
+  48K of hidden pages is 191 blocks, shown rounded up as 48 KB.
 - **Source 2, a memory mapper.** 16K segments selected per page through
   ports $FC-$FF, which on an expansion are write-only, so nothing is
   ever read back from them. A slot is a mapper when a marker written
@@ -1215,9 +1220,21 @@ filling linear. Capabilities `WRITE|RANDOM|DIR`, not `PERSIST`.
 
 | machine | source | bank |
 |---|---|---|
-| C-BIOS_MSX1_EU/JP, Roms_MSX1, + Roms_Disk | 1: pages 0-2 of slot 3 | 48 KB, 179 files |
+| C-BIOS_MSX1_EU/JP, Roms_MSX1, + Roms_Disk | 1: pages 0-2 of slot 3, less the first block | 191 blocks (48 KB rounded up), 178 files |
 | Roms_MSX2 | 2: slot 3-2, 128K, segments 3,2,1,0 kept out | 64 KB, 240 files |
 | Roms_MSX1 + Mapper512 | 2: slot 1, 512K, segment 0 under every page | 496 KB, 1,859 files |
+
+Found on the way, on Roms_MSX1 + Roms_Disk: the H.TIMI hook was a
+`JP` into page 1 of this cartridge, but the BDOS pages the disk ROM
+into page 1 for the length of a call and its driver enables
+interrupts while it waits, so a frame interrupt in that window ran
+the disk ROM's bytes at `IrqTick`'s address (`ld (hl),c`, HL on the
+kernel's directory buffer: a file's first byte became 0 and it was
+gone). Whether a frame fell in the window was a matter of when the
+call started: the bank's 50 ms of detection moved it there, and a
+40 ms delay before the TEST storage subject did the same on `main`
+(`store-dir` 3 files, `del` lost). The handler now runs from 8 bytes
+of work RAM (`IrqCode`), valid whatever sits in page 1.
 
 `harness/extensions/Mapper512.xml` is openMSX's own 512K mapper
 cartridge under a name the harness can read as a debuggable; on
@@ -1249,7 +1266,7 @@ files with interrupts off throughout (the routine's EI is a NOP for the
 duration) and the harness snapshots $F380-$FFFF and the whole ROM at
 `TbsStart` and `TbsEnd`: identical, and the ROM equals the image.
 `bank-rw` round trips 64 bytes, fills the bank until `STERR_FULL`
-(**78** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
+(**77** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
 on 496 KB: 412 s of emulated time, the whole TEST run), counts the
 directory (to 255, the index's width), deletes `F0002`, sees `NEW`
 take entry 103 and reads a full file back; `bank-dir` parses the
