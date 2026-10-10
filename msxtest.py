@@ -326,7 +326,7 @@ def expected_nt(table=None):
     """The screen the ROM paints, built here from the same layout rules:
     the bar, the rule, the lattice with the icons on it, the status band."""
     bar = bytearray(b" " * COLS)
-    bar[1:1 + 28] = b"MSX DESK  FILE   VIEW   HELP"
+    bar[0:32] = b"MSX DESK  FILE  EDIT  VIEW  HELP"
     rows = [bytes(bar), bytes([0x81]) * COLS] + [bytes([0x80]) * COLS] * 21 + [bytes([0xA0]) * COLS]
     return paint_icons(b"".join(rows), table)
 
@@ -520,7 +520,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 160, 120, 96          # what fits the TEST build's heap behind a disk ROM
+    A, B, C = 48, 40, 32            # 166 bytes of TEST heap behind a disk ROM, with the clipboard
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -593,7 +593,7 @@ def menu_defs(syms):
     rom = open(ROM, "rb").read()
     defs = []
     p = syms["MenuDefs"] - ROMBASE
-    for _ in range(4):
+    for _ in range(syms["MNCOUNT"]):
         col, width, dropw, count = rom[p:p + 4]
         ip = int.from_bytes(rom[p + 4:p + 6], "little") - ROMBASE
         items = []
@@ -604,6 +604,21 @@ def menu_defs(syms):
         defs.append((col, width, dropw, items))
         p += 6
     return defs
+
+
+def menu_open_nt(defs, nt0, menu):
+    """The screen with menu `menu` (one based) open over nt0: its title
+    inverted on the bar, one row a item under it, nudged in from the
+    right edge when the drop would run off it."""
+    col, width, dropw, items = defs[menu - 1]
+    nt = bytearray(nt0)
+    for c in range(col, col + width):
+        nt[c] ^= 0x80
+    x = min(col, COLS - dropw)
+    for i, item in enumerate(items):
+        row = (1 + i) * COLS
+        nt[row + x:row + x + dropw] = (b" " + item).ljust(dropw)
+    return bytes(nt)
 
 
 def menu_checks(syms, fails, vram0):
@@ -620,27 +635,19 @@ def menu_checks(syms, fails, vram0):
                 (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
 
     def expected_open(menu):
-        col, width, dropw, items = defs[menu - 1]
-        nt = bytearray(nt0)
-        for c in range(col, col + width):
-            nt[c] ^= 0x80
-        x = min(col, COLS - dropw)
-        for i, item in enumerate(items):
-            row = (1 + i) * COLS
-            nt[row + x:row + x + dropw] = (b" " + item).ljust(dropw)
-        return bytes(nt)
+        return menu_open_nt(defs, nt0, menu)
 
     # FILE, title at column 10: a press at x 88 is cell 11
     r = Run(syms, press_at(88, 3) + [(10, "")], "menu-open")
     check(fails, "menu-open", r.peek("MenuOpen") == 2 and r.nt() == expected_open(2),
           f"MenuOpen {r.peek('MenuOpen')}, name table crc32 {zlib.crc32(r.nt()):08x}, "
           f"expected {zlib.crc32(expected_open(2)):08x}")
-    # ZX DESK, at the left edge, and HELP, whose drop is nudged in from the right
+    # MSX DESK, at the left edge, and HELP, whose drop is nudged in from the right
     r = Run(syms, press_at(8, 3) + [(10, "")], "menu-open-1")
     check(fails, "menu-open-1", r.peek("MenuOpen") == 1 and r.nt() == expected_open(1),
           f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}")
-    r = Run(syms, press_at(200, 3) + [(10, "")], "menu-open-4")
-    check(fails, "menu-open-4", r.peek("MenuOpen") == 4 and r.nt() == expected_open(4),
+    r = Run(syms, press_at(228, 3) + [(10, "")], "menu-open-5")
+    check(fails, "menu-open-5", r.peek("MenuOpen") == 5 and r.nt() == expected_open(5),
           f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}")
     # open FILE, then pick SAVE, the third item, on row 3
     r = Run(syms, press_at(88, 3) + press_at(96, 27) + [(10, "")], "menu-pick")
@@ -649,7 +656,7 @@ def menu_checks(syms, fails, vram0):
     check(fails, "menu-restore", r.nt() == nt0, f"name table crc32 {zlib.crc32(r.nt()):08x} after the pick, "
           f"boot {zlib.crc32(nt0):08x}")
     # open VIEW, press on the desktop away from it: no pick, put back
-    r = Run(syms, press_at(140, 3) + press_at(40, 120) + [(10, "")], "menu-away")
+    r = Run(syms, press_at(180, 3) + press_at(40, 120) + [(10, "")], "menu-away")
     check(fails, "menu-away", (r.peek("MenuPick"), r.peek("MenuOpen"), r.peek("LastHit")) == (0xFF, 0, 4)
           and r.nt() == nt0,
           f"pick {r.peek('MenuPick')}, open {r.peek('MenuOpen')}, last hit {r.peek('LastHit')} (the bar press), "
@@ -715,14 +722,16 @@ def cal_win(x, y, sel=1, year=1980, month=1):
     return (x, y, CAL_W, CAL_H, b"CALENDAR", calendar_lines(year, month, sel))
 
 
-KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
-             b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT", b"D DESKTOP",
-             b"SELECT MARK", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
-KEYS_Y = 1      # 22 rows: the lowest row the list fits at
+KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE",
+             b"E CUT", b"Y COPY", b"P PASTE", b"SELECT MARK", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+KEYS_TEXT2 = [b"X NEXT WINDOW", b"C CASCADE", b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER",
+              b"G SETTINGS", b"I ABOUT", b"D DESKTOP"]
+KEYS_X, KEYS_Y, KEYS_W, KEYS_H, KEYS_COL2 = 2, 4, 27, 16, 13     # two columns: 19 GRAPH keys no longer fit one
 
 
 def keys_win(x, y):
-    return (x, y, 15, 22, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+    return (x, y, KEYS_W, KEYS_H, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)]
+            + [(1 + i, KEYS_COL2, t, False) for i, t in enumerate(KEYS_TEXT2)])
 
 
 def about_win(x, y):
@@ -738,7 +747,7 @@ def window_checks(syms, fails, vram0):
                     f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
                 (5, "key_down 6 0x02"), (hold, "key_up 6 0x02")]
 
-    open_cal = press_at(140, 3) + press_at(148, 19)     # VIEW, then CALENDAR on row 2
+    open_cal = press_at(180, 3) + press_at(188, 19)     # VIEW, then CALENDAR on row 2
     open_about = press_at(8, 3) + press_at(16, 11)      # MSX DESK, then ABOUT on row 1
 
     def rec(r, slot):
@@ -817,8 +826,8 @@ def window_checks(syms, fails, vram0):
           f"{r.peek('WndCount')} windows after holding GRAPH+N 60 frames")
 
     # HELP, KEYS opens the list
-    r = Run(syms, press_at(196, 3) + press_at(204, 11) + [(10, "")], "keys-win")
-    want = compose(nt0, [keys_win(16, KEYS_Y)])
+    r = Run(syms, press_at(228, 3) + press_at(204, 11) + [(10, "")], "keys-win")
+    want = compose(nt0, [keys_win(KEYS_X, KEYS_Y)])
     check(fails, "keys-win", r.peek("WndCount") == 1 and r.nt() == want,
           f"{r.peek('WndCount')} window, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
@@ -874,7 +883,7 @@ def app_checks(syms, fails, vram0):
     file_new = press_at(88, 3) + press_at(96, 11)       # FILE, NEW on row 1
     file_open = press_at(88, 3) + press_at(96, 19)      # FILE, OPEN on row 2
     file_save = press_at(88, 3) + press_at(96, 27)      # FILE, SAVE on row 3
-    view_clock = press_at(140, 3) + press_at(148, 11)   # VIEW, CLOCK on row 1
+    view_clock = press_at(180, 3) + press_at(188, 11)   # VIEW, CLOCK on row 1
     H, I, X, ENTER, BS = (3, 0x20), (3, 0x40), (5, 0x20), (7, 0x80), (7, 0x20)
 
     # type HI, ENTER, X, then backspace over the X
@@ -989,7 +998,7 @@ def delete_checks(syms, fails):
               and r.peek("NoteSaved") == cancelled and r.peek("DgOpenFlag") == 0,
               f"directory crc32 {zlib.crc32(actual):08x}; document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}; "
               f"modified {r.peek('NoteModified')}, saved {r.peek('NoteSaved')}")
-    for prefix, suffix in [([], ""), (menu(11), "-new"), (menu(11)+menu(27)+input_note_name()+press(140,3)+press(148,11), "-clock")]:
+    for prefix, suffix in [([], ""), (menu(11), "-new"), (menu(11)+menu(27)+input_note_name()+press(180, 3)+press(188, 11), "-clock")]:
         browse = run(prefix + menu(19), "del-browse"+suffix)
         r = run(prefix + menu(51), "del-picker"+suffix)
         check(fails, "del-picker"+suffix, r.nt() == browse.nt() and r.peek("CmdBrowse") == 1,
@@ -1260,7 +1269,7 @@ def bank_checks(syms, fails):
     file_new = press(88, 3) + press(96, 11)
     file_save = press(88, 3) + press(96, 27)
     file_open = press(88, 3) + press(96, 19)
-    view_clock = press(140, 3) + press(148, 11)
+    view_clock = press(180, 3) + press(188, 11)
     typed = file_new + tap(3, 0x20) + tap(3, 0x40)
     timing = [(1, f"debug set_bp {syms['BkCode']} {{}} {{set ::bkstart [machine_info time]}}; "
                   f"debug set_bp {syms['BkCode'] + syms['BkOEi']} {{}} "
@@ -1282,7 +1291,7 @@ def bank_checks(syms, fails):
     check(fails, "bank-irq", r.peek("Dropped", 2) == 0 and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 0
           and stored == {"NOTE": (0, document)} and r.peek("WndCount") == 2
           and r.peek("ClkH") == 13 and r.peek("ClkM") * 60 + r.peek("ClkS") == clock_model(since_set, hz50)
-          and 15 <= hx <= 25 and r.ptr()[0] == min(255, 148 + ramp(hx))
+          and 15 <= hx <= 25 and r.ptr()[0] == min(255, 188 + ramp(hx))   # the pointer rests on VIEW > CLOCK
           and len(windows) >= 3 and max(windows) < 2500,
           f"Dropped {r.peek('Dropped', 2)}{' at frames ' + str(list(r.bytes('DropLog', 2 * r.peek('DropN'))[::2])) if r.peek('DropN') else ''}, "
           f"saved {r.peek('NoteSaved')}, clock {r.peek('ClkH')}:{r.peek('ClkM'):02d}:{r.peek('ClkS'):02d} "
@@ -1293,7 +1302,7 @@ def bank_checks(syms, fails):
     # there and back, so the bytes come back through the bank.
     fixtures = {name: doc(name) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
     left = list(fixtures)
-    open_cmd = press(140, 3) + press(148, 51)
+    open_cmd = press(180, 3) + press(188, 51)
     B, C = tap(2, 0x80), tap(3, 1)
     def run(steps, name):
         return Run(syms, seed_ram_steps(syms, {} if EXT else fixtures) + open_cmd + steps + [(15, "")]
@@ -1404,7 +1413,7 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     def tap(row, mask, shift=False):
         return [(5, f"key_down {row} {mask}" + ("; key_down 6 1" if shift else "")),
                 (3, f"key_up {row} {mask}" + ("; key_up 6 1" if shift else ""))]
-    open_cmd = press(140, 3) + press(148, 51)
+    open_cmd = press(180, 3) + press(188, 51)
     enter, down, tab = tap(7, 128), tap(8, 64, True), tap(7, 8)
     copy, delete, yes, no = tap(3, 1), tap(3, 2), tap(5, 64), tap(4, 8)
     fixtures = {name: doc(name) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
@@ -2096,13 +2105,13 @@ def arrange_checks(syms, fails):
                     f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}"),
                 (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
 
-    cascade = press(140, 3) + press(148, 27)
-    tile = press(140, 3) + press(148, 35)
-    opens = [press(140, 3) + press(148, 19),
+    cascade = press(180, 3) + press(188, 27)
+    tile = press(180, 3) + press(188, 35)
+    opens = [press(180, 3) + press(188, 19),
              press(92, 3) + press(100, 11) +
              [(5, "key_down 2 0x40"), (5, "key_up 2 0x40")],  # A in the notepad
              press(8, 3) + press(16, 11),
-             press(140, 3) + press(148, 19) +
+             press(180, 3) + press(188, 19) +
              [(5, "key_down 6 0x01; key_down 8 0x80"),
               (5, "key_up 8 0x80; key_up 6 0x01")]]  # second calendar selects 2
     windows = [cal_win(4, 4), note_win(10, 7, [b"A"] + [b""] * 15, 1, 0),
@@ -2183,7 +2192,7 @@ def arrange_checks(syms, fails):
 
     # Commander has a second pane starting beyond a tiled window's right
     # edge and a help row on its bottom border: neither may write there.
-    cmd = press(140, 3) + press(148, 51)
+    cmd = press(180, 3) + press(188, 51)
     steps = opens[0] + cmd + opens[2] + opens[3] + tile
     lines = [(1, 1, b"DISK" if EXT else b"RAM", True), (1, 16, b"RAM", False),
              (2, 1, b"(EMPTY)", True), (2, 16, b"(EMPTY)", False),
@@ -2249,7 +2258,7 @@ def note_load_checks(syms, fails):
                 hooks += [f"set menubp [debug set_bp {syms['NoteMenuOpen']} {{}} {{debug write memory {syms['StBackend']} 2}}]",
                           f"debug write_block memory {syms['RamDir']} [binary format H* {(b'NOTE\0' + directory[5:]).hex()}]"]
             action = file_open if route == 'menu' else (
-                file_open + enter if route == 'picker' else press(140, 3) + press(148, 51) + enter)
+                file_open + enter if route == 'picker' else press(180, 3) + press(188, 51) + enter)
             if route == 'mouse':
                 action = file_open + press(34, 114)[:1] + [
                     (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
@@ -2691,7 +2700,7 @@ def resize_scroll_checks(syms, fails):
               and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16,
               f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), crc32 {zlib.crc32(r.nt()):08x}")
 
-    clock = press(140, 3) + press(148, 11)
+    clock = press(180, 3) + press(188, 11)
     move = point(19 * 8 + 2, 3 * 8 + 2) + [(5, "key_down 6 0x02")]
     move += [(5, f"debug write memory {syms['PtrY']} {20 * 8 + 2}"),
              (5, "key_up 6 0x02")]
@@ -2714,7 +2723,7 @@ def resize_scroll_checks(syms, fails):
     down = press(23 * 8 + 2, 13 * 8 + 2)
     page = press(23 * 8 + 2, 10 * 8 + 2)
     up = press(23 * 8 + 2, 7 * 8 + 2)
-    tile = press(140, 3) + press(148, 35)
+    tile = press(180, 3) + press(188, 35)
     grow = point(23 * 8 + 2, 14 * 8 + 2) + [(5, "key_down 6 0x02")]
     grow += point(255, 183) + [(5, "key_up 6 0x02"), (10, "")]
     for name, steps, x, y, w, h, top in [
@@ -2826,8 +2835,8 @@ def saveas_checks(syms, fails):
     check(fails, "saveas-failure", r.bytes("NoteName",7) == b"LETTER\0"
           and r.peek("NoteModified") == 1 and stored(r) == document
           and r.peek("DgCount") == 1, "failed write preserves prior name, dirty state and prior file")
-    r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "saveas-keys")
-    want = compose(expected_nt(), [keys_win(16, KEYS_Y)])
+    r = Run(syms, press(228, 3) + press(204,11) + [(10, "")], "saveas-keys")
+    want = compose(expected_nt(), [keys_win(KEYS_X, KEYS_Y)])
     check(fails, "saveas-keys", r.nt() == want,
           f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
@@ -2982,8 +2991,8 @@ def print_checks(syms, fails):
                 f"print-caps-settings-{n}")
         check(fails, f"print-caps-settings-{n}", r.peek("StBackend") in (1, 4, 5)
               and r.peek("SetBackend") in (1, 4, 5), f"SETTINGS backend {r.peek('StBackend')}")
-    r = Run(syms, press(196,3) + press(204,11) + [(10, "")], "print-keys")
-    want = compose(expected_nt(), [keys_win(16, KEYS_Y)])
+    r = Run(syms, press(228, 3) + press(204,11) + [(10, "")], "print-keys")
+    want = compose(expected_nt(), [keys_win(KEYS_X, KEYS_Y)])
     check(fails, "print-keys", r.nt() == want,
           f"KEYS crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
@@ -3095,7 +3104,7 @@ def desktop_checks(syms, fails):
           f"{r.peek('Frames', 2)} frames, {r.peek('Dropped', 2)} dropped")
 
     # VIEW > DESKTOP and GRAPH+D open the same window
-    view_desktop = press(140, 3) + press(148, 43)
+    view_desktop = press(180, 3) + press(188, 43)
     for name, steps in (("dsk-panel", view_desktop), ("dsk-panel-key", graph(3, 0x02))):
         r = Run(syms, steps + [(10, "")], name)
         want = compose(expected_nt(), [desk_win()])
@@ -3151,6 +3160,249 @@ def desktop_checks(syms, fails):
         check(fails, "dsk-reload-v4", table_of(r) == DESK_DEFAULT and r.nt() == want
               and r.bytes("SetRec", 26) == set_record(1, 0, 1),
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+def note_selection_checks(syms, fails):
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n, shift=True):
+        return ([(5, 'key_down 6 1')] if shift else []) + tap(8, mask)*n + (
+            [(5, 'key_up 6 1')] if shift else [])
+    r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
+            + click(228, 3) + click(204, 11) + [(10, '')], 'sel-help')
+    expected = compose(expected_nt(), [keys_win(KEYS_X, KEYS_Y)])
+    check(fails, 'sel-help', r.nt() == expected,
+          f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
+    hello = base + typed('HELLO WORLD') + arrows(16, 11)
+    selected = hello + tap(7, 64) + arrows(128, 5)
+    document = note_width_document([b'HELLO WORLD'])
+    want = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', [
+        (1, 1, b'HELLO WORLD', False), (1, 1, b'HELLO', True), (-2, 16, b'', False)])])
+    def selection(name, steps):
+        r = Run(syms, steps + [(10, '')], name, files={})
+        check(fails, name, r.bytes('NoteBuf', 256) == document and r.nt() == want
+              and (r.peek('NoteAnchor') & 127, r.peek('NoteAnchor', 2) >> 8,
+                   r.peek('NoteEnd'), r.peek('NoteEnd', 2) >> 8) == (0, 0, 5, 0),
+              f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"anchor/end {r.bytes('NoteAnchor', 4).hex()}")
+        return r
+    selection('sel-keys', selected)
+    off = [(5, f"debug write memory {syms['SetKeyPtr']} 0")]
+    selection('sel-keys-pointer-off', hello + off + tap(7, 64) + arrows(128, 5, False))
+    # Whole-cell mouse selection at text origin (9,7), through five cells.
+    point = [(5, f"debug write memory {syms['PtrX']} 72; debug write memory {syms['PtrY']} 56")]
+    drag = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
+                    (5, 'mouse_move 80 0'), (5, 'exec xdotool mouseup 1'),
+                    (10, 'set ::throttle off')]
+    selection('sel-mouse', hello + drag)
+    for name, ending, expected in [
+            ('sel-type', tap(5, 32), b'X WORLD'),
+            ('sel-bs', tap(7, 32), b' WORLD'),
+            ('sel-del', tap(8, 8), b' WORLD')]:
+        r = Run(syms, selected + ending + [(10, '')], name, files={})
+        want_doc = note_width_document([expected])
+        check(fails, name, r.bytes('NoteBuf', 256) == want_doc
+              and r.peek('NoteAnchor', 2) >> 8 == 255,
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(want_doc):08x}")
+    for name, ending in [('sel-escape', tap(7, 4)), ('sel-click', click(72, 56))]:
+        r = Run(syms, selected + ending + [(10, '')], name, files={})
+        check(fails, name, r.bytes('NoteBuf', 256) == document
+              and (r.peek('NoteAnchor', 2) >> 8 == 255 or
+                   r.bytes('NoteAnchor', 2) == r.bytes('NoteEnd', 2)),
+              'selection cleared, document retained')
+    selection('sel-toggle', selected + tap(7, 64))
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    for name, extra, front in [('sel-instance-back', shortcut(4, 8), False),
+                                ('sel-instance-front', shortcut(4, 8) + shortcut(5, 32), True)]:
+        r = Run(syms, selected + extra + [(10, '')], name, files={})
+        buf = r.peek16_at(syms['WndTab'] + 6)
+        state = r.peek16_at(syms['WndTab'] + 10)
+        offset = syms['NoteAnchor'] - syms['NoteState']
+        text = r.ram[buf-0xc000+17:buf-0xc000+28]
+        expected = bytes(c | (128 if front and i < 5 else 0)
+                         for i, c in enumerate(b'HELLO WORLD'))
+        saved = r.ram[state-0xc000+offset:state-0xc000+offset+4]
+        check(fails, name, text == expected and saved == bytes((128, 0, 5, 0)),
+              f"buffer crc32 {zlib.crc32(text):08x}/{zlib.crc32(expected):08x}, state {saved.hex()}")
+    selection('sel-select-held', hello + [(30, 'key_down 7 64'), (5, 'key_up 7 64')]
+              + arrows(128, 5))
+    # A reverse selection spanning chunks, with the prefix scrolled out.
+    long_text = b'ABCDEFGHIJKLMNOPQRSTUVWX'
+    reverse = base + typed(long_text.decode()) + tap(7, 64) + arrows(16, 9)
+    r = Run(syms, reverse + [(10, '')], 'sel-chunks', files={})
+    painted = [(1, 1, long_text[2:], False), (1, 14, long_text[15:], True),
+               (-2, 15, b'', False)]
+    expected = compose(expected_nt(), [(8, 6, 16, 9, b'NOTEPAD', painted)])
+    check(fails, 'sel-chunks', r.nt() == expected and r.peek('NoteLeftCol') == 2
+          and r.bytes('NoteBuf', 256) == note_width_document([long_text]),
+          f"screen crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
+    r = Run(syms, reverse + tap(5, 32) + [(10, '')], 'sel-chunks-type', files={})
+    expected = note_width_document([long_text[:15] + b'X'])
+    check(fails, 'sel-chunks-type', r.bytes('NoteBuf', 256) == expected,
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
+    # Select backwards across two hard breaks and a continuation chunk.
+    lines = base + typed('AB') + tap(7, 128) + typed('C'*20) + tap(7, 128) + typed('DE')
+    across = lines + tap(7, 64) + arrows(32, 2) + arrows(16, 1)
+    r = Run(syms, across + tap(7, 32) + [(10, '')], 'sel-lines', files={})
+    expected = note_width_document([b'A'])
+    check(fails, 'sel-lines', r.bytes('NoteBuf', 256) == expected,
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
+    scroll = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
+                       (25, 'mouse_move 0 128'), (5, 'exec xdotool mouseup 1'),
+                       (10, 'set ::throttle off')]
+    r = Run(syms, hello + scroll, 'sel-scroll', files={})
+    check(fails, 'sel-scroll', r.peek('NoteTop') > 0 and r.peek('NoteEnd', 2) >> 8 > 6
+          and r.peek('Dropped', 2) == 0,
+          f"top {r.peek('NoteTop')}, end {r.bytes('NoteEnd', 2).hex()}, Dropped {r.peek('Dropped', 2)}")
+
+
+def clipboard_checks(syms, fails):
+    """EDIT: CUT, COPY and PASTE (GRAPH+E, Y, P) through the one clipboard,
+    asserted on ClipBuf/ClipLen, all 256 document bytes of the notepad
+    pasted into and the composed screen; the new bar and the open EDIT
+    menu against the compositor."""
+    print("clipboard:")
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    defs = menu_defs(syms)
+    nt0 = expected_nt()
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n):
+        return [(5, 'key_down 6 1')] + tap(8, mask) * n + [(5, 'key_up 6 1')]
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    cut, copy, paste, new = shortcut(3, 4), shortcut(5, 64), shortcut(4, 32), shortcut(4, 8)
+    def edit(y):                        # EDIT's title is cell 16; CUT, COPY, PASTE, UNDO on rows 1-4
+        return click(132, 3) + click(140, y)
+    enter, select, escape = tap(7, 128), tap(7, 64), tap(7, 4)
+    def clip(r):
+        return r.bytes("ClipBuf", r.peek("ClipLen"))
+    def doc(r):
+        return r.bytes("NoteBuf", 256)
+    def note_nt(lines, cx, cy, selected=None):
+        painted = [(1 + i, 1, line, False) for i, line in enumerate(lines)]
+        if selected:
+            painted.append(selected)
+        painted += [(1 + cy, 1 + cx, (lines[cy][cx:cx + 1] or b" ") if cy < len(lines) else b" ", True),
+                    (-2, 16, b"", False)]
+        return compose(nt0, [(8, 6, 16, 9, b"NOTEPAD", painted)])
+
+    # The bar with five titles, and EDIT open: the compositor from MenuDefs.
+    r = Run(syms, [(10, "")], "clip-bar")
+    check(fails, "clip-bar", r.nt() == nt0 and len(defs) == 5
+          and [d[0] for d in defs] == [0, 10, 16, 22, 28],
+          f"name table crc32 {zlib.crc32(r.nt()):08x}, titles at {[d[0] for d in defs]}")
+    r = Run(syms, base[:2] + click(132, 3) + [(10, "")], "clip-menu")
+    want = menu_open_nt(defs, nt0, 3)
+    check(fails, "clip-menu", r.peek("MenuOpen") == 3 and r.nt() == want
+          and defs[2][3] == [b"CUT", b"COPY", b"PASTE", b"UNDO"],
+          f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
+    hello = base + typed("HELLO WORLD") + arrows(16, 11)
+    selected = hello + select + arrows(128, 5)
+    document = note_width_document([b"HELLO WORLD"])
+    r = Run(syms, selected + copy + [(10, "")], "clip-copy", files={})
+    check(fails, "clip-copy", clip(r) == b"HELLO" and r.peek("ClipLen") == 5 and doc(r) == document
+          and r.bytes("NoteAnchor", 4) == bytes((128, 0, 5, 0)),
+          f"clipboard {clip(r)!r}, length {r.peek('ClipLen')}, document crc32 {zlib.crc32(doc(r)):08x}, "
+          f"anchor/end {r.bytes('NoteAnchor', 4).hex()}")
+    r = Run(syms, selected + cut + [(10, "")], "clip-cut", files={})
+    want_doc = note_width_document([b" WORLD"])
+    want = note_nt([b" WORLD"], 0, 0)
+    check(fails, "clip-cut", clip(r) == b"HELLO" and doc(r) == want_doc and r.nt() == want
+          and (r.peek("NoteCX"), r.peek("NoteCY"), r.peek("NoteAnchor", 2) >> 8) == (0, 0, 255),
+          f"clipboard {clip(r)!r}, document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, "
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+    # Through the menu with the mouse: the same bytes.
+    r = Run(syms, selected + edit(11) + [(10, "")], "clip-cut-menu", files={})
+    check(fails, "clip-cut-menu", clip(r) == b"HELLO" and doc(r) == want_doc and r.nt() == want
+          and r.peek("MenuOpen") == 0, f"clipboard {clip(r)!r}, document crc32 {zlib.crc32(doc(r)):08x}")
+
+    # Copied in one notepad, pasted into a second: its 256 bytes, the
+    # first document untouched in its slot, HELLO and the caret on the screen.
+    want_doc = note_width_document([b"HELLO"])
+    def pasted(name, steps):
+        r = Run(syms, steps + [(10, "")], name, files={})
+        x, y = r.ram[syms["WndTab"] + 15 - WORK], r.ram[syms["WndTab"] + 16 - WORK]
+        row = r.nt()[(y + 1) * COLS + x + 1:(y + 1) * COLS + x + 7]
+        first = r.peek16_at(syms["WndTab"] + 10)
+        check(fails, name, doc(r) == want_doc and (r.peek("NoteCX"), r.peek("NoteCY")) == (5, 0)
+              and r.peek("WndCount") == 2 and r.peek("WndZ") == 1 and row == b"HELLO\xa0"
+              and r.ram[first - WORK:first - WORK + 256] == document and clip(r) == b"HELLO"
+              and r.peek("DgOpenFlag") == 0,
+              f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, caret "
+              f"{r.peek('NoteCX')},{r.peek('NoteCY')}, row {row!r}, Dropped {r.peek('Dropped', 2)}")
+    pasted("clip-paste2", selected + copy + new + paste)
+    pasted("clip-paste2-menu", selected + edit(19) + new + edit(27))
+
+    # Across a hard line break: B, the break, C; pasted it comes back as
+    # two lines, and cut then pasted the document is as it was.
+    lines = base + typed("AB") + enter + typed("CD") + arrows(16, 1) + select + arrows(32, 1)
+    r = Run(syms, lines + copy + new + paste + [(10, "")], "clip-lines", files={})
+    want_doc = note_width_document([b"B", b"C"])
+    check(fails, "clip-lines", clip(r) == b"B\rC" and doc(r) == want_doc
+          and (r.peek("NoteCX"), r.peek("NoteCY")) == (1, 1),
+          f"clipboard {clip(r)!r}, document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}")
+    r = Run(syms, lines + cut + [(10, "")], "clip-lines-cut", files={})
+    want_doc = note_width_document([b"AD"])
+    check(fails, "clip-lines-cut", clip(r) == b"B\rC" and doc(r) == want_doc
+          and (r.peek("NoteCX"), r.peek("NoteCY")) == (1, 0),
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}")
+    r = Run(syms, lines + cut + paste + [(10, "")], "clip-lines-back", files={})
+    want_doc = note_width_document([b"AB", b"CD"])
+    check(fails, "clip-lines-back", doc(r) == want_doc and (r.peek("NoteCX"), r.peek("NoteCY")) == (1, 1)
+          and r.nt() == note_nt([b"AB", b"CD"], 1, 1),
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, screen {zlib.crc32(r.nt()):08x}")
+
+    # Pasted over a selection it replaces it, as typing does.
+    replace = selected + copy + escape + arrows(128, 6) + select + arrows(16, 5) + paste
+    r = Run(syms, replace + [(10, "")], "clip-replace", files={})
+    want_doc = note_width_document([b"HELLO HELLO"])
+    check(fails, "clip-replace", doc(r) == want_doc and (r.peek("NoteCX"), r.peek("NoteCY")) == (11, 0)
+          and r.peek("NoteAnchor", 2) >> 8 == 255 and r.nt() == note_nt([b"HELLO HELLO"], 11, 0),
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}")
+
+    # Nothing to act on: an empty clipboard, no selection, UNDO.
+    r = Run(syms, hello + paste + cut + [(10, "")], "clip-empty", files={})
+    check(fails, "clip-empty", doc(r) == document and r.peek("ClipLen") == 0 and r.peek("DgOpenFlag") == 0
+          and r.nt() == note_nt([b"HELLO WORLD"], 0, 0),
+          f"document crc32 {zlib.crc32(doc(r)):08x}, ClipLen {r.peek('ClipLen')}")
+    r = Run(syms, selected + copy + escape + copy + cut + edit(35) + [(10, "")], "clip-nosel", files={})
+    check(fails, "clip-nosel", clip(r) == b"HELLO" and doc(r) == document and r.peek("MenuOpen") == 0
+          and r.peek("MenuPick") == 3 and r.nt() == note_nt([b"HELLO WORLD"], 5, 0),
+          f"clipboard {clip(r)!r}, document crc32 {zlib.crc32(doc(r)):08x}, pick {r.peek('MenuPick')}")
+
+    # Four of HELLO's five fit a 220-cell document: none goes in, the
+    # alert opens, and the document and caret are as before, byte for byte.
+    full_text = b"H" * 14 + b"I" * 206
+    full = selected + copy + new + tap(3, 32) * 14 + tap(3, 64) * 206
+    full_doc = note_width_document([full_text])
+    r = Run(syms, full + paste + [(10, "")], "clip-full", files={})
+    check(fails, "clip-full", r.peek("DgOpenFlag") == 1
+          and r.nt()[9 * COLS + 7:9 * COLS + 20] == b"DOCUMENT FULL" and doc(r) == full_doc
+          and (r.peek("NoteCX"), r.peek("NoteCY")) == (10, 15) and r.peek("NoteAnchor", 2) >> 8 == 255,
+          f"alert {r.peek('DgOpenFlag')}, document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(full_doc):08x}, "
+          f"caret {r.peek('NoteCX')},{r.peek('NoteCY')}")
+    r = Run(syms, full + paste + enter + typed("J") + [(10, "")], "clip-full-after", files={})
+    want_doc = note_width_document([full_text + b"J"])
+    check(fails, "clip-full-after", r.peek("DgOpenFlag") == 0 and doc(r) == want_doc
+          and r.peek("NoteModified") == 1 and clip(r) == b"HELLO",
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x} after OK and a key")
+
+    r = Run(syms, base[:2] + click(228, 3) + click(204, 11) + [(10, "")], "clip-keys")
+    want = compose(nt0, [keys_win(KEYS_X, KEYS_Y)])
+    check(fails, "clip-keys", r.nt() == want,
+          f"HELP > KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
 
 def note_selection_checks(syms, fails):
@@ -3166,8 +3418,8 @@ def note_selection_checks(syms, fails):
         return ([(5, 'key_down 6 1')] if shift else []) + tap(8, mask)*n + (
             [(5, 'key_up 6 1')] if shift else [])
     r = Run(syms, [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
-            + click(196, 3) + click(204, 11) + [(10, '')], 'sel-help')
-    expected = compose(expected_nt(), [keys_win(16, KEYS_Y)])
+            + click(228, 3) + click(204, 11) + [(10, '')], 'sel-help')
+    expected = compose(expected_nt(), [keys_win(KEYS_X, KEYS_Y)])
     check(fails, 'sel-help', r.nt() == expected,
           f"HELP KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(expected):08x}")
     hello = base + typed('HELLO WORLD') + arrows(16, 11)
@@ -3275,6 +3527,9 @@ def main():
     if sys.argv[1:] == ["--note-selection"]:
         note_selection_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--clipboard"]:
+        clipboard_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--saveas"]:
         saveas_checks(syms, fails)
         return bool(fails)
@@ -3335,6 +3590,7 @@ def main():
     sound_checks(syms, fails)
     note_width_checks(syms, fails)
     note_selection_checks(syms, fails)
+    clipboard_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)
