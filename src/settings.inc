@@ -207,11 +207,15 @@ IF TAPE
                 cp      ST_TAPE
                 jr      z,SetBackendOK
 ENDIF
+                cp      ST_BANK
+                jr      z,SetBackendAvail
                 cp      ST_DISK
                 jr      nz,SetBackendDefault
-                call    DskPresent
+SetBackendAvail:
+                ld      b,a
+                call    StAvail                 ; a bank, a BDOS
+                ld      a,b
                 jr      nz,SetBackendDefault
-                ld      a,ST_DISK
 SetBackendOK:
                 jp      StSelect
 SetBackendDefault:
@@ -393,15 +397,10 @@ SetCycleY:
                 xor     1
                 ld      (SetInvertY),a
                 jp      SetActivate
+; B = 1 for the next backend round RAM, BANK, DISK, 2 for the previous
 SetCycleBackend:
-                call    DskPresent
-                ld      a,ST_RAM
-                jp      nz,SetCycleDevice
                 ld      a,(SetBackend)
-                cp      ST_DISK
-                ld      a,ST_RAM
-                jp      z,SetCycleDevice
-                ld      a,ST_DISK
+                call    StRingStep
 SetCycleDevice:
                 ld      (SetBackend),a
 SetActivate:
@@ -542,10 +541,23 @@ SetDrawY:
                 ld      hl,SetTapeLabel
                 cp      ST_TAPE
                 jr      z,SetDrawBackend
+                ld      hl,SetBankLabel
+                cp      ST_BANK
+                jr      z,SetDrawBank
                 ld      hl,SetDiskLabel
 SetDrawBackend:
                 ld      b,3
                 call    SetButton
+                jr      SetDrawRow4
+SetDrawBank:
+                ld      b,3
+                call    SetButton
+                xor     a                       ; the bank's size after the label
+                ld      (PrintInv),a
+                call    BkKbText
+                ld      bc,$0309
+                call    WinPrint
+SetDrawRow4:
                 ld      a,(SetSound)
                 ld      hl,SetOff
                 or      a
@@ -605,6 +617,7 @@ SetOn:          defb    "[ON  ]",0
 SetRamLabel:    defb    "[RAM ]",0
 SetTapeLabel:   defb    "[TAPE]",0
 SetDiskLabel:   defb    "[DISK]",0
+SetBankLabel:   defb    "[BANK]",0
 SetSaveLabel:   defb    "[SAVE]",0
 SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0

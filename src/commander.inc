@@ -171,6 +171,9 @@ CmdDrawPane:
                 cp      ST_PRINT
                 ld      hl,TxtCmdPrn
                 jr      z,CdpHeader
+                cp      ST_BANK
+                ld      hl,TxtCmdBank
+                jr      z,CdpHeader
                 ld      hl,TxtCmdRam
 CdpHeader:
                 push    hl
@@ -367,6 +370,8 @@ CmdKey:
 CkTransfer:
                 cp      'P'
                 jr      z,CmdPrinterTarget
+                cp      'B'
+                jr      z,CmdBankTarget
                 cp      KEY_LEFT
                 jr      z,CmdLeftPane
                 cp      KEY_RIGHT
@@ -398,6 +403,24 @@ CmdPrinterTarget:
 CptSet:
                 ld      (hl),a
                 jp      CmdReload
+; B takes the opposite pane round RAM, BANK and DISK, those that are
+; there; from PRN it goes to RAM.
+CmdBankTarget:
+                ld      a,(CmdActive)
+                xor     1
+                ld      (CmdPane),a
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_PRINT
+                ld      a,ST_RAM
+                jr      z,CptSet
+                ld      a,(hl)
+                ld      b,1
+                push    hl
+                call    StRingStep
+                pop     hl
+                jr      CptSet
 CmdLeftPane:
                 xor     a
                 jr      CmdPaneSet
@@ -790,11 +813,12 @@ CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
                 defw    TxtCmdSame, TxtCmdDeleted, TxtCmdNotNote
 TxtCmdTitle:    defb    "COMMANDER",0
 TxtCmdPrn:      defb    "PRN",0
+TxtCmdBank:     defb    "BANK",0
 TxtCmdRam:      defb    "RAM",0
 TxtCmdDisk:     defb    "DISK",0
 TxtCmdEmpty:    defb    "(EMPTY)",0
 TxtCmdBlank:    defb    0
-TxtCmdHelp1:    defb    "TAB PANE P PRN R LIST",0
+TxtCmdHelp1:    defb    "TAB PANE P PRN B BANK R LIST",0
 TxtCmdHelp2:    defb    "ENTER OPEN C COPY D DELETE",0
 TxtCmdReady:    defb    "READY",0
 TxtCmdCopied:   defb    "COPIED",0
