@@ -1271,25 +1271,34 @@ Two things the merge with lf-1526 turned up, both fixed here:
   The TEST heap subject's blocks went to 128, 96 and 64 for the 347
   bytes left under the disk ROM.
 
-Not fixed, and not from this ticket: `sel-scroll`, lf-1526's drag
-scroll, drops 11 frames on the 60 Hz C-BIOS machine on main plus
-lf-1526 alone as well (measured in a scratch worktree without this
-change).
+- `sel-scroll`, lf-1526's drag scroll, reported 11 dropped frames on
+  the 60 Hz C-BIOS machine, on main plus lf-1526 alone as well
+  (measured in a scratch worktree without this change). Probed frame
+  by frame, the drag itself was within budget: the eleven drops were
+  the eleven letters of HELLO WORLD typed before it. A typed key's
+  frame measured 16.1 ms there, over the 16.7 ms frame once the BIOS
+  handler is counted, 2.0 ms of it the 282-byte AppSave in the
+  repaint's WndFlush (icons 1.6 ms, lattice 0.9, frame 0.9, text 4.8,
+  blit 1.6). Every reader of a slot's state without a select
+  (ClkService, SetActivate, the hit test) flushes first and WndSelect
+  flushes at a switch, so the repaint now writes the window record
+  only (`WndFlushRec`): the typed key frame is 14.2 ms at 60 Hz and
+  `sel-scroll` reports 0 dropped on both machines.
 
 Measured against the merged base (main `0ed9256` with `91a76a2`,
-17,678 / 18,967 ROM bytes, 3,598 / 6,330 RAM): normal ROM **18,088
-bytes (+410)**, TEST **19,377 (+410)**; static RAM **+226 bytes**
+17,678 / 18,967 ROM bytes, 3,598 / 6,330 RAM): normal ROM **18,099
+bytes (+421)**, TEST **19,388 (+421)**; static RAM **+226 bytes**
 (ClipBuf 224, ClipLen, ClipIx), to **3,824** normal and **6,556** TEST;
 heap **8,464 / 3,079** bytes without / with the disk ROM (TEST **5,732
 / 347**). No heap allocation; the KEYS window's buffer is 27 by 16
-while open. Padded ROM crc32: normal **b9c82371**, TEST **38926789**.
+while open. Padded ROM crc32: normal **f670abfa**, TEST **246ad5cf**.
 
 Focused verification (the full `test-all.sh` is the pipeline's):
 
 | Configuration | Groups | Assertions |
 |---|---|---|
-| C-BIOS_MSX1_EU, 50 Hz | `--clipboard`, `--arrange`, `--sound-only`, `--resize-scroll`, `--saveas`, `--print`, `--desktop`, `--browse`, `--note-load`, `--settings`, `--dialogs`, `--delete`, `--open-ui`, `--note-width`, `--note-selection`, boot/mouse/keys/menus | 16, 106, 11, 20, 21, 18, 17, 23, 44, 153, 30, 11, 4, 16, 17, 35 |
-| C-BIOS_MSX1_JP, 60 Hz | `--clipboard`, `--arrange`, `--resize-scroll`, `--saveas`, `--print`, `--note-selection` | 16, 106, 20, 21, 18, 16 of 17 (`sel-scroll`) |
-| Roms_MSX1 | `--clipboard`, `--tape`, `--arrange` | 16, 13, 106 |
-| Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--desktop`, `--note-width`, `--saveas`, `--print`, `--delete`, `--open-ui` | 168, 16, 55, 18, 16, 21, 17, 11, 4 |
-| Roms_MSX2 | `--clipboard`, `--arrange` | 16, 106 |
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--arrange`, `--clipboard`, `--settings`, `--dialogs`, `--commander`, `--note-load`, `--sound-only`, `--resize-scroll`, `--open-ui`, `--delete`, `--note-width`, `--saveas`, `--print`, `--desktop`, boot/mouse/keys/menus | 17, 106, 16, 153, 30, 38, 44, 11, 20, 4, 11, 16, 21, 18, 17, 35 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-selection`, `--arrange`, `--resize-scroll`, `--clipboard`, `--settings`, `--dialogs`, `--saveas`, `--print`, `--desktop`, `--browse` | 17, 106, 20, 16, 153, 30, 21, 18, 17, 23 |
+| Roms_MSX1 | `--tape`, `--arrange` | 13, 106 |
+| Roms_MSX1 + Roms_Disk | `--settings`, `--commander`, `--clipboard`, `--desktop`, `--saveas` | 168, 55, 16, 18, 21 |
+| Roms_MSX2 | `--arrange`, `--clipboard` | 106, 16 |
