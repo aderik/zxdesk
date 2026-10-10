@@ -22,7 +22,7 @@ TestRun:
 
 ; Pure buffering contract, no cassette BIOS needed on C-BIOS. The
 ; physical open/close path is exercised by note-tape on real ROMs.
-TtResults       equ     CmdBuf+181
+TtResults       equ     CmdBuf+200      ; after the 43 bytes of TsetApplied
 TestTapeBuffer:
                 ld      hl,NoteBuf
                 ld      b,0
@@ -94,7 +94,8 @@ TtRecord:
 TtName:         defb    "BUFFER",0
 
 ; Settings round trip, rejected headers and payload clamping. Each
-; snapshot is carry (0/1) followed by the eight record bytes.
+; snapshot is carry (0/1) followed by the eight record bytes before
+; the desktop icons; the icons' round trip is a normal-build subject.
 ; Reuse unused tail of the commander scratch buffer in the TEST ROM.
 TsetResults     equ     CmdBuf+120
 TsetApplied     equ     CmdBuf+156
@@ -169,6 +170,12 @@ TsetClear:
                 ld      (SetSound),a
                 ld      (SetKeyPtr),a
                 ld      (SetLattice),a
+                ld      hl,DskTab               ; and every icon byte: present
+                ld      b,DSKTABSZ              ; becomes 1, x and y are clamped
+TsetDesk:                                       ; to the desktop
+                ld      (hl),a
+                inc     hl
+                djnz    TsetDesk
                 call    SetApply
                 ld      hl,SetRec
                 ld      de,TsetApplied+17
@@ -189,7 +196,7 @@ TsetSnapshot:
                 ld      (de),a
                 inc     de
                 ld      hl,SetRec
-                ld      bc,SETSIZE
+                ld      bc,SETHDR
                 ldir
                 ret
 
@@ -200,12 +207,13 @@ TsetSnapshot:
 TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
-                ; build includes the tape buffer as well as the test records.
+                ; build includes the tape buffer as well as the test records,
+                ; and the desktop icons took the middle block from 200 to 160.
                 ld      bc,256
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,200
+                ld      bc,160
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
@@ -222,7 +230,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,199
+                ld      bc,159
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree

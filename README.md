@@ -142,8 +142,10 @@ modifier. GRAPH+letter decodes to a code from $81 up that no text table
 produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
-K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS and R is PRINT. D (desktop shortcuts) waits for that feature.
-HELP > KEYS opens the list, with the calendar's keys, as a window.
+K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
+window that says which icons are on the desktop.
+HELP > KEYS opens the list, with the calendar's keys, as a window;
+at 21 rows it opens at row 2, the lowest it fits.
 333 ROM bytes, no RAM.
 
 | subject | asserts |
@@ -151,7 +153,7 @@ HELP > KEYS opens the list, with the calendar's keys, as a window.
 | sc-next | GRAPH+L, GRAPH+K, GRAPH+X: two windows, the calendar back in front, z (0, 1) |
 | sc-close | then GRAPH+W: the clock alone, nothing echoed on the status row |
 | sc-repeat | GRAPH+N held 60 frames opens one notepad (4 without the repeat guard) |
-| keys-win | HELP > KEYS: the name table equals the compositor's list window at (16, 3), crc32 8dba7685 |
+| keys-win | HELP > KEYS: the name table equals the compositor's list window at (16, 2) |
 
 Applications (phase 4 so far: `note.inc`, `clock.inc`):
 
@@ -243,18 +245,23 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The eight bytes are `4D 04 rr yy bb ss kk ll`: MSX
+`SetLoad` then `SetApply`. The record is 26 bytes, `4D 05 rr yy bb ss kk ll`
+followed by the six desktop icons at three bytes each: MSX
 magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
-`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), and lattice (0 NONE, 1 DOTS,
-2 GRID).
+`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), lattice (0 NONE, 1 DOTS,
+2 GRID), then for each icon present (0/1), cell column and cell row
+(see "Desktop shortcuts").
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
-inversion 0, sound 1, key pointer 1, lattice 1 and the detected boot backend. Missing
+inversion 0, sound 1, key pointer 1, lattice 1, the detected boot backend
+and the six icons down the left. Missing
 files, I/O failures, incorrect magic/version and incorrect lengths give defaults. Version 1
 five-byte records migrate with sound and key pointer ON; version 2 six-byte
 records retain sound and migrate with key pointer ON; version 3 seven-byte
 records retain both fields and migrate with lattice
-DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 requires
-eight bytes.
+DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 is the
+eight-byte record without the icons; versions 1 to 4 all load with the
+default icons. Version 5 requires 26 bytes; a present byte other than 0
+becomes 1 and a position is clamped so the whole slot is on the desktop.
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -430,6 +437,17 @@ The flush of the resulting rows lands in the next frame: OUTI, NOP,
 JP NZ at 30 cycles a cell, 16 rows about 5.6 ms. `drag-frames` asserts
 zero dropped frames on both machines, so this is a guarded number.
 
+With the desktop icons (lf-1527) the same scenario was measured again
+on the 60 Hz machine, breakpoints at the loop's HALT and the
+instruction after it: the calendar open had grown to 15.9 ms before
+the icons and went to 18.2 ms with the first icon painter, one frame
+dropped. The painter was rewritten (see "Desktop shortcuts") and the
+simple openers now go through `WndOpenLater`, the split SETTINGS
+already used: the buffer is composed in the frame of the open and the
+desktop repaint and blit happen in the next. Longest iterations now:
+the repaint after ABOUT opens over the calendar 13.4 ms, the raise
+13.1 ms, the calendar open 11.7 ms and its repaint 11.6 ms; 0 dropped.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
@@ -488,8 +506,9 @@ Getting there took three measurements:
 
 The stack and the heap's end come from HIMEM at run time, STACKRES
 ($380) apart, not from an equate. The TEST build's records leave
-986 usable bytes of heap under a disk ROM, so its heap subject allocates
-256, 200 and 128 bytes (reduced for the tape buffer).
+593 bytes of heap under a disk ROM, so its heap subject allocates
+256, 160 and 128 bytes (reduced first for the tape buffer, then for the
+desktop icons).
 
 Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
 the image with the document's bytes; `store-disk` finds SETTINGS (five
@@ -585,7 +604,14 @@ so the font is loaded twice: at $20-$7F black on white and at $A0-$FF
 white on black, the same bytes with the colours swapped, in all three
 thirds. Inverted text is a code with bit 7 set, anywhere on the
 screen; the status band is inverted spaces and a front window's title
-row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
+row too. Codes $80-$87 are the desktop and frame tiles: lattice, rule,
+the window's left and right edges, bottom, both bottom corners and the
+close box. The desktop icons take $88-$97, four tiles a shape for the
+four shapes (document, clock, calendar, drawer), copied by LoadTiles
+right after the frame tiles and given the text colours by the colour
+table's fill; they are the first free codes after the chrome. $98-$9F
+and $00-$1F are still free (counted: nothing paints a code below $20,
+and the inverted bank starts at $A0). Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
 
 The stack is set from HIMEM at startup ($F380 without a disk ROM): the BIOS called the cartridge on
 its own stack, and C-BIOS and a real BIOS need not agree where that
@@ -1012,3 +1038,102 @@ The print-note and print-cmd byte stream `HI\r\nTHERE\r\n\f` has CRC32
 stream has CRC32 **bddae9d6**, and HELP > KEYS **f3f4bf42**.
 The focused machine results are recorded in the commit message. The full
 suite is left to the pipeline as required by this implementation run.
+
+## Desktop shortcuts (lf-1527)
+
+`desktop.inc` and `dsksetup.inc`, the ZX's icons on the cell grid. An
+icon is a block of two by two tiles with its label on the row below,
+one bit, no bevel and no shadow. The label is centred under the icon
+and may be wider than it (COMMANDER is nine cells against the icon's
+two), so the slot, icon and label together, is what the hit test and
+the repaint go by. Six icons: NOTEPAD, CLOCK, CALENDAR, COMMANDER and
+SETTINGS down the left at column 1, rows 2, 6, 10, 14 and 18, and
+ABOUT beside SETTINGS at (10, 18), as SETUP sat beside ABOUT on the ZX.
+The four shapes are the ZX's bitmaps (document, clock, calendar,
+drawer) as tiles $88-$97; SETTINGS and ABOUT share the document, as
+they did there.
+
+A press and release without movement opens; a press and a move of
+three pixels or more drags the icon, in whole cells, keeping the cell
+of the press within the slot, clamped so the whole slot stays on the
+desktop. The release after a drag opens nothing. An entry carries a
+routine (`NoteMenuNew`, `ClockOpen`, `WndOpenCal`, `CommanderOpen`,
+`SetOpen`, `AboutOpen`), not an application index. Icons lie under the
+windows: `DrawDesktopRows` paints the lattice for the pending row range
+and then every present icon's rows within that range, and the windows
+are blitted on top as before. A row outside the range is not touched,
+so a window dragged over an icon and away leaves the name table as it
+was, which `dsk-under` asserts byte for byte.
+
+**VIEW > DESKTOP** and **GRAPH+D** open the DESKTOP window: six rows of
+label and [ON  ]/[OFF ], then [SAVE] and [DONE], with the SETTINGS
+keys (TAB and SHIFT+arrows move the focus, ENTER, SPACE, LEFT and
+RIGHT act, ESC closes) and a click on a button. A toggle repaints the
+icon's rows under the window at once; SAVE writes the SETTINGS record.
+HELP > KEYS lists D DESKTOP.
+
+Which icons are present and where they sit are the three bytes an
+entry that follow the eight settings bytes in the **version 5**
+SETTINGS record, so they are saved and loaded with the rest and a
+desktop a person has arranged comes back. Version 1 to 4 files load
+with the default icons; a version 5 record is clamped on load (present
+to 0 or 1, the position so the slot fits). The label, the action and
+the tile are constants in ROM; the ZX's pack and unpack went with the
+split.
+
+`./test.sh --desktop` (in the default suite):
+
+| subject | asserts |
+|---|---|
+| dsk-init | a fresh boot: name table = the compositor with six icons, crc32 169916c1 on C-BIOS; the table in RAM = the defaults; the 128 tile bytes at $0440 in all three thirds; 0 dropped |
+| dsk-open, dsk-open-label | a press and release on CLOCK's tile, and on its label: the clock window in front, crc32 7212e959 |
+| dsk-open-drag | pressed and dragged one cell: no window, CLOCK at (2, 6) |
+| dsk-drag, dsk-drag-frames | dragged five cells right: table (1, 6, 6), name table = the compositor with the icon there and lattice in the old slot, crc32 448ef56f; 0 dropped |
+| dsk-drag-clamp | dragged off the bottom left corner: (0, 20) |
+| dsk-over, dsk-under, dsk-under-frames | ABOUT dragged to (0, 10) over CALENDAR and COMMANDER (crc32 36155273) and back to (8, 12): name table identical to before the drag, 0ca883d3; 0 dropped |
+| dsk-panel, dsk-panel-key | VIEW > DESKTOP and GRAPH+D: the window at (10, 5), crc32 f832251e |
+| dsk-toggle-mouse, dsk-toggle-key | CLOCK off by a click and by TAB, ENTER: the table and the screen without it, 6bb5dd27 |
+| dsk-setup | then SAVE: the 26-byte record on the device, `4D 05 01 00 bb 01 01 01` and the icons, CLOCK's present byte 0 |
+| dsk-reload | the table reset to the defaults and the header cleared, then the real SetLoad, SetApply and a repaint in place of the next key: CLOCK stays off, from the file |
+| dsk-reload-v4 | the same with an eight-byte version 4 file: the six default icons again |
+| dsk-boot-saved, dsk-boot-v4 | on the disk machine, real reboots on a seeded version 5 and a version 4 SETTINGS |
+
+The settings subjects carry the icons too: every SAVE compares all 26
+bytes, the seeded boots include version 5 records with icons moved,
+off, all zero and all 255 (clamped to (1, 30, 20)), and short and long
+ones, each with the name table it should give; the TEST build clamps
+255 in every icon byte through `SetApply`. The window subjects compose
+over the icon desktop, so every window test now also checks that the
+icons stay under the windows.
+
+Measured against `8118c5d`: the normal ROM goes from 15,870 to
+**17,159 bytes (+1,289)**; page 1 was 514 bytes from full, so the code
+now runs 775 bytes into page 2, which `Start` maps before anything
+there is reached. The TEST ROM goes from 17,147 to **18,445 bytes**.
+Static RAM grows **35 bytes** (18 for the table inside the SETTINGS
+record, 17 of slot, drag and focus scratch), to **3,578 bytes**
+(TEST **6,310**); the heap is **8,710 bytes** without a disk ROM and
+**3,325** with one (TEST **5,978 / 593**). The TEST heap subject's
+middle block went from 200 to 160 bytes to fit. The DESKTOP window
+uses **199 heap bytes** while open (190 cells, 1 byte of focus, two
+headers); HELP > KEYS grows by 15 for its extra row. Dragging an icon
+allocates nothing.
+
+The icon painter, measured with breakpoints at its entry and return
+on the 60 Hz machine for the calendar open (NOTEPAD's label row, CLOCK
+and CALENDAR in range): 2.2 ms as a straight port, 1.5 ms after the
+rewrite that walks the tables with pointers, rejects an icon on two
+compares, takes one shadow address a slot and copies the label with
+LDIR. The lattice fill for the same ten rows is 1.0 ms. Both drag
+subjects report **Dropped = 0** at 50 and at 60 Hz.
+
+Focused verification (the full `test-all.sh` is the pipeline's):
+
+| Configuration | Groups | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--desktop`, `--arrange`, `--settings`, `--dialogs`, `--print`, `--saveas`, `--sound-only` | 17, 106, 153, 30, 18, 21, 11 |
+| C-BIOS_MSX1_JP, 60 Hz | `--desktop`, `--arrange` | 17, 106 |
+
+Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2 were not available
+in this environment; the disk-only subjects (`dsk-boot-*`, the seeded
+version 5 boots) run there in the pipeline.

@@ -965,7 +965,8 @@ DdTile:
                 inc     b
                 jr      DdLoop
 DdDone:
-                ret
+                jp      DskPaintRows            ; the icons' rows in the range,
+                                                ; under the windows that follow
 
 ; The whole desktop, for InitScreen.
 DrawDesktop:
@@ -1108,13 +1109,42 @@ WndInit:
                 ld      (WinApp),hl
                 ret
 
+; A = an application index: open it, compose its buffer now, and leave
+; the desktop and the blit to the next frame, as a resize does. Doing
+; both in one frame misses NTSC frames: SETTINGS needed this first,
+; and the calendar open, measured at 15.9 ms on the 60 Hz machine
+; before the desktop icons, went to 18.2 ms with them; the about
+; window opened over the calendar measured 15.5 ms. Every opener
+; that changes nothing after the open comes through here; the
+; commander does not, because the picker sets its mode after the
+; buffer would have been composed.
+WndOpenLater:
+                call    WndOpen
+                ret     c
+                call    WinDraw
+                ld      a,(WndCur)
+                ld      b,a
+                inc     b
+                ld      a,$80
+WolBit:
+                rlca
+                djnz    WolBit
+                cpl
+                ld      hl,WndDirty
+                and     (hl)
+                ld      (hl),a                  ; the new buffer is composed
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; the open succeeded
+                ret
+
 ; The menu actions that open windows.
 WndOpenCal:
                 ld      a,APP_CAL
-                jp      WndOpen
+                jp      WndOpenLater
 AboutOpen:
                 ld      a,APP_ABOUT
-                jp      WndOpen
+                jp      WndOpenLater
 
 ; ------------------------------------------------------------
 ;  The about window: no state, three lines of text.

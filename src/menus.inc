@@ -339,6 +339,8 @@ MnActions:
                 defw    WndCascade
                 defb    3,3
                 defw    WndTile
+                defb    3,4
+                defw    DskSetOpen              ; VIEW, DESKTOP
                 defb    3,5
                 defw    CommanderOpen
                 defb    4,0
