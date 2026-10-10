@@ -214,7 +214,6 @@ _ram            defl    _ram+size
                 var     RepaintDue, 1
                 var     RowLo, 1        ; the pending repaint's rows
                 var     RowHi, 1
-                var     RowsDesk, 1     ; and whether the desktop under them changed
                 var     WndDirty, 1     ; a bit per slot whose buffer is stale
                 var     WndCapDirty, 1  ; and per slot whose title row is
                 var     SpSave, 2       ; while the stack fills the desktop
@@ -278,40 +277,6 @@ NOTESTSZ        equ     _ram-NoteState
                 var     NoteGot, 2
                 var     NoteResult, 1
                 var     NotePrevBackend, 1
-                ; word wrap: the row table, the layout job that fills it
-                ; (resumable, a budget a frame), the painter's cursor
-                var     NoteFollow, 1   ; a key moved the caret: the draw follows it
-                var     NoteLayOK, 1    ; the table describes NoteLayWnd at NwCacheW
-                var     NoteLayWnd, 1
-                var     NwCacheW, 1
-                var     NwBusy, 1       ; a layout job is under way
-                var     NwJobEnd, 1     ; the first chunk it leaves alone
-                var     NwTabI, 1       ; the entry it writes next
-                var     NwTabN, 1       ; entries in the table
-                var     NwTailN, 1      ; entries parked at the table's end
-                var     NwWork, 1       ; the frame's budget used
-                var     NwWidth, 1      ; W, the row width in cells
-                var     NwLine, 1       ; the line's first chunk
-                var     NwLast, 1       ; and its last
-                var     NwN, 1          ; its length, trailing spaces trimmed
-                var     NwPos, 1        ; the row's start within the line
-                var     NwSegP, 2       ; the row's first character
-                var     NwScanP, 2      ; the break scan's pointer
-                var     NwScanB, 1      ; and how many characters it covers
-                var     NwSpaceP, 2     ; the last space seen in the scan
-                var     NwSpaceB, 1     ; 0: none
-                var     NwInLine, 1     ; the job is part way through a line
-                var     NwCurLine, 1    ; the caret's line
-                var     NwCaretCol, 1   ; the caret's screen column
-                var     NwPRow, 1       ; the table walk: row, chunk, offset,
-                var     NwPChunk, 1     ; the line's first chunk, the entry
-                var     NwPOff, 1
-                var     NwPFirst, 1
-                var     NwPEntry, 1
-                var     NwPLeft, 1
-                var     NwPCell, 2      ; the painter's buffer cell
-                var     NwDerived, 1    ; the draw derived the caret for the scroll bar
-                var     NwTab, NWTABSZ  ; a byte a screen row
                 ; Commander: cached visible names belong to each instance.
                 var     CmdNumber, 6
                 var     CmdState, 0
@@ -367,7 +332,6 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetKeyPtr, 1
                 var     SetLattice, 1
                 var     DskTab, 18      ; DSKTABSZ: the desktop icons, present, x, y each
-                var     SetWrap, 1      ; notepad word wrap (0/1), version 6
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1

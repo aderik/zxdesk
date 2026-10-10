@@ -270,8 +270,7 @@ HdlKey:
                 ret     z                       ; the key meant nothing to it
                 ld      a,(WndCur)              ; recomposed at the end of the
                 call    WndTouch                ; frame, with whatever else
-                jp      RowsLiveText            ; changed; the desktop under
-                                                ; it did not
+                jp      RowsAddLive             ; changed
 HkEcho:
                 ld      a,(StatCol)
                 ld      c,a

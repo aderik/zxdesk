@@ -1,16 +1,12 @@
-; MSX format v6: magic 'M', version, ramp (0..2), mouse Y inverted
+; MSX format v5: magic 'M', version, ramp (0..2), mouse Y inverted
 ; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
 ; key pointer (0/1), lattice (0..2), then the six desktop icons at
-; three bytes each: present (0/1), cell column, cell row, then the
-; notepad's word wrap (0/1). Separate magic from the ZX record.
-; Version 5 ends at the icons, version 4 before them; both load
-; with WRAP on.
+; three bytes each: present (0/1), cell column, cell row. Separate
+; magic from the ZX record. Version 4 is the same without the icons.
 SETMAGIC        equ     $4D
-SETVERSION      equ     6
+SETVERSION      equ     5
 SETHDR          equ     8               ; the record before the icons
-SETSIZE         equ     SETHDR+DSKTABSZ+1
-SETH            equ     11              ; the window: nine rows of buttons
-SETROWS         equ     9
+SETSIZE         equ     SETHDR+DSKTABSZ
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -28,7 +24,6 @@ DskDefault:                                     ; continues the record: DskInit
                 defb    1, 1, 14
                 defb    1, 1, 18
                 defb    1, 10, 18
-                defb    1                       ; WRAP on
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -87,8 +82,6 @@ SetLoad:
                 jr      z,SetLoadV3
                 cp      4
                 jr      z,SetLoadV4
-                cp      5
-                jr      z,SetLoadV5
                 cp      SETVERSION
                 jr      nz,SetLoadBad
                 ld      a,c
@@ -96,11 +89,6 @@ SetLoad:
                 jr      nz,SetLoadBad
                 or      a
                 jp      SetRestore
-SetLoadV5:
-                ld      a,c
-                cp      SETSIZE-1               ; the icons, no wrap byte
-                jr      nz,SetLoadBad
-                jr      SetLoadWrap
 SetLoadV1:
                 ld      a,c
                 cp      5
@@ -130,10 +118,7 @@ SetLoadV4:
                 jr      nz,SetLoadBad
 SetLoadDesk:
                 call    DskInit                 ; the icons where a fresh
-SetLoadWrap:                                    ; machine has them
-                ld      a,1
-                ld      (SetWrap),a             ; and the notepad wrapping
-                ld      a,SETVERSION
+                ld      a,SETVERSION            ; machine has them
                 ld      (SetRec+1),a
                 or      a
                 jp      SetRestore
@@ -182,12 +167,6 @@ SetSaveBad:
 SetApply:
                 call    SetApplyLattice
                 call    DskApply
-                ld      a,(SetWrap)
-                cp      2
-                jr      c,SetWrapOK
-                ld      a,1
-                ld      (SetWrap),a
-SetWrapOK:
                 ld      a,(SetKeyPtr)
                 cp      2
                 jr      c,SetKeyPtrOK
@@ -327,7 +306,7 @@ SetInit:
                 ld      (SetRow),a
                 ret
 
-; Nine rows: cyclic values, SAVE, DONE. Focus is per window.
+; Eight rows: cyclic values, SAVE, DONE. Focus is per window.
 SetKey:
                 cp      KEY_ESC
                 jp      z,SetDone
@@ -352,7 +331,7 @@ SetKey:
 SetNext:
                 ld      a,(SetRow)
                 inc     a
-                cp      SETROWS
+                cp      8
                 jp      c,SetFocus
                 xor     a
                 jp      SetFocus
@@ -360,7 +339,7 @@ SetPrev:
                 ld      a,(SetRow)
                 sub     1
                 jp      nc,SetFocus
-                ld      a,SETROWS-1
+                ld      a,7
 SetFocus:
                 ld      (SetRow),a
 SetChanged:
@@ -368,12 +347,10 @@ SetChanged:
                 ret
 SetChange:
                 ld      a,(SetRow)
-                cp      8
-                jp      z,SetDone
                 cp      7
-                jp      z,SetStore
+                jp      z,SetDone
                 cp      6
-                jp      z,SetCycleWrap
+                jp      z,SetStore
                 cp      5
                 jp      z,SetCycleLattice
                 cp      4
@@ -406,16 +383,6 @@ SetCycleKeyPtr:
                 xor     1
                 ld      (SetKeyPtr),a
                 jp      SetActivate
-; Every open notepad lays its text out again: the setting is global,
-; the layout is per window.
-SetCycleWrap:
-                ld      a,(SetWrap)
-                xor     1
-                ld      (SetWrap),a
-                call    WndFlush
-                ld      hl,AppNote
-                call    SetTouchApp
-                jp      SetActivate
 SetCycleSound:
                 ld      a,(SetSound)
                 xor     1
@@ -442,18 +409,9 @@ SetActivate:
                 ; Values are global, but each window has its own buffer
                 ; and focus. Mark every SETTINGS slot without selecting it.
                 call    WndFlush
-                ld      hl,AppSettings
-                call    SetTouchApp
-                jp      SetChanged
-
-; HL = an application descriptor: every window of it is recomposed
-; and its rows repainted. The live record is flushed by the caller.
-SetTouchApp:
-                push    hl
-                pop     ix
                 ld      a,(WndCount)
                 or      a
-                ret     z
+                jp      z,SetChanged
                 ld      b,a
                 ld      c,0
 SetTouchSlot:
@@ -470,8 +428,7 @@ SetTouchSlot:
                 ld      e,(hl)
                 inc     hl
                 ld      d,(hl)
-                push    ix
-                pop     hl
+                ld      hl,AppSettings
                 or      a
                 sbc     hl,de
                 jr      nz,SetTouchNext
@@ -483,7 +440,7 @@ SetTouchNext:
                 pop     bc
                 inc     c
                 djnz    SetTouchSlot
-                ret
+                jp      SetChanged
 SetStore:
                 call    SetSave
                 jp      nc,SetChanged
@@ -498,7 +455,7 @@ SetDone:
                 ret
 
 ; Called after focusing a body hit. Derive coordinates again because
-; WndFocusTo uses BC. Only the nine visible button rectangles activate.
+; WndFocusTo uses BC. Only the eight visible button rectangles activate.
 SetPress:
                 ld      a,(PtrX)
                 srl     a
@@ -527,7 +484,7 @@ SetPress:
                 cp      d
                 ret     nc
                 dec     a
-                cp      SETROWS
+                cp      8
                 ret     nc
                 ld      (SetRow),a
                 ld      b,1
@@ -558,9 +515,6 @@ SetDraw:
                 call    WinPrint
                 ld      hl,SetLatticeLabel
                 ld      bc,$0601
-                call    WinPrint
-                ld      hl,SetWrapLabel
-                ld      bc,$0701
                 call    WinPrint
                 ld      a,(SetSpeed)
                 ld      hl,SetSlow
@@ -619,19 +573,11 @@ SetDrawKeyPtr:
 SetDrawLattice:
                 ld      b,6
                 call    SetButton
-                ld      a,(SetWrap)
-                ld      hl,SetOff
-                or      a
-                jr      z,SetDrawWrap
-                ld      hl,SetOn
-SetDrawWrap:
+                ld      hl,SetSaveLabel
                 ld      b,7
                 call    SetButton
-                ld      hl,SetSaveLabel
-                ld      b,8
-                call    SetButton
                 ld      hl,SetDoneLabel
-                ld      b,9
+                ld      b,8
                 call    SetButton
                 xor     a
                 ld      (PrintInv),a
@@ -667,7 +613,6 @@ SetSoundLabel:  defb    "SOUND",0
 SetKeyPtrLabel: defb    "KEY PTR",0
 
 SetLatticeLabel: defb   "LATTICE",0
-SetWrapLabel:   defb    "WRAP",0
 SetEmpty:       defb    "[NONE]",0
 SetDots:        defb    "[DOTS]",0
 SetDense:       defb    "[GRID]",0

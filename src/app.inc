@@ -75,13 +75,13 @@ AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
 
 AppSettings:    defw    1, SetRow, SetInit, SetDraw
                 defw    SetKey, SetTitle
-                defb    6, 6, 24, SETH
+                defb    6, 6, 24, 10
                 defw    0, 0, 0
                 defb    0
                 ; The shortcut list: nothing to type at and nothing to lose.
 AppKeys:        defw    0, 0, 0, KeysDraw
                 defw    0, TxtKeysTitle
-                defb    16, 1, KEYSW, KEYSH     ; 22 rows: row 1 is as low as it goes
+                defb    16, 2, KEYSW, KEYSH     ; 21 rows: row 2 is as low as it goes
                 defw    0, 0, 0
                 defb    0
                 ; The desktop's shortcuts as toggles: a byte of focus a window.

@@ -280,9 +280,7 @@ def check(fails, name, ok, detail):
 DESK_ICONS = [(b"NOTEPAD", 0), (b"CLOCK", 1), (b"CALENDAR", 2), (b"COMMANDER", 3), (b"SETTINGS", 0), (b"ABOUT", 0)]
 DESK_DEFAULT = [(1, 1, 2), (1, 1, 6), (1, 1, 10), (1, 1, 14), (1, 1, 18), (1, 10, 18)]
 T_ICON = 0x88
-SET_VERSION = 6
-SET_SIZE = 27           # SETSIZE: the header, the icons, WRAP
-SET_H = 11              # the SETTINGS window: nine rows of buttons
+SET_VERSION = 5
 
 
 def desk_table(**changes):
@@ -295,9 +293,9 @@ def desk_bytes(table=None):
     return b"".join(bytes(e) for e in (table or DESK_DEFAULT))
 
 
-def set_record(speed, inv, device, sound=1, keyptr=1, lattice=1, table=None, wrap=1):
-    """A version 6 SETTINGS record: the eight header bytes, the icons, WRAP."""
-    return bytes((0x4D, SET_VERSION, speed, inv, device, sound, keyptr, lattice)) + desk_bytes(table) + bytes((wrap,))
+def set_record(speed, inv, device, sound=1, keyptr=1, lattice=1, table=None):
+    """A version 5 SETTINGS record: the eight header bytes and the icons."""
+    return bytes((0x4D, SET_VERSION, speed, inv, device, sound, keyptr, lattice)) + desk_bytes(table)
 
 
 def paint_icons(nt, table=None):
@@ -494,9 +492,9 @@ def test_build_checks(tsyms, fails):
     check(fails, "settings-apply", r.peek("AccelPtr", 2) == tsyms["AccelTabs"] + 10,
           "fast ramp selected")
     # every icon byte 255: present clamps to 1, x to 30, y to the lowest row a slot fits
-    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default + bytes((1, 30, 20)) * 6 + b"\1"
-    check(fails, "settings-input", r.bytes("TsetApplied", 44) == applied,
-          "three ramps, Y negation on/off, invalid payload, icons and WRAP clamped: " + r.bytes("TsetApplied", 44).hex())
+    applied = bytes((1, 1, 2, 2, 3, 1, 2, 3, 5, 7, 2, 3, 5, 7, 11, 13, 243)) + default + bytes((1, 30, 20)) * 6
+    check(fails, "settings-input", r.bytes("TsetApplied", 43) == applied,
+          "three ramps, Y negation on/off, invalid payload and icons clamped: " + r.bytes("TsetApplied", 43).hex())
     check(fails, "settings-backend", r.peek("StBackend") == 1,
           "save restores selected RAM backend, including on disk")
     parsed = r.bytes("CmdBuf", 120)
@@ -512,7 +510,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 256, 64, 48
+    A, B, C = 256, 160, 128
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -709,12 +707,12 @@ def cal_win(x, y, sel=1, year=1980, month=1):
 
 KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE", b"X NEXT WINDOW", b"C CASCADE",
              b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER", b"G SETTINGS", b"I ABOUT", b"D DESKTOP",
-             b"HOME ROW START", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
-KEYS_Y = 1      # 22 rows: the lowest row the list fits at
+             b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+KEYS_Y = 2      # 21 rows: the lowest row the list fits at
 
 
 def keys_win(x, y):
-    return (x, y, 16, 22, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
+    return (x, y, 15, 21, b"KEYS", [(1 + i, 1, t, False) for i, t in enumerate(KEYS_TEXT)])
 
 
 def about_win(x, y):
@@ -1517,28 +1515,26 @@ def settings_checks(syms, fails):
         return [(3, f"key_down {row} {mask}{extra}"), (3, f"key_up {row} {mask}{release}")]
 
     opened = press(20, 4) + press(30, 20)
-    def lines_for(speed, inv, device, focus, sound=1, keyptr=1, lattice=1, wrap=1):
+    def lines_for(speed, inv, device, focus, sound=1, keyptr=1, lattice=1):
         labels = [b"[SLOW]", b"[MED ]", b"[FAST]"]
         buttons = [labels[speed], b"[ON  ]" if inv else b"[OFF ]",
                    b"[DISK]" if device == 5 else b"[RAM ]",
                    b"[ON  ]" if sound else b"[OFF ]", b"[ON  ]" if keyptr else b"[OFF ]",
-                   (b"[NONE]", b"[DOTS]", b"[GRID]")[lattice], b"[ON  ]" if wrap else b"[OFF ]",
-                   b"[SAVE]", b"[DONE]"]
+                   (b"[NONE]", b"[DOTS]", b"[GRID]")[lattice], b"[SAVE]", b"[DONE]"]
         lines = [(i + 1, 1, label, False) for i, label in enumerate(
-            (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR", b"LATTICE", b"WRAP"))]
+            (b"POINTER RAMP", b"MOUSE Y INVERT", b"BACKEND", b"SOUND", b"KEY PTR", b"LATTICE"))]
         lines += [(i + 1, 16, label, i == focus) for i, label in enumerate(buttons)]
         return lines
 
-    def verify(steps, name, speed, inv, device, focus, closed=False, sound=1, keyptr=1, lattice=1, wrap=1):
+    def verify(steps, name, speed, inv, device, focus, closed=False, sound=1, keyptr=1, lattice=1):
         r = Run(syms, steps + [(10, "")], name)
-        lines = lines_for(speed, inv, device, focus, sound, keyptr, lattice, wrap)
-        want = compose(expected_nt(), [] if closed else [(6, 6, 24, SET_H, b"SETTINGS", lines)])
+        lines = lines_for(speed, inv, device, focus, sound, keyptr, lattice)
+        want = compose(expected_nt(), [] if closed else [(6, 6, 24, 10, b"SETTINGS", lines)])
         pattern = (bytes(8), bytes((0xaa, 0x55) * 4), bytes((0xff, 0x55) * 4))[lattice]
         tiles = pattern + b"\xff" + pattern[1:]
         check(fails, name, zlib.crc32(r.nt()) == zlib.crc32(want)
               and all(r.vram[bank+0x400:bank+0x410] == tiles for bank in (0, 0x800, 0x1000))
               and r.bytes("SetRec", 8) == bytes((0x4d, SET_VERSION, speed, inv, device, sound, keyptr, lattice))
-              and r.peek("SetWrap") == wrap
               and r.peek("StBackend") == device
               and r.peek("AccelPtr", 2) == syms["AccelTabs"] + speed * 5,
               f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; record {r.bytes('SetRec', 8).hex()}")
@@ -1558,7 +1554,7 @@ def settings_checks(syms, fails):
                 (5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
     steps = [(5, "plug joyporta mouse")] + opened
     speed, inv, device = 1, 0, backend
-    for n, row in enumerate((0, 0, 0, 1, 1, 2, 2, 7, 8)):
+    for n, row in enumerate((0, 0, 0, 1, 1, 2, 2, 6, 7)):
         steps += click(row)
         if row == 0:
             speed = (speed + 1) % 3
@@ -1566,7 +1562,7 @@ def settings_checks(syms, fails):
             inv ^= 1
         elif row == 2:
             device = 5 if EXT and device == 1 else 1
-        r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 8)
+        r = verify(steps, f"settings-click-{n}", speed, inv, device, row, row == 7)
     # Keyboard increment, wrap, decrement, focus in both directions, SAVE and DONE.
     steps = list(opened)
     cases = [(tap(7, 128), 2, 0, backend, 0),
@@ -1579,8 +1575,8 @@ def settings_checks(syms, fails):
              (tap(7, 128), 2, 0, 1 if EXT else backend, 2),
              (tap(8, 32, True), 2, 0, 1, 1),
              (tap(7, 128), 2, 1, 1, 1),
-             (tap(7, 8) * 6, 2, 1, 1, 7),
-             (tap(7, 128), 2, 1, 1, 7)]
+             (tap(7, 8) * 5, 2, 1, 1, 6),
+             (tap(7, 128), 2, 1, 1, 6)]
     for n, (keys, speed, inv, device, focus) in enumerate(cases):
         steps += keys
         r = verify(steps, f"settings-key-{n}", speed, inv, device, focus)
@@ -1606,22 +1602,22 @@ def settings_checks(syms, fails):
                 record = syms["WndTab"] + slot * syms["WNDRECSZ"]
                 buf = r.peek16_at(record + syms["WR_BUFP"]) - WORK
                 state = r.peek16_at(record + syms["WR_STATEP"]) - WORK
-                want = window_buffer(24, SET_H, b"SETTINGS", slot == 1, lines_for(*values, focus))
+                want = window_buffer(24, 10, b"SETTINGS", slot == 1, lines_for(*values, focus))
                 actual = r.ram[buf:buf + len(want)]
                 check(fails, name + f"-buffer-{slot}", actual == want and r.ram[state] == focus,
                       f"crc32 {zlib.crc32(actual):08x}, expected {zlib.crc32(want):08x}; focus {r.ram[state]}")
             remaining = two + tap(7, 4)  # ESC must expose the updated rear buffer.
             verify(remaining, name + "-close", *values, rear_focus)
-            remaining += tap(7, 8) * (7 - rear_focus) + tap(7, 128)
-            r = verify(remaining, name + "-save", *values, 7)
+            remaining += tap(7, 8) * (6 - rear_focus) + tap(7, 128)
+            r = verify(remaining, name + "-save", *values, 6)
             check(fails, name + "-file", file_bytes(r) == expected,
                   f"SAVE from the remaining window writes {expected.hex()}")
 
     # Change after saving, then DONE: the stored bytes must stay identical.
-    steps += tap(8, 32, True) * 6 + tap(7, 128)
+    steps += tap(8, 32, True) * 5 + tap(7, 128)
     verify(steps, "settings-unsaved", 2, 0, 1, 1)
-    steps += tap(7, 8) * 7 + tap(7, 128)
-    r = verify(steps, "settings-done", 2, 0, 1, 8, True)
+    steps += tap(7, 8) * 6 + tap(7, 128)
+    r = verify(steps, "settings-done", 2, 0, 1, 7, True)
     check(fails, "settings-done-file", file_bytes(r) == saved, "DONE preserves saved file")
     # Invoke real SetLoad/SetApply at the next SetKey call after clearing RAM.
     clear = "; ".join(f"debug write memory {syms['SetRec'] + i} 0" for i in range(8))
@@ -1633,21 +1629,21 @@ def settings_checks(syms, fails):
                                 f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 128)
     verify(steps, "settings-ui-reload", 2, 1, 1, 0)
     # SAVE with sound OFF, clear all eight bytes, then load through real storage.
-    off = opened + tap(7, 8) * 3 + tap(7, 128) + tap(7, 8) * 4 + tap(7, 128)
-    r = verify(off, "settings-sound-save", 1, 0, backend, 7, sound=0)
+    off = opened + tap(7, 8) * 3 + tap(7, 128) + tap(7, 8) * 3 + tap(7, 128)
+    r = verify(off, "settings-sound-save", 1, 0, backend, 6, sound=0)
     check(fails, "settings-sound-file", file_bytes(r) == set_record(1, 0, backend, sound=0),
           "SAVE persists SOUND OFF")
     off += [(5, clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                        f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")] + tap(7, 128)
-    verify(off, "settings-sound-reload", 1, 0, backend, 7, sound=0)
+    verify(off, "settings-sound-reload", 1, 0, backend, 6, sound=0)
     for control in ("mouse", "key"):
         toggle = click(4) if control == "mouse" else tap(7, 8) * 4 + tap(7, 128)
         base = [(5, "plug joyporta mouse")] + opened + toggle
         verify(base, "settings-keyptr-" + control, 1, 0, backend, 4, keyptr=0)
         again = click(4) if control == "mouse" else tap(8, 16, True)
         verify(base + again, "settings-keyptr-wrap-" + control, 1, 0, backend, 4)
-    off = opened + tap(7, 8) * 4 + tap(7, 128) + tap(7, 8) * 3 + tap(7, 128)
-    r = verify(off, "settings-keyptr-save", 1, 0, backend, 7, keyptr=0)
+    off = opened + tap(7, 8) * 4 + tap(7, 128) + tap(7, 8) * 2 + tap(7, 128)
+    r = verify(off, "settings-keyptr-save", 1, 0, backend, 6, keyptr=0)
     check(fails, "settings-keyptr-file", file_bytes(r) == set_record(1, 0, backend, keyptr=0),
           "SAVE persists KEY PTR OFF")
     reload = (clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
@@ -1663,43 +1659,43 @@ def settings_checks(syms, fails):
         if control == "key":
             verify(base + tap(8, 16, True) * 2, "lattice-key-left-wrap",
                    1, 0, backend, 5, lattice=2)
-    lattice_save = opened + tap(7, 8) * 5 + tap(7, 128) + tap(7, 8) * 2 + tap(7, 128)
-    r = verify(lattice_save, "lattice-save", 1, 0, backend, 7, lattice=2)
+    lattice_save = opened + tap(7, 8) * 5 + tap(7, 128) + tap(7, 8) + tap(7, 128)
+    r = verify(lattice_save, "lattice-save", 1, 0, backend, 6, lattice=2)
     check(fails, "lattice-file", file_bytes(r) == set_record(1, 0, backend, lattice=2),
           "SAVE persists GRID")
     verify(lattice_save + [(5, reload)] + tap(7, 128), "lattice-reload",
-           1, 0, backend, 7, lattice=2)
+           1, 0, backend, 6, lattice=2)
     if not EXT:
         legacy = bytes((0x4d, 3, 2, 1, 1, 0, 0))
         migrate = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 7; " + reload)
         r = verify(lattice_save + [(5, migrate)] + tap(7, 128), "lattice-v3-migrate",
-                   2, 1, 1, 7, sound=0, keyptr=0)
+                   2, 1, 1, 6, sound=0, keyptr=0)
         check(fails, "lattice-v3-carry", r.ram[scratch + 30 - WORK] & 1 == 0,
               "v3 retains fields, defaults lattice to DOTS, carry clear")
     for control in ("key", "mouse"):
         two = [(5, "plug joyporta mouse")] + opened + opened
         two += tap(7, 8) * 5 + tap(7, 128) if control == "key" else click(5, 8, 7)
         r = Run(syms, two + [(10, "")], "lattice-two-" + control)
-        windows = [(6, 6, 24, SET_H, b"SETTINGS", lines_for(1, 0, backend, 0, lattice=2)),
-                   (8, 7, 24, SET_H, b"SETTINGS", lines_for(1, 0, backend, 5, lattice=2))]
+        windows = [(6, 6, 24, 10, b"SETTINGS", lines_for(1, 0, backend, 0, lattice=2)),
+                   (8, 7, 24, 10, b"SETTINGS", lines_for(1, 0, backend, 5, lattice=2))]
         check(fails, "lattice-two-" + control, r.nt() == compose(expected_nt(), windows),
               f"both windows composed, crc32 {zlib.crc32(r.nt()):08x}")
         for slot, focus in ((0, 0), (1, 5)):
             record = syms["WndTab"] + slot * syms["WNDRECSZ"]
             buf = r.peek16_at(record + syms["WR_BUFP"]) - WORK
-            want = window_buffer(24, SET_H, b"SETTINGS", slot == 1,
+            want = window_buffer(24, 10, b"SETTINGS", slot == 1,
                                  lines_for(1, 0, backend, focus, lattice=2))
             check(fails, f"lattice-two-{control}-buffer-{slot}", r.ram[buf:buf+len(want)] == want,
                   "cached window and its independent focus preserved")
         verify(two + tap(7, 4), "lattice-two-close-" + control, 1, 0, backend, 0, lattice=2)
 
-    verify(off + [(5, reload)] + tap(7, 128), "settings-keyptr-reload", 1, 0, backend, 7, keyptr=0)
+    verify(off + [(5, reload)] + tap(7, 128), "settings-keyptr-reload", 1, 0, backend, 6, keyptr=0)
     if not EXT:
         legacy = bytes((0x4d, 2, 2, 1, 1, 0))
         migrate = (f"debug write_block memory {syms['RamHeap']} [binary format H* {legacy.hex()}]; "
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 6; " + reload)
-        r = verify(off + [(5, migrate)] + tap(7, 128), "settings-v2-migrate", 2, 1, 1, 7, sound=0)
+        r = verify(off + [(5, migrate)] + tap(7, 128), "settings-v2-migrate", 2, 1, 1, 6, sound=0)
         check(fails, "settings-v2-carry", r.ram[scratch + 30 - WORK] & 1 == 0,
               "previous version loads without carry")
     if not EXT:
@@ -1710,8 +1706,8 @@ def settings_checks(syms, fails):
                    f"debug write memory {syms['RamDir'] + syms['RAMOFFSIZE']} 5; " +
                    clear + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
                    f"debug set_bp {syms['SetKey']} {{}} {{reg PC {scratch}}}")
-        verify(opened + tap(7, 8) * 7 + tap(7, 128) + [(5, migrate)] + tap(7, 128),
-               "settings-v1-migrate", 2, 1, 1, 7)
+        verify(opened + tap(7, 8) * 6 + tap(7, 128) + [(5, migrate)] + tap(7, 128),
+               "settings-v1-migrate", 2, 1, 1, 6)
     if not EXT:
         code = bytes([0xcd, syms['SetApply'] & 255, syms['SetApply'] >> 8, 0x3e, 1, 0xc9])
         inject = (f"debug write memory {syms['SetDevice']} 5; debug write memory {syms['SetBackend']} 5; "
@@ -1728,47 +1724,41 @@ def settings_checks(syms, fails):
               f"Y invert {inv}, host up 30: pointer {r.ptr()}, expected {want}")
     if EXT:
         # Every record up to version 4 loads with the default icons; a
-        # version 5 record brings its own, clamped where they are damaged,
-        # and WRAP on; a version 6 record carries WRAP.
+        # version 5 record brings its own, clamped where they are damaged.
         moved = desk_table(clock=(0, 1, 6), about=(1, 20, 12))
-        v5 = bytes((0x4D, 5, 0, 0, 1, 0, 0, 2)) + desk_bytes(moved)
-        v6 = set_record(0, 0, 1, 0, 0, 2, table=moved, wrap=0)
+        v5 = set_record(0, 0, 1, 0, 0, 2, table=moved)
         for name, data, expected in (
-                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 6, 0, 0, 1, 0, 1, 1))),
-                ("v3-off", bytes((0x4D, 3, 0, 0, 1, 0, 0)), bytes((0x4D, 6, 0, 0, 1, 0, 0, 1))),
-                ("v4-grid", bytes((0x4D, 4, 0, 0, 1, 0, 0, 2)), bytes((0x4D, 6, 0, 0, 1, 0, 0, 2))),
+                ("v2-off", bytes((0x4D, 2, 0, 0, 1, 0)), bytes((0x4D, 5, 0, 0, 1, 0, 1, 1))),
+                ("v3-off", bytes((0x4D, 3, 0, 0, 1, 0, 0)), bytes((0x4D, 5, 0, 0, 1, 0, 0, 1))),
+                ("v4-grid", bytes((0x4D, 4, 0, 0, 1, 0, 0, 2)), bytes((0x4D, 5, 0, 0, 1, 0, 0, 2))),
                 ("v4-fields", bytes((0x4D, 4, 255, 255, 255, 255, 255, 255)), defaults),
                 ("v4-short", bytes((0x4D, 4, 1, 0, backend, 1, 1)), defaults),
-                ("v5-icons", v5, v6[:26] + b"\1"),
-                ("v5-fields", v5[:8] + bytes(18), bytes((0x4D, 6, 0, 0, 1, 0, 0, 2)) + bytes((0, 0, 1)) * 6 + b"\1"),
-                ("v5-clamp", v5[:8] + b"\xff" * 18, bytes((0x4D, 6, 0, 0, 1, 0, 0, 2)) + bytes((1, 30, 20)) * 6 + b"\1"),
-                ("v5-short", v5[:-1], defaults + desk_bytes() + b"\1"),
-                ("v5-long", v5 + b"x", defaults + desk_bytes() + b"\1"),
-                ("v6-wrap-off", v6, v6),
-                ("v6-wrap-clamp", v6[:-1] + b"\xff", v6[:-1] + b"\1"),
-                ("v6-short", set_record(1, 0, backend)[:-1], defaults + desk_bytes() + b"\1"),
-                ("v6-long", set_record(1, 0, backend) + b"x", defaults + desk_bytes() + b"\1"),
+                ("v5-icons", v5, v5),
+                ("v5-fields", v5[:8] + bytes(18), bytes((0x4D, 5, 0, 0, 1, 0, 0, 2)) + bytes((0, 0, 1)) * 6),
+                ("v5-clamp", v5[:8] + b"\xff" * 18, bytes((0x4D, 5, 0, 0, 1, 0, 0, 2)) + bytes((1, 30, 20)) * 6),
+                ("v5-short", set_record(1, 0, backend)[:-1], defaults + desk_bytes()),
+                ("v5-long", set_record(1, 0, backend) + b"x", defaults + desk_bytes()),
                 ("v3-short", bytes((0x4D, 3, 0, 0, 1, 0)), defaults),
                 ("v3-long", bytes((0x4D, 3, 0, 0, 1, 0, 0, 1)), defaults),
                 ("v2-long", bytes((0x4D, 2, 0, 0, 1, 0, 0)), defaults),
                 ("v1-long", bytes((0x4D, 1, 0, 0, 1, 0)), defaults),
                 ("v2-short", bytes((0x4D, 2, 0, 0, 1)), defaults),
-                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 6, 0, 0, 1, 1, 1, 1))),
+                ("valid", bytes((0x4D, 1, 0, 0, 1)), bytes((0x4D, 5, 0, 0, 1, 1, 1, 1))),
                 ("magic", bytes((0, 1, 0, 0, 1)), defaults),
                 ("version", bytes((0x4D, 99, 0, 0, 1)), defaults),
                 ("short", b"M\1", defaults),
                 ("fields", bytes((0x4D, 1, 255, 255, 255)), defaults)):
             r = Run(syms, [(10, "")], "settings-boot-" + name, files={"SETTINGS": data})
-            expected = expected if len(expected) > 8 else expected + desk_bytes() + b"\1"
+            expected = expected if len(expected) > 8 else expected + desk_bytes()
             pattern = (bytes(8), bytes((0xaa, 0x55) * 4), bytes((0xff, 0x55) * 4))[expected[7]]
             table = [tuple(expected[8 + i * 3:11 + i * 3]) for i in range(6)]
-            check(fails, "settings-boot-" + name, r.bytes("SetRec", SET_SIZE) == expected
+            check(fails, "settings-boot-" + name, r.bytes("SetRec", 26) == expected
                   and all(r.vram[bank+0x400:bank+0x410] == pattern + b"\xff" + pattern[1:]
                           for bank in (0, 0x800, 0x1000))
                   and r.peek("StBackend") == expected[4]
                   and r.peek("AccelPtr", 2) == syms["AccelTabs"] + 5 * expected[2]
                   and r.nt() == expected_nt(table),
-                  f"record {r.bytes('SetRec', SET_SIZE).hex()}, desktop crc32 {zlib.crc32(r.nt()):08x}")
+                  f"record {r.bytes('SetRec', 26).hex()}, desktop crc32 {zlib.crc32(r.nt()):08x}")
 
 
 def arrange_checks(syms, fails):
@@ -2203,10 +2193,7 @@ def note_width_steps(syms):
         return point(x, y) + [(5, "set ::throttle on"),
                              (5, "exec xdotool mousedown 1")] + moves + [
             (5, "exec xdotool mouseup 1"), (10, "set ::throttle off")]
-    # These subjects are the unwrapped display (lf-1219): WRAP off, as
-    # the SETTINGS button would leave it, before anything is typed.
-    init = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200"),
-            (5, f"debug write memory {syms['SetWrap']} 0")]
+    init = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
     # Reach the old limit through the keyboard, then drag the real grip.
     base = init + menu(11) + tap(3, 32)*14
     grow = drag(186, 114, 32, 16)       # 16x9 -> 18x10
@@ -2296,195 +2283,6 @@ def note_width_checks(syms, fails):
               and r.peek('DgOpenFlag') == 0,
               f"complete UI roundtrip crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
               f"expected {zlib.crc32(document):08x}")
-
-
-def wrap_layout(doc, cx, cy, width):
-    """The screen rows NoteWalk lays out (lf-1529), stated independently:
-    a logical line is its chunks joined by continuation bytes, trailing
-    spaces trimmed but laid out at least as far as the caret; it breaks
-    at the last space in (pos, pos+width], which is not shown, or hard
-    at pos+width. The caret belongs to the last row starting at or
-    before it, and to the next row's first cell when its column would
-    be the width, with a row added for it at the end of its line.
-    Returns the rows' texts and the caret's (row, column)."""
-    rows, caret, first = [], None, 0
-    while first < 16:
-        last = first
-        while last < 15 and doc[last * 16 + 15] == 1:
-            last += 1
-        text = b"".join(doc[k * 16:k * 16 + 14] for k in range(first, last + 1))
-        n = len(text.rstrip(b" "))
-        cur = first <= cy <= last
-        x = cx + 14 * (cy - first) if cur else None
-        if cur:
-            n = max(n, x)
-        pos, segs = 0, []
-        while n - pos > width:
-            s = next((i for i in range(pos + width, pos, -1) if text[i] == 32), None)
-            if s is None:
-                segs.append((pos, pos + width))
-                pos += width
-            else:
-                segs.append((pos, s))
-                pos = s + 1
-        segs.append((pos, n))
-        for s, e in segs:
-            if cur and x >= s:
-                caret = (len(rows), x - s)
-            rows.append(text[s:e])
-        if cur and caret[1] == width:
-            caret = (caret[0] + 1, 0)
-            if caret[0] == len(rows):
-                rows.append(b"")
-        first = last + 1
-    return rows, caret
-
-
-def wrap_win(doc, cx, cy, top, x=8, y=6, w=NOTE_W, h=NOTE_H, title=b"NOTEPAD"):
-    """A wrapped notepad window for compose(), with its rows and caret."""
-    width, vis = w - 2, h - 2
-    rows, caret = wrap_layout(doc, cx, cy, width)
-    lines = [(1 + i, 1, (rows[top + i] if top + i < len(rows) else b"").ljust(width), False) for i in range(vis)]
-    lines += [(-1, top, b"", False), (-2, len(rows), b"", False)]
-    if top <= caret[0] < top + vis:
-        lines.append((1 + caret[0] - top, 1 + caret[1], rows[caret[0]][caret[1]:caret[1] + 1] or b" ", True))
-    return (x, y, w, h, title, lines), rows, caret
-
-
-def wrap_checks(syms, fails):
-    """WRAP (lf-1529): the layout against wrap_layout, the resize round
-    trip, up/down/HOME by screen row, the SETTINGS button, WRAP off as
-    lf-1219 left it, and the full document at four columns within the
-    frame budget on both machines."""
-    print("wrap:")
-    import re
-
-    def point(x, y):
-        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
-                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")]
-
-    def click(x, y):
-        return point(x, y) + [(5, "exec xdotool mousedown 1"), (5, "exec xdotool mouseup 1")]
-
-    def tap(row, mask):
-        return [(5, f"key_down {row} {mask}"), (5, f"key_up {row} {mask}")]
-
-    def shifted(row, mask):
-        return [(5, "key_down 6 1")] + tap(row, mask) + [(5, "key_up 6 1")]
-
-    def text(value):
-        return sum((tap(8, 1) if c == " " else tap((ord(c) - 65 + 22) // 8, 1 << ((ord(c) - 65 + 22) % 8))
-                    for c in value), [])
-
-    def drag(x, y, dx, dy):
-        moves = ([(5, f"mouse_move {dx} {dy}")] if abs(dx) <= 128 and abs(dy) <= 128 else
-                 [(5, f"mouse_move {dx // 2} {dy // 2}")] * 2)
-        return point(x, y) + [(5, "set ::throttle on"), (5, "exec xdotool mousedown 1")] + moves + [
-            (5, "exec xdotool mouseup 1"), (10, "set ::throttle off")]
-
-    init = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")]
-    new = init + click(88, 3) + click(96, 11)                   # FILE > NEW
-    settings = click(20, 4) + click(30, 20)                    # MSX DESK > SETTINGS
-    up, down, home, esc, enter = shifted(8, 32), shifted(8, 64), tap(8, 2), tap(7, 4), tap(7, 128)
-    UP = (5, 'key_down 6 1')
-    words = b"THE QUICK BROWN FOX JUMPS OVER"
-    wall = b"H" * 20
-    timing = [(1, f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
-                  f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}; "
-                  f"debug set_bp {syms['NoteDraw']} {{}} {{set ::drawstart [machine_info time]}}; "
-                  f"debug set_bp {syms['WndScrollBar']} {{}} {{if {{[info exists ::drawstart]}} {{note \"draw us [expr {{round(([machine_info time] - $::drawstart) * 1000000)}}]\"; unset ::drawstart}}}}")]
-
-    def view(name, steps, typed, cx, cy, top, w=NOTE_W, h=NOTE_H, wrap=1, rows_want=None, caret_want=None):
-        """One boot: the document is the typed lines, the screen the
-        compositor's wrapped window, the caret and the counts the oracle's."""
-        r = Run(syms, timing + steps + [(10, "")], name, files={})
-        doc = note_width_document(typed)
-        win, rows, caret = wrap_win(doc, cx, cy, top, w=w, h=h)
-        if rows_want is not None:                            # the oracle agrees with the ticket
-            assert rows == rows_want + [b""] * (len(rows) - len(rows_want)), (rows, rows_want)
-        if caret_want is not None:
-            assert caret == caret_want, (caret, caret_want)
-        want = compose(expected_nt(), [win])
-        frames = list(map(int, re.findall(r"frame us (\d+)", r.log)))
-        draws = list(map(int, re.findall(r"draw us (\d+)", r.log)))
-        ok = (r.bytes("NoteBuf", 256) == doc and r.nt() == want
-              and (r.peek("NoteCX"), r.peek("NoteCY")) == (cx, cy)
-              and r.peek("NoteRows") == len(rows) and r.peek("NoteCursorY") == caret[0]
-              and r.peek("NwCaretCol") == caret[1] and r.peek("NoteTop") == top
-              and r.peek("NoteLeftCol") == 0 and (r.peek("WinW"), r.peek("WinH")) == (w, h)
-              and r.peek("SetWrap") == wrap and r.peek("Dropped", 2) == 0)
-        check(fails, name, ok,
-              f"document {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(doc):08x}, "
-              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}) "
-              f"expected ({cx}, {cy}), row {r.peek('NoteCursorY')}/{caret[0]} col {r.peek('NwCaretCol')}/{caret[1]}, "
-              f"rows {r.peek('NoteRows')}/{len(rows)}, top {r.peek('NoteTop')}/{top}, size {r.peek('WinW')}x{r.peek('WinH')}, "
-              f"Dropped={r.peek('Dropped', 2)}, max frame {max(frames)} us, max draw {max(draws) if draws else 0} us")
-        return r
-
-    # thirty characters with spaces in fourteen columns: three rows at the spaces
-    basic = view("wrap-basic", new + text(words.decode()), [words], 2, 2, 0,
-                 rows_want=[b"THE QUICK", b"BROWN FOX", b"JUMPS OVER"], caret_want=(2, 10))
-    # a word of twenty: hard at fourteen
-    view("wrap-long", new + text(wall.decode()), [wall], 6, 1, 0,
-         rows_want=[b"H" * 14, b"H" * 6], caret_want=(1, 6))
-    # the grip from 16x9 to 10x9 lays the words out in eight columns and
-    # back again; the document's 256 bytes do not change
-    shrink = drag(186, 114, -96, 0)
-    regrow = drag(138, 114, 96, 0)
-    view("wrap-resize", new + text(words.decode()) + shrink, [words], 2, 2, 0, w=10,
-         rows_want=[b"THE", b"QUICK", b"BROWN", b"FOX", b"JUMPS", b"OVER"], caret_want=(5, 4))
-    r = view("wrap-resize-back", new + text(words.decode()) + shrink + regrow, [words], 2, 2, 0)
-    check(fails, "wrap-resize-same", r.nt() == basic.nt() and r.bytes("NoteBuf", 256) == basic.bytes("NoteBuf", 256),
-          f"after 16x9 -> 10x9 -> 16x9 the screen is {zlib.crc32(r.nt()):08x}, before {zlib.crc32(basic.nt()):08x}")
-    # up and down move a screen row and keep the column where the row is
-    # long enough; HOME goes to the start of the screen row
-    typed = new + text(words.decode())
-    view("wrap-up", typed + up, [words], 5, 1, 0, caret_want=(1, 9))              # X 19, the end of BROWN FOX
-    view("wrap-up-up", typed + up + up, [words], 9, 0, 0, caret_want=(0, 9))      # X 9
-    view("wrap-down", typed + up + up + down + down, [words], 1, 2, 0, caret_want=(2, 9))   # X 29
-    view("wrap-home", typed + up + up + down + down + home, [words], 6, 1, 0, caret_want=(2, 0))  # X 20
-    view("wrap-long-up", new + text(wall.decode()) + up, [wall], 6, 0, 0, caret_want=(0, 6))
-    view("wrap-long-down", new + text(wall.decode()) + up + down, [wall], 6, 1, 0, caret_want=(1, 6))
-    # WRAP off, as the SETTINGS button leaves it: the lf-1219 display, the
-    # line scrolled so the caret is in the last column, and HOME at the
-    # start of the logical line
-    off = [(5, f"debug write memory {syms['SetWrap']} 0")]
-    for name, steps, x in (("wrap-off", off + typed, 30), ("wrap-off-home", off + typed + home, 0)):
-        r = Run(syms, steps + [(10, "")], name, files={})
-        left = max(0, x - 13)
-        painted = [(1, 1, words[left:], False), (1, x - left + 1, words[x:x + 1] or b" ", True), (-2, 14, b"", False)]
-        want = compose(expected_nt(), [(8, 6, NOTE_W, NOTE_H, b"NOTEPAD", painted)])
-        check(fails, name, r.nt() == want and r.bytes("NoteBuf", 256) == note_width_document([words])
-              and r.peek("NoteCursorX") == x and r.peek("NoteLeftCol") == left and r.peek("SetWrap") == 0,
-              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, caret {r.peek('NoteCursorX')}, left {r.peek('NoteLeftCol')}")
-    # the WRAP button: TAB to the seventh row and ENTER turns it off, and
-    # the open notepad is laid out again at once; ESC closes SETTINGS
-    toggle = typed + settings + tap(7, 8) * 6
-    r = Run(syms, toggle + enter + esc + [(10, "")], "wrap-toggle-off", files={})
-    painted = [(1, 1, words[17:], False), (1, 14, b" ", True), (-2, 14, b"", False)]
-    want = compose(expected_nt(), [(8, 6, NOTE_W, NOTE_H, b"NOTEPAD", painted)])
-    check(fails, "wrap-toggle-off", r.nt() == want and r.peek("SetWrap") == 0 and r.peek("WndCount") == 1
-          and r.peek("NoteLeftCol") == 17,
-          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, WRAP {r.peek('SetWrap')}, left {r.peek('NoteLeftCol')}")
-    view("wrap-toggle-on", toggle + enter + enter + esc, [words], 2, 2, 0)
-    # the record: SAVE after the toggle, and WRAP comes back off from the file
-    backend = 5 if EXT else 1
-    r = Run(syms, init + settings + tap(7, 8) * 6 + enter + tap(7, 8) + enter + [(10, "")], "wrap-save", files={})
-    stored = read_disk_image(DISK).get("SETTINGS") if EXT else r.bytes("RamHeap", SET_SIZE)
-    check(fails, "wrap-save", stored == set_record(1, 0, backend, wrap=0) and r.peek("SetWrap") == 0,
-          f"SETTINGS {stored.hex() if stored else None}")
-    # a full document, 224 characters, typed in fourteen columns and then
-    # shown in four: 57 rows, laid out and painted within the frame on
-    # both machines, no frame dropped
-    for name, line in (("wrap-full", b"I" * 224), ("wrap-full-spaces", b"I " * 112)):
-        typing = new + text(line.decode())
-        rows, caret = wrap_layout(note_width_document([line]), 14, 15, 14)
-        view(name + "-typed", typing, [line], 14, 15, caret[0] - 6)
-        to_minimum = drag(186, 114, -160, -80)
-        rows, caret = wrap_layout(note_width_document([line]), 14, 15, 4)
-        r = view(name, typing + to_minimum + shifted(8, 128), [line], 14, 15, caret[0] - 1, w=6, h=4)
-        check(fails, name + "-rows", len(rows) == 57 and caret == (56, 0) and r.peek("NoteRows") == 57,
-              f"{len(rows)} rows, caret {caret}")
 
 
 def resize_scroll_checks(syms, fails):
@@ -2968,7 +2766,7 @@ def desktop_checks(syms, fails):
               + f"; debug write_block memory {scratch} [binary format H* {code.hex()}]; "
               f"debug set_bp {syms['DskSetKey']} {{}} {{reg PC {scratch}}}")
     r = Run(syms, saved + [(5, reload)] + tap(7, 128) + [(10, "")], "dsk-reload")
-    check(fails, "dsk-reload", table_of(r) == table and r.nt() == want and r.bytes("SetRec", SET_SIZE) == record,
+    check(fails, "dsk-reload", table_of(r) == table and r.nt() == want and r.bytes("SetRec", 26) == record,
           f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
     if EXT:
         # a real restart on the disk machine: the saved record, then a version 4 one
@@ -2977,7 +2775,7 @@ def desktop_checks(syms, fails):
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}")
         r = Run(syms, [(10, "")], "dsk-boot-v4", files={"SETTINGS": bytes((0x4D, 4, 1, 0, 5, 1, 1, 1))})
         check(fails, "dsk-boot-v4", table_of(r) == DESK_DEFAULT and r.nt() == expected_nt()
-              and r.bytes("SetRec", SET_SIZE) == set_record(1, 0, 5),
+              and r.bytes("SetRec", 26) == set_record(1, 0, 5),
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}")
     else:
         # an older SETTINGS file in RAM, eight bytes: the default icons come back
@@ -2987,7 +2785,7 @@ def desktop_checks(syms, fails):
         r = Run(syms, saved + [(5, old)] + tap(7, 128) + [(10, "")], "dsk-reload-v4")
         want = compose(expected_nt(), [desk_win(6)])
         check(fails, "dsk-reload-v4", table_of(r) == DESK_DEFAULT and r.nt() == want
-              and r.bytes("SetRec", SET_SIZE) == set_record(1, 0, 1),
+              and r.bytes("SetRec", 26) == set_record(1, 0, 1),
               f"table {table_of(r)}, crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
 
@@ -3009,9 +2807,6 @@ def main():
         return bool(fails)
     if sys.argv[1:] == ["--note-width"]:
         note_width_checks(syms, fails)
-        return bool(fails)
-    if sys.argv[1:] == ["--wrap"]:
-        wrap_checks(syms, fails)
         return bool(fails)
     if sys.argv[1:] == ["--open-ui"]:
         open_ui_checks(syms, fails)
@@ -3061,7 +2856,6 @@ def main():
     delete_checks(syms, fails)
     sound_checks(syms, fails)
     note_width_checks(syms, fails)
-    wrap_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)

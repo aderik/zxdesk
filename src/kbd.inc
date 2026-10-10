@@ -24,7 +24,6 @@ KEY_RIGHT       equ     2
 KEY_UP          equ     3
 KEY_DOWN        equ     4
 KEY_DELETE      equ     8
-KEY_HOME        equ     11              ; the notepad's start of the screen row
 KEY_ENTER       equ     13
 KEY_ESC         equ     27
 
@@ -145,7 +144,7 @@ KbdBase:
                 defb    'S','T','U','V','W','X','Y','Z'
                 defb    0,0,0,0,0,0,0,0
                 defb    0,0,KEY_ESC,9,0,KEY_DELETE,0,KEY_ENTER
-                defb    ' ',KEY_HOME,0,KEY_DELETE,0,0,0,0
+                defb    ' ',0,0,KEY_DELETE,0,0,0,0
 
 KbdShiftT:
                 defb    ')','!','@','#','$','%','^','&'
@@ -156,7 +155,7 @@ KbdShiftT:
                 defb    'S','T','U','V','W','X','Y','Z'
                 defb    0,0,0,0,0,0,0,0
                 defb    0,0,KEY_ESC,9,0,KEY_DELETE,0,KEY_ENTER
-                defb    ' ',KEY_HOME,0,KEY_DELETE,KEY_LEFT,KEY_UP,KEY_DOWN,KEY_RIGHT
+                defb    ' ',0,0,KEY_DELETE,KEY_LEFT,KEY_UP,KEY_DOWN,KEY_RIGHT
 
 ; Called once a frame. Posts EV_KEY on a fresh press, then again on a
 ; repeat once the key has been held past KBDDELAY. Only one key is

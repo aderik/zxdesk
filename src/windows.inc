@@ -774,16 +774,8 @@ WbNext:
 ;  every window open.
 ; ------------------------------------------------------------
 
-; B = first row, C = count: widen the pending range. The desktop is
-; painted under it again, so this is for whatever moves, opens, closes
-; or changes the desktop; RowsAddText is for a window whose content
-; alone changed, which leaves the desktop under it as it was. A key
-; in the notepad measured 2.4 ms of desktop and icons for its nine
-; rows, a seventh of the 60 Hz frame.
+; B = first row, C = count: widen the pending range.
 RowsAdd:
-                ld      a,1
-                ld      (RowsDesk),a
-RowsAddText:
                 ld      a,1
                 ld      (RepaintDue),a
                 ld      a,(RowLo)
@@ -810,13 +802,6 @@ RowsAddLive:
                 ld      a,(WinH)
                 ld      c,a
                 jr      RowsAdd
-; The live window's rows, its content alone.
-RowsLiveText:
-                ld      a,(WinY)
-                ld      b,a
-                ld      a,(WinH)
-                ld      c,a
-                jr      RowsAddText
 
 ; A = slot: its buffer is recomposed on the next repaint.
 WndTouch:
@@ -864,9 +849,6 @@ WinRedraw:
                 ld      a,(DgOpenFlag)
                 or      a
                 ret     nz                      ; keep the save-under stable
-                call    NoteLayService          ; a wrapped notepad's layout,
-                or      a                       ; a budget a frame, before
-                ret     nz                      ; anything of it is painted
                 ld      a,(Resizing)
                 cp      2
                 jr      c,WrdReady              ; idle or held
@@ -893,9 +875,7 @@ WrdPaint:
                 ld      (Recomposes),hl
                 call    WndFlush
                 call    MarkRows                ; once, for the whole range
-                ld      a,(RowsDesk)
-                or      a
-                call    nz,DrawDesktopRows
+                call    DrawDesktopRows
                 ld      a,(WndCount)
                 or      a
                 jr      z,WrdDone
@@ -945,7 +925,6 @@ WraBlit:
 WrdDone:
                 xor     a
                 ld      (RepaintDue),a
-                ld      (RowsDesk),a
                 ld      (WndDirty),a
                 ld      (WndCapDirty),a
                 ld      a,WINBOTTOM
@@ -1121,7 +1100,6 @@ WndInit:
                 ld      (WndForce),a
                 ld      (WinMoved),a
                 ld      (RepaintDue),a
-                ld      (RowsDesk),a
                 ld      (WndDirty),a
                 ld      (WndCapDirty),a
                 ld      a,WINBOTTOM

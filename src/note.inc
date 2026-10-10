@@ -103,13 +103,6 @@ NhsSet:
                 ret
 
 NoteScroll:
-                ld      a,(SetWrap)
-                or      a
-                jr      z,NsPlain
-                ld      a,1                     ; wrapped: the draw lays the
-                ld      (NoteFollow),a          ; rows out and follows the caret
-                ret
-NsPlain:
                 call    NoteMeasure
                 call    NoteHScroll
                 ld      a,(NoteCursorY)
@@ -137,9 +130,6 @@ NsBelowTop:
 ; Walk chunks, concatenating continuation chunks on the same row.
 ; All text and caret writes go through the same interior clip.
 NoteDraw:
-                ld      a,(SetWrap)
-                or      a
-                jp      nz,NoteDrawWrap
                 ld      a,(NoteTop)
                 call    NoteScrollTo            ; also measures rows and caret
                 call    NoteHScroll
@@ -265,8 +255,6 @@ NoteNew:
                 ld      (NoteEdited),a
                 ld      (NoteDirty),a
                 ld      (NoteModified),a
-                ld      (NwBusy),a
-                ld      (NoteLayOK),a
                 ret
 
 ; Append one continuation chunk after A. Refuse when the final
@@ -393,36 +381,22 @@ NbrLoop:
                 ld      (hl),0
                 ret
 
-; A = row. Returns A = its length without trailing spaces. Two
-; characters a step: a pair ORed is a space only when both are, as
-; text is never below a space. The wrap layout asks this of every
-; line it lays out, and a blank chunk is the common case.
+; A = row. Returns A = its length without trailing spaces.
 NoteLineLen:
                 call    NoteRowAddr
                 ld      de,NOTELAST
                 add     hl,de
-                ld      b,NOTECOLS/2
-NllPair:
+                ld      b,NOTECOLS
+NllLoop:
                 ld      a,(hl)
-                dec     hl
-                or      (hl)
-                dec     hl
                 cp      ' '
                 jr      nz,NllGot
-                djnz    NllPair
+                dec     hl
+                djnz    NllLoop
                 xor     a
                 ret
 NllGot:
-                inc     hl
-                inc     hl
                 ld      a,b
-                add     a,a                     ; 2B: the upper's index and one
-                ld      b,a
-                ld      a,(hl)                  ; the upper of the pair
-                cp      ' '
-                ld      a,b
-                ret     nz                      ; text there: 2B characters
-                dec     a                       ; only the lower: one fewer
                 ret
 
 ; A = row: the rows from it down move down one, the last is lost.
@@ -702,9 +676,6 @@ NoteCurLink:
                 jp      NoteLinkAddr
 
 NoteUp:
-                ld      a,(SetWrap)
-                or      a
-                jp      nz,NoteUpWrap
                 call    NoteMeasure
                 ld      a,(NoteCursorY)
                 or      a
@@ -712,9 +683,6 @@ NoteUp:
                 dec     a
                 jr      NoteGotoLine
 NoteDown:
-                ld      a,(SetWrap)
-                or      a
-                jp      nz,NoteDownWrap
                 call    NoteMeasure
                 ld      a,(NoteRows)
                 ld      b,a
@@ -766,47 +734,18 @@ NglSet:
                 ld      (NoteCY),a
                 ret
 
-; HOME: the start of the logical line, or of the screen row with WRAP.
-NoteHome:
-                ld      a,(SetWrap)
-                or      a
-                jp      nz,NoteHomeWrap
-                xor     a
-                ld      (NoteCX),a
-NhFirst:
-                ld      a,(NoteCY)
-                or      a
-                ret     z
-                dec     a
-                call    NoteLinkAddr
-                ld      a,(hl)
-                or      a
-                ret     z
-                ld      hl,NoteCY
-                dec     (hl)
-                jr      NhFirst
-
 ; The key vector. Returns A = 1: every key it takes moves the cursor,
 ; and the cursor is painted, so the window is recomposed.
 NoteKey:
                 ld      (NoteChar),a
                 xor     a
                 ld      (NoteEdited),a
-                ld      (NwBusy),a              ; a layout under way would be
-                ld      a,(NoteLayOK)           ; of the text as it was
-                and     $01
-                ld      (NoteLayOK),a           ; (a job leaves it 0 anyway)
                 ld      a,(NoteChar)
                 cp      KEY_LEFT
                 jr      nz,NkNotL
                 call    NoteLeft
                 jr      NkView
 NkNotL:
-                cp      KEY_HOME
-                jr      nz,NkNotH
-                call    NoteHome
-                jr      NkView
-NkNotH:
                 cp      KEY_RIGHT
                 jr      nz,NkNotR
                 call    NoteRight
@@ -824,39 +763,19 @@ NkNotU:
 NkNotD:
                 cp      KEY_DELETE
                 jr      nz,NkNotBs
-                call    NwLineCount
-                push    af
                 call    NoteBack
-                jr      NkEdited
+                jr      NkView
 NkNotBs:
                 cp      KEY_ENTER
                 jr      nz,NkNotEnt
-                call    NwLineCount
-                push    af
                 call    NoteEnter
-                jr      NkEdited
+                jr      NkView
 NkNotEnt:
                 cp      ' '
                 jr      c,NkNone                ; below space, not ours
                 cp      128
                 jr      nc,NkNone
-                call    NwLineCount
-                push    af
-                ld      a,(NoteChar)
                 call    NoteInsert
-NkEdited:
-                ; As many lines as before: the edit stayed within the
-                ; caret's line, whose rows are laid out again. Otherwise a
-                ; line was split, joined, extended into the last chunk or
-                ; gave one back, and the whole table is stale.
-                pop     bc
-                call    NwLineCount
-                cp      b
-                jr      z,NkSameLines
-                call    NwInvalidate
-                jr      NkView
-NkSameLines:
-                call    NwEditLine
 NkView:
                 call    NoteScroll
                 ld      a,1
@@ -962,8 +881,6 @@ NoteLoadFile:
                 ld      (NoteCY),a
                 ld      (NoteTop),a
                 ld      (NoteModified),a
-                ld      (NwBusy),a
-                ld      (NoteLayOK),a
                 ld      a,1
                 ld      (NoteDirty),a
                 ld      (NoteSaved),a
@@ -1090,11 +1007,6 @@ NoteMenuNew:
                 ld      a,APP_NOTE
                 call    WndOpen
                 ret     c
-                ; With WRAP the layout job lays the new document out this
-                ; frame and the next composes and paints it (NoteLayService).
-                ld      a,(SetWrap)
-                or      a
-                ret     nz
                 ; Compose now, then restore the desktop and blit next frame,
                 ; as for SETTINGS. Do not compose the new buffer twice.
                 call    WinDraw
@@ -1247,21 +1159,9 @@ NmoOk:
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
 
-; Scroll model: count hard lines, not the chunks of a long line; with
-; WRAP the screen rows.
+; Scroll model: count hard lines, not the chunks of a long line.
 NoteScrollInfo:
-                ld      a,(SetWrap)
-                or      a
-                jr      z,NsiPlain
-                ld      hl,NwDerived            ; NoteDrawWrap just derived the
-                ld      a,(hl)                  ; caret and the rows for this
-                ld      (hl),0                  ; window: the scroll bar is
-                or      a                       ; composed right after it
-                call    z,NoteMeasureWrap
-                jr      NsiReport
-NsiPlain:
                 call    NoteMeasure
-NsiReport:
                 call    NoteVisRows
                 ld      c,a
                 ld      a,(NoteRows)
@@ -1269,22 +1169,12 @@ NsiReport:
                 ld      a,(NoteTop)
                 ret
 
-; NoteMeasure, or with WRAP the row table (laid out now if it is
-; stale) and the caret derived from it.
-NoteMeasureAny:
-                ld      a,(SetWrap)
-                or      a
-                jp      z,NoteMeasure
-NoteMeasureWrap:
-                call    NwEnsure
-                jp      NwDerive
-
 ; Moving the view does not move the caret. NoteKey brings it back
 ; into view on the next edit/navigation. NoteDraw uses the same clamp
 ; when a larger window exposes more of the document.
 NoteScrollTo:
                 push    af
-                call    NoteMeasureAny
+                call    NoteMeasure
                 call    NoteVisRows
                 ld      b,a
                 ld      a,(NoteRows)
@@ -1420,1047 +1310,4 @@ NoteOverwriteAnswer:
                 ld      a,(NoteClosePending)
                 or      a
                 jp      nz,NcaGo
-                ret
-
-; ------------------------------------------------------------
-;  Word wrap (lf-1529). Display only: the document is the same
-;  sixteen chunks. With WRAP on, a logical line is laid out as
-;  screen rows of at most W = WinW-2 cells, broken at the last
-;  space that fits (the space itself is not shown) or hard at W
-;  when a word is longer. Trailing spaces do not wrap. The caret
-;  shows at its column in the last row that starts at or before
-;  it, or in the first cell of the row after when that column
-;  would be past the edge, which may be a row below the document.
-;
-;  The layout is a table, a byte a screen row: the row's length,
-;  a bit for the space consumed after it, a bit for the end of
-;  its logical line. A job fills it, resumable, a budget a frame,
-;  because a full document in four columns is 57 rows and the
-;  first version laid them out and painted them in 34 ms; the
-;  table does not depend on the caret, so moving the caret costs
-;  nothing, and an edit within a line lays out that line alone,
-;  the rows after it parked at the end of the table meanwhile.
-;  WinRedraw runs the job for the front window before it paints
-;  and waits for it; anything else that needs the table and finds
-;  it stale finishes the job at once. The painter and the caret
-;  read the table. Measurements: README, "Word wrap".
-; ------------------------------------------------------------
-NWTABSZ         equ     128             ; rows at most: 224 characters at
-                                        ; three a row and sixteen line ends
-NW_LEN          equ     $1F
-NW_SOFT         equ     $20             ; a space follows the row
-NW_END          equ     $40             ; the logical line ends with it
-NWBUDGET        equ     200             ; a frame's work: W+10 a row
-
-; NZ when the table is not the live window's at its width.
-NwStale:
-                ld      a,(NoteLayOK)
-                or      a
-                jr      z,NwStaleYes
-                ld      a,(NoteLayWnd)
-                ld      hl,WndCur
-                cp      (hl)
-                ret     nz
-                ld      a,(NwCacheW)
-                ld      hl,WinW
-                cp      (hl)
-                ret
-NwStaleYes:
-                or      1
-                ret
-
-; The table is no longer any use: a line was added or taken away, or
-; the document replaced. A job under way is dropped with it.
-NwInvalidate:
-                xor     a
-                ld      (NwBusy),a
-                ld      (NoteLayOK),a
-                ret
-
-; The table, laid out now if it is stale. A job under way for this
-; window at this width is finished; any other is started afresh.
-NwEnsure:
-                call    NwStale
-                ret     z
-                ld      a,(NwBusy)
-                or      a
-                jr      z,NweFresh
-                ld      a,(NoteLayWnd)
-                ld      hl,WndCur
-                cp      (hl)
-                jr      nz,NweFresh
-                ld      a,(WinW)
-                sub     2
-                ld      hl,NwWidth
-                cp      (hl)
-                jr      z,NweRun
-NweFresh:
-                call    NwStartFull
-NweRun:
-                call    NwStep
-                jr      nz,NweRun
-                ret
-
-; A job over every line of the live window: the chunks from 0 to 16.
-NwStartFull:
-                xor     a
-                ld      (NwLine),a
-                ld      (NwTabI),a
-                ld      (NwTailN),a
-                ld      (NwInLine),a
-                ld      (NoteLayOK),a
-                ld      a,NOTEROWS
-                ld      (NwJobEnd),a
-NwStartJob:
-                ld      a,(WinW)
-                sub     2
-                ld      (NwWidth),a
-                ld      a,(WndCur)
-                ld      (NoteLayWnd),a
-                ld      a,1
-                ld      (NwBusy),a
-                ret
-
-; After an edit within the caret's line, with a valid table: a job
-; over that line alone. Its rows are replaced; the rows of the lines
-; after it wait at the end of the table and come back when it is done.
-NwEditLine:
-                ld      a,(SetWrap)
-                or      a
-                ret     z
-                call    NwStale
-                ret     nz                      ; the next draw lays out all
-                ld      a,(NoteCY)
-                call    NwLineOf                ; A = the line, C = its chunk
-                push    af
-                ld      a,c
-                ld      (NwLine),a
-                call    NwLastOf
-                inc     a
-                ld      (NwJobEnd),a            ; the chunk after the line
-                pop     af
-                ld      hl,NwTab
-                ld      c,0                     ; the entry
-                or      a
-                jr      z,NelFound
-                ld      b,a
-NelFind:
-                ld      a,(hl)
-                inc     hl
-                inc     c
-                and     NW_END
-                jr      z,NelFind
-                djnz    NelFind
-NelFound:
-                ld      a,c
-                ld      (NwTabI),a              ; the line's first row
-NelEnd:
-                ld      a,(hl)
-                inc     hl
-                inc     c
-                and     NW_END
-                jr      z,NelEnd                ; C = the entry after its last
-                ld      a,(NwTabN)
-                sub     c
-                ld      (NwTailN),a
-                jr      z,NelGo
-                ; park the tail at the end, highest first: the regions may
-                ; overlap and the destination is above the source
-                ld      c,a
-                ld      b,0
-                ld      hl,NwTab+NWTABSZ-1
-                ld      de,NwTab-1
-                ld      a,(NwTabN)
-                add     a,e
-                ld      e,a
-                jr      nc,NelSrc
-                inc     d
-NelSrc:
-                ex      de,hl                   ; HL = the tail's last entry
-                lddr
-NelGo:
-                xor     a
-                ld      (NwInLine),a
-                ld      (NoteLayOK),a
-                jr      NwStartJob
-
-; The logical lines in the document: a link joins two chunks.
-NwLineCount:
-                ld      hl,NoteBuf+15
-                ld      de,NOTESTRIDE
-                ld      b,NOTEROWS
-                ld      a,b
-NlcLoop:
-                sub     (hl)
-                add     hl,de
-                djnz    NlcLoop
-                ret
-
-; A = a chunk. Returns A = the index of its logical line and C = the
-; line's first chunk.
-NwLineOf:
-                ld      b,a
-                ld      c,0
-                ld      e,0                     ; the line
-                or      a
-                ret     z
-                ld      hl,NoteBuf+15
-                ld      d,0                     ; the chunk
-NloLoop:
-                ld      a,(hl)
-                or      a
-                jr      nz,NloNext
-                inc     e
-                ld      a,d
-                inc     a
-                ld      c,a
-NloNext:
-                push    de
-                ld      de,NOTESTRIDE
-                add     hl,de
-                pop     de
-                inc     d
-                djnz    NloLoop
-                ld      a,e
-                ret
-
-; A = a line's first chunk. Returns A = its last.
-NwLastOf:
-NlaLoop:
-                call    NoteLinkAddr
-                inc     a
-                ld      b,a
-                ld      a,(hl)
-                or      a
-                ld      a,b
-                jr      nz,NlaLoop
-                dec     a
-                ret
-
-; The job, a budget's worth: rows into the table from where it left
-; off. Returns Z when the job is done and the table valid, NZ when
-; the budget ran out first.
-NwStep:
-                xor     a
-                ld      (NwWork),a
-NwStepLoop:
-                ld      a,(NwLine)
-                ld      hl,NwJobEnd
-                cp      (hl)
-                jr      nc,NwJobDone
-                ld      a,(NwInLine)
-                or      a
-                call    z,NwLineBegin
-NwStepRow:
-                call    NwRow
-                jr      z,NwStepLineDone
-                ld      a,(NwWork)
-                cp      NWBUDGET
-                jr      c,NwStepRow
-                or      1
-                ret
-NwStepLineDone:
-                xor     a
-                ld      (NwInLine),a
-                ld      a,(NwLast)
-                inc     a
-                ld      (NwLine),a
-                ld      a,(NwWork)
-                cp      NWBUDGET
-                jr      c,NwStepLoop
-                or      1
-                ret
-NwJobDone:
-                ld      a,(NwTailN)
-                or      a
-                jr      z,NwJobCount
-                ld      c,a
-                ld      b,0
-                ld      hl,NwTab+NWTABSZ
-                or      a
-                sbc     hl,bc                   ; the parked tail
-                ld      de,NwTab
-                ld      a,(NwTabI)
-                add     a,e
-                ld      e,a
-                jr      nc,NwJobBack
-                inc     d
-NwJobBack:
-                ldir                            ; back after the line's rows
-NwJobCount:
-                ld      a,(NwTailN)
-                ld      hl,NwTabI
-                add     a,(hl)
-                ld      (NwTabN),a
-                xor     a
-                ld      (NwBusy),a
-                ld      (NwTailN),a
-                ld      a,(WndCur)
-                ld      (NoteLayWnd),a
-                ld      a,(WinW)
-                ld      (NwCacheW),a
-                ld      a,1
-                ld      (NoteLayOK),a
-                xor     a
-                ret
-
-; The line at NwLine: its last chunk, its length N without trailing
-; spaces, and the scan set at its second character.
-NwLineBegin:
-                ld      a,(NwLine)
-                call    NwLastOf
-                ld      (NwLast),a
-NwTrimLoop:
-                ld      (NwN),a                 ; the chunk being measured
-                call    NoteLineLen
-                or      a
-                jr      nz,NwTrimGot
-                ld      a,(NwN)
-                ld      hl,NwLine
-                cp      (hl)
-                jr      z,NwTrimEmpty
-                dec     a
-                jr      NwTrimLoop
-NwTrimEmpty:
-                xor     a
-                jr      NwTrimSet
-NwTrimGot:
-                ld      c,a
-                ld      a,(NwN)
-                ld      hl,NwLine
-                sub     (hl)
-                call    NwTimes14
-                add     a,c
-NwTrimSet:
-                ld      (NwN),a
-                xor     a
-                ld      (NwPos),a
-                ld      a,(NwLine)
-                call    NoteRowAddr
-                ld      (NwSegP),hl
-                inc     hl                      ; a row never breaks at its
-                ld      (NwScanP),hl            ; first character: the scan
-                ld      a,(NwWidth)             ; covers indices 1..W
-                ld      (NwScanB),a
-                ld      a,1
-                ld      (NwInLine),a
-                ret
-
-; One row of the line into the table. Returns Z when it was the
-; line's last. Every character is read once: the scan goes on from
-; where it stopped, because there is no space between the one it
-; broke at and the limit it had reached.
-NwRow:
-                ld      a,(NwN)
-                ld      hl,NwPos
-                sub     (hl)                    ; what is left of the line
-                ld      c,a
-                ld      a,(NwWidth)
-                cp      c
-                jr      c,NwScanInit            ; more than fits: find a break
-                ld      a,c
-                or      NW_END
-                call    NwPut
-                xor     a
-                ret
-NwScanInit:
-                ld      hl,(NwScanP)
-                ld      a,(NwScanB)
-                ld      b,a
-                xor     a
-                ld      (NwSpaceB),a
-NwScan:
-                ld      a,(hl)
-                cp      ' '
-                jr      c,NwHop
-NwChar:
-                jr      z,NwSpace
-NwStepChar:
-                inc     hl
-                djnz    NwScan
-                jr      NwScanDone
-NwHop:
-                inc     hl                      ; a chunk's terminator and link:
-                inc     hl                      ; the text goes on in the next
-                ld      a,(hl)
-                cp      ' '
-                jr      NwChar
-NwSpace:
-                ld      (NwSpaceP),hl
-                ld      a,b
-                ld      (NwSpaceB),a
-                jr      NwStepChar
-NwScanDone:
-                ld      (NwScanP),hl            ; the character after the limit
-                ld      a,(NwSpaceB)
-                or      a
-                jr      z,NwHard
-                ; a soft break at the space: the row is W+1-B long, the
-                ; next row starts after the space and the next scan runs
-                ; from the old limit to the new one, len+1 characters
-                ld      c,a
-                ld      a,(NwWidth)
-                inc     a
-                sub     c
-                ld      c,a
-                inc     a
-                ld      (NwScanB),a
-                ld      hl,(NwSpaceP)
-                ld      a,1
-                call    NwAdvance
-                ld      (NwSegP),hl
-                ld      a,c
-                or      NW_SOFT
-                call    NwPut
-                ld      a,(NwScanB)             ; len + 1
-                ld      hl,NwPos
-                add     a,(hl)
-                ld      (hl),a
-                or      1
-                ret
-NwHard:
-                ; no space: W characters, the next row starts at the limit
-                ld      a,(NwWidth)
-                ld      (NwScanB),a
-                ld      hl,(NwScanP)
-                dec     hl
-                ld      (NwSegP),hl
-                ld      a,(NwWidth)
-                call    NwPut
-                ld      a,(NwWidth)
-                ld      hl,NwPos
-                add     a,(hl)
-                ld      (hl),a
-                or      1
-                ret
-
-; A = an entry, into the table at NwTabI, within the room the parked
-; tail leaves. Counts the work.
-NwPut:
-                ld      c,a
-                ld      a,(NwTailN)
-                ld      b,a
-                ld      a,NWTABSZ
-                sub     b
-                ld      hl,NwTabI
-                cp      (hl)
-                jr      z,NwPutWork             ; full: the row is not kept
-                jr      c,NwPutWork
-                ld      a,(hl)
-                inc     (hl)
-                ld      hl,NwTab
-                add     a,l
-                ld      l,a
-                jr      nc,NwPutStore
-                inc     h
-NwPutStore:
-                ld      (hl),c
-NwPutWork:
-                ld      a,(NwWidth)
-                add     a,10
-                ld      hl,NwWork
-                add     a,(hl)
-                jr      nc,NwPutCount
-                ld      a,$FF
-NwPutCount:
-                ld      (hl),a
-                ret
-
-; A = A*14, E clobbered.
-NwTimes14:
-                ld      e,a
-                add     a,a
-                add     a,e
-                add     a,a
-                add     a,e
-                add     a,a
-                ret
-
-; HL = a character's address, A = how many characters on. A chunk's
-; end is hopped when a link follows; without one the terminator is
-; the end of chunk caret (NoteCX 14), as the editor represents it.
-NwAdvance:
-                or      a
-                ret     z
-                ld      b,a
-NwaLoop:
-                inc     hl
-                ld      a,(hl)
-                or      a
-                jr      nz,NwaNext
-                inc     hl
-                ld      a,(hl)
-                dec     a
-                jr      z,NwaHop
-                dec     hl
-                jr      NwaNext
-NwaHop:
-                inc     hl
-NwaNext:
-                djnz    NwaLoop
-                ret
-
-; The caret from the table: NoteCursorX its logical column, NoteCursorY
-; its screen row, NwCaretCol its screen column, and NoteRows the rows,
-; one more when the caret sits below the last.
-NwDerive:
-                ld      a,(NoteCY)
-                call    NwLineOf
-                ld      (NwCurLine),a
-                ld      a,(NoteCY)
-                sub     c
-                call    NwTimes14
-                ld      hl,NoteCX
-                add     a,(hl)
-                ld      (NoteCursorX),a
-                xor     a
-                ld      (NoteCursorY),a
-                ld      (NwCaretCol),a
-                ld      a,(NwTabN)
-                ld      hl,NwTab
-                ld      c,0                     ; the row
-                ld      d,0                     ; its start within the line
-                ld      e,0                     ; the line
-                or      a
-                jr      z,NwdDone
-                ld      b,a
-NwdLoop:
-                ld      a,(NwCurLine)
-                cp      e
-                jr      nz,NwdNext
-                ld      a,(NoteCursorX)
-                cp      d
-                jr      c,NwdNext               ; the row starts after the caret
-                ld      a,c
-                ld      (NoteCursorY),a
-                ld      a,(NoteCursorX)
-                sub     d
-                ld      (NwCaretCol),a
-NwdNext:
-                ld      a,(hl)
-                inc     hl
-                inc     c
-                bit     6,a
-                jr      nz,NwdLineEnd
-                bit     5,a
-                jr      z,NwdNoSpace
-                inc     d                       ; the space consumed after it
-NwdNoSpace:
-                and     NW_LEN
-                add     a,d
-                ld      d,a
-                djnz    NwdLoop
-                jr      NwdDone
-NwdLineEnd:
-                inc     e
-                ld      d,0
-                djnz    NwdLoop
-NwdDone:
-                ld      a,(WinW)
-                sub     2
-                ld      hl,NwCaretCol
-                cp      (hl)                    ; W against the column
-                jr      z,NwdPast
-                jr      nc,NwdRows              ; within the row
-NwdPast:
-                ld      (hl),0                  ; past the edge: the first cell
-                ld      hl,NoteCursorY          ; of the row after
-                inc     (hl)
-NwdRows:
-                ld      a,(NoteCursorY)
-                cp      c
-                jr      nz,NwdSet
-                inc     c                       ; the caret's row below the text
-NwdSet:
-                ld      a,c
-                ld      (NoteRows),a
-                ret
-
-; ---- The table walk: a cursor of row, chunk and offset that the
-; painter and the navigation move an entry at a time.
-NwWalkInit:
-                xor     a
-                ld      (NwPRow),a
-                ld      (NwPChunk),a
-                ld      (NwPOff),a
-                ld      (NwPFirst),a
-                ld      hl,NwTab
-                ret
-
-; HL = the row's entry: the cursor on to the next row's first
-; character. A line's last row hands over to the chunk after the
-; line; a row starting at a chunk's very end stays there, which is
-; the end of chunk caret, unless a link carries on.
-NwpAdvance:
-                ld      a,(hl)
-                ld      (NwPEntry),a
-                bit     6,a
-                jr      nz,NwpLineEnd
-                ld      c,a
-                and     NW_LEN
-                bit     5,c
-                jr      z,NwpAdv
-                inc     a
-NwpAdv:
-                ld      hl,NwPOff
-                add     a,(hl)
-NwpNorm:
-                cp      NOTECOLS
-                jr      c,NwpOffSet
-                push    af
-                ld      a,(NwPChunk)
-                call    NoteLinkAddr
-                ld      a,(hl)
-                or      a
-                jr      z,NwpAtEnd
-                pop     af
-                sub     NOTECOLS
-                ld      hl,NwPChunk
-                inc     (hl)
-                jr      NwpNorm
-NwpAtEnd:
-                pop     af
-                ld      a,NOTECOLS
-NwpOffSet:
-                ld      (NwPOff),a
-                jr      NwpNext
-NwpLineEnd:
-                ld      a,(NwPFirst)
-                call    NwLastOf
-                inc     a
-                ld      (NwPFirst),a
-                ld      (NwPChunk),a
-                xor     a
-                ld      (NwPOff),a
-NwpNext:
-                ld      hl,NwPRow
-                inc     (hl)
-                ret
-
-; HL = the address of the cursor's character.
-NwpAddr:
-                ld      a,(NwPChunk)
-                call    NoteRowAddr
-                ld      a,(NwPOff)
-                add     a,l
-                ld      l,a
-                ret     nc
-                inc     h
-                ret
-
-; A = a row. Returns Z, HL = its first character and NwPEntry = its
-; entry, or NZ when the table has no such row.
-NwRowAt:
-                ld      c,a
-                ld      a,(NwTabN)
-                cp      c
-                jr      z,NwraNone
-                jr      c,NwraNone
-                push    bc
-                call    NwWalkInit
-                pop     bc
-NwraLoop:
-                ld      a,(NwPRow)
-                cp      c
-                jr      z,NwraFound
-                push    bc
-                push    hl
-                call    NwpAdvance
-                pop     hl
-                inc     hl
-                pop     bc
-                jr      NwraLoop
-NwraFound:
-                ld      a,(hl)
-                ld      (NwPEntry),a
-                call    NwpAddr
-                xor     a
-                ret
-NwraNone:
-                or      1
-                ret
-
-; ---- The painter: the rows in view from the table into the buffer,
-; the text and then spaces to the edge when WinDraw left the
-; interior as it was (the home size, APPF_FULL).
-NwPaint:
-                call    NwWalkInit
-                push    hl
-                ld      hl,(WinBufP)            ; row 1, column 1
-                ld      a,(WinW)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                inc     hl
-                ld      (NwPCell),hl
-                pop     hl
-                ld      a,(NwTabN)
-                or      a
-                ret     z
-                ld      b,a
-NwpLoop:
-                push    bc
-                push    hl
-                call    NwpRow
-                pop     hl
-                push    hl
-                call    NwpAdvance
-                pop     hl
-                inc     hl
-                pop     bc
-                ld      a,(NoteTop)
-                ld      c,a
-                ld      a,(WinH)
-                sub     2
-                add     a,c                     ; the first row below the view
-                ld      c,a
-                ld      a,(NwPRow)
-                cp      c
-                ret     nc                      ; the rest is out of view
-                djnz    NwpLoop
-                ret
-
-NwpRow:
-                ld      a,(hl)
-                ld      (NwPEntry),a
-                ld      a,(NoteTop)
-                ld      c,a
-                ld      a,(NwPRow)
-                sub     c
-                ret     c
-                ld      c,a                     ; the row within the view
-                ld      a,(WinH)
-                sub     2
-                cp      c
-                ret     z
-                ret     c
-                ld      hl,(NwPCell)            ; the row's first cell, and
-                push    hl                      ; the next row's for later
-                ld      a,(WinW)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ld      (NwPCell),hl
-                call    NwpAddr                 ; HL = the row's first character
-                pop     de                      ; DE = the row's first cell
-                ld      a,(NwPEntry)
-                and     NW_LEN
-                jr      z,NwpPad
-                ld      (NwPLeft),a
-                ld      a,(NwPOff)
-                ld      c,a
-NwpPiece:
-                ld      a,NOTECOLS
-                sub     c                       ; room left in this chunk
-                ld      c,a
-                ld      a,(NwPLeft)
-                cp      c
-                jr      nc,NwpWhole
-                ld      c,a                     ; the rest fits
-NwpWhole:
-                sub     c
-                ld      (NwPLeft),a
-                ld      b,0
-                ldir
-                ld      a,(NwPLeft)
-                or      a
-                jr      z,NwpPad
-                inc     hl                      ; the chunk's end: the text
-                inc     hl                      ; goes on in the next
-                ld      c,0
-                jr      NwpPiece
-NwpPad:
-                ld      a,(WdFull)
-                or      a
-                ret     z                       ; WinDraw blanked the interior
-                ld      a,(NwPEntry)
-                and     NW_LEN
-                ld      c,a
-                ld      a,(WinW)
-                sub     2
-                sub     c
-                ret     z
-                ld      b,a
-                ld      a,' '
-NwpSpace:
-                ld      (de),a
-                inc     de
-                djnz    NwpSpace
-                ret
-
-; ---- The draw with WRAP: the table (laid out now if it is stale),
-; the caret from it, the top following the caret after a key and
-; clamped to the last page, the rows in view, the caret inverted.
-NoteDrawWrap:
-                xor     a
-                ld      (NoteLeftCol),a
-                call    NwEnsure
-                call    NwDerive
-                ld      a,(NoteTop)
-                ld      c,a                     ; the top wanted
-                ld      a,(NoteFollow)
-                or      a
-                jr      z,NdwClamp
-                xor     a
-                ld      (NoteFollow),a
-                ld      a,(NoteCursorY)
-                cp      c
-                jr      nc,NdwBelow
-                ld      c,a                     ; above the view
-                jr      NdwClamp
-NdwBelow:
-                ld      b,a
-                ld      a,(WinH)
-                sub     2
-                ld      e,a
-                ld      a,c
-                add     a,e
-                dec     a                       ; the last row in view
-                cp      b
-                jr      nc,NdwClamp
-                ld      a,b
-                sub     e
-                inc     a
-                ld      c,a
-NdwClamp:
-                ld      a,(WinH)
-                sub     2
-                ld      b,a
-                ld      a,(NoteRows)
-                sub     b
-                jr      nc,NdwMax
-                xor     a
-NdwMax:
-                cp      c
-                jr      nc,NdwTopSet
-                ld      c,a
-NdwTopSet:
-                ld      a,c
-                ld      (NoteTop),a
-                call    NwPaint
-                ; the rows in view below the table are blank
-                ld      a,(WdFull)
-                or      a
-                jr      z,NdwCaret
-                ld      a,(NoteTop)
-                ld      c,a
-                ld      a,(NwTabN)
-                sub     c
-                jr      nc,NdwBlank
-                xor     a
-NdwBlank:
-                ld      b,a                     ; the first row to blank
-                ld      a,(WinH)
-                sub     2
-                cp      b
-                jr      z,NdwCaret
-                jr      c,NdwCaret
-                sub     b
-                ld      c,a                     ; rows to blank
-                inc     b
-NdwBlankRow:
-                push    bc
-                ld      c,1
-                call    WinCell
-                ld      a,(WinW)
-                sub     2
-                ld      b,a
-                ld      a,' '
-NdwBlankCell:
-                ld      (hl),a
-                inc     hl
-                djnz    NdwBlankCell
-                pop     bc
-                inc     b
-                dec     c
-                jr      nz,NdwBlankRow
-NdwCaret:
-                ld      a,1
-                ld      (NwDerived),a           ; for the scroll bar's model
-                ld      a,(NoteTop)
-                ld      c,a
-                ld      a,(NoteCursorY)
-                sub     c
-                ret     c
-                ld      b,a
-                ld      a,(WinH)
-                sub     2
-                cp      b
-                ret     z
-                ret     c
-                inc     b
-                ld      a,(NwCaretCol)
-                inc     a
-                ld      c,a
-                call    WinCell
-                ld      a,(hl)
-                or      INVBANK
-                ld      (hl),a
-                ret
-
-; ---- Up and down move a screen row, keeping the column where the
-; row is long enough; HOME goes to the row's start. The row wanted
-; comes from the table and the caret becomes chunk coordinates again.
-NoteUpWrap:
-                call    NoteMeasureWrap
-                ld      a,(NoteCursorY)
-                or      a
-                ret     z
-                dec     a
-                jr      NoteGotoRow
-NoteDownWrap:
-                call    NoteMeasureWrap
-                ld      a,(NoteCursorY)
-                inc     a
-                ld      hl,NwTabN               ; nothing below the last row
-                cp      (hl)
-                ret     nc
-NoteGotoRow:
-                call    NwRowAt
-                ret     nz
-                ld      a,(NwPEntry)
-                and     NW_LEN
-                ld      c,a
-                ld      a,(NwCaretCol)
-                cp      c
-                jr      c,NgrCol
-                ld      a,c
-NgrCol:
-                call    NwAdvance
-NoteCaretAt:
-                ; HL = a document address: chunk Y is its sixteenth, X
-                ; the rest, the editor's own coordinates
-                ld      de,NoteBuf
-                or      a
-                sbc     hl,de
-                ld      a,l
-                and     $0F
-                ld      (NoteCX),a
-                ld      a,l
-                rrca
-                rrca
-                rrca
-                rrca
-                and     $0F
-                ld      (NoteCY),a
-                ret
-NoteHomeWrap:
-                call    NoteMeasureWrap
-                ld      a,(NoteCursorY)
-                call    NwRowAt
-                ret     nz
-                jr      NoteCaretAt
-
-; ---- Before a repaint (WinRedraw): the layout job for the front
-; window, or for the window being resized, a budget's worth. Returns
-; A = 1 while the repaint has to wait for it, 0 to go ahead. A full
-; job starts when the window's buffer is to be recomposed and its
-; table is stale. A job for a window that is no longer the live one
-; is dropped; that window lays out when it is composed.
-NoteLayService:
-                ld      a,(SetWrap)
-                or      a
-                ret     z
-                ld      a,(NwBusy)
-                or      a
-                jr      nz,NlsRun
-                ld      a,(WndCount)
-                or      a
-                ret     z
-                ld      a,(Resizing)
-                cp      2
-                jr      nc,NlsLive              ; the resized window is live
-                ld      a,(RepaintDue)
-                or      a
-                ret     z
-                ; the frontmost notepad whose buffer is to be recomposed
-                ; and whose table is stale, if there is one
-                ld      b,a
-                ld      a,(WndCount)
-                ld      b,a
-                ld      hl,WndZ
-NlsScan:
-                push    bc
-                push    hl
-                ld      a,(hl)
-                ld      c,a                     ; the slot
-                ld      b,a
-                inc     b
-                ld      a,$80
-NlsBit:
-                rlca
-                djnz    NlsBit
-                ld      hl,WndDirty
-                and     (hl)
-                jr      z,NlsNext               ; its buffer is not recomposed
-                ld      a,c
-                ld      hl,WndCur
-                cp      (hl)
-                jr      nz,NlsTable
-                ld      de,(WinApp)             ; the live record: the table's
-                jr      NlsApp                  ; copy waits for WndFlush
-NlsTable:
-                call    WndRecAt
-                ld      de,WR_APP
-                add     hl,de
-                ld      e,(hl)
-                inc     hl
-                ld      d,(hl)
-NlsApp:
-                ld      hl,AppNote
-                or      a
-                sbc     hl,de
-                jr      nz,NlsNext
-                ld      a,c
-                call    WndSelect               ; the front: live already
-                call    NwStale
-                jr      z,NlsNext               ; its table serves
-                pop     hl
-                pop     bc
-                jr      NlsStart
-NlsNext:
-                pop     hl
-                pop     bc
-                inc     hl
-                djnz    NlsScan
-                xor     a
-                ret
-NlsLive:
-                ld      hl,(WinApp)
-                ld      de,AppNote
-                or      a
-                sbc     hl,de
-                jr      nz,NlsGo
-                call    NwStale
-                jr      z,NlsGo
-NlsStart:
-                ; A job started here paints next frame at the earliest, as
-                ; WndOpenLater splits a window's open: the frame has had
-                ; the event that made the window stale in it already.
-                call    NwStartFull
-                call    NwStep
-                ld      a,1
-                ret
-NlsRun:
-                ld      a,(NoteLayWnd)
-                ld      hl,WndCur
-                cp      (hl)
-                jr      nz,NlsDrop
-                ld      a,(WinW)
-                sub     2
-                ld      hl,NwWidth
-                cp      (hl)
-                jr      nz,NlsAgain
-                call    NwStep
-                ld      a,1
-                ret     nz                      ; more next frame
-NlsGo:
-                xor     a
-                ret
-NlsAgain:
-                call    NwStartFull             ; the window changed width
-                jr      NlsRun
-NlsDrop:
-                call    NwInvalidate
-                xor     a
                 ret
