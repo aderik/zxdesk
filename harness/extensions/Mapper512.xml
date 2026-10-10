@@ -1,0 +1,25 @@
+<?xml version="1.0" ?>
+<!DOCTYPE msxconfig SYSTEM 'msxconfig2.dtd'>
+<msxconfig>
+  <!-- A 512K memory mapper as a cartridge, the way an MSX1 gets a
+       mapper: openMSX's own ram512k.xml with a name the harness can
+       find in `debug list`. On Roms_MSX1 it lands in slot 1, next to
+       the 64K of plain RAM in slot 3, so the bank backend's source B
+       (mapper segments) has to win over source A (hidden pages). -->
+  <info>
+    <manufacturer>MSX Desk</manufacturer>
+    <code>Mapper512</code>
+    <description>512 kB memory mapper cartridge for the bank backend.</description>
+    <type>RAM expansion</type>
+  </info>
+  <devices>
+    <primary slot="any">
+      <secondary slot="any">
+        <MemoryMapper id="Mapper512">
+          <mem base="0x0000" size="0x10000"/>
+          <size>512</size>
+        </MemoryMapper>
+      </secondary>
+    </primary>
+  </devices>
+</msxconfig>

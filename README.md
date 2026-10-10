@@ -1144,6 +1144,147 @@ Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2 were not available
 in this environment; the disk-only subjects (`dsk-boot-*`, the seeded
 version 5 boots) run there in the pipeline.
 
+## The bank backend (lf-1525)
+
+`ST_BANK` (4, `bank.inc`) is a RAM disk in memory the desktop cannot
+see, the way `bank.inc` on the ZX 128K used the free banks. An MSX has
+two kinds of it, and `BkInit` measures both at `StInit` and keeps the
+larger:
+
+- **Source 1, hidden pages.** On a 64K MSX1 the BIOS sits in page 0 and
+  this cartridge in pages 1 and 2, so 48K of the RAM is behind them.
+  For each page the slot id of the first slot whose byte at a test
+  address takes a write is recorded: page 3's slot first (the same
+  chip), then the primary slots that are not expanded and, when page
+  3's is, its secondary slots from `EXPTBL`/`SLTTBL`. An expanded slot
+  other than page 3's is not probed: reaching its register means
+  switching page 3 itself, which nothing in RAM can do. The first
+  block of the first hidden page is left alone: a disk ROM keeps its
+  RST and interrupt vectors in the first 256 bytes of page 0's RAM for
+  the time it pages the BIOS out (measured on Roms_MSX1 + Roms_Disk:
+  formatting that block corrupted the FAT buffer and lost files), so
+  48K of hidden pages is 191 blocks, shown rounded up as 48 KB.
+- **Source 2, a memory mapper.** 16K segments selected per page through
+  ports $FC-$FF, which on an expansion are write-only, so nothing is
+  ever read back from them. A slot is a mapper when a marker written
+  with segment 1 selected leaves the one written with segment 0 in
+  place; its size comes from writing every segment number into its
+  segment and reading what segment 0 ends up with (a register with
+  fewer bits wraps). The segments the system keeps are found with
+  markers too: segment number k into every segment through page 0,
+  then what pages 1 and 2 show through their own windows and what page
+  3 shows in the probe byte itself. Page 0's own segment is the one
+  register that cannot be told without writing it first; it is taken
+  as 3 when pages 1-3 hold 2, 1, 0 (the BIOS's layout) and as 0
+  otherwise, which is what a mapper nobody initialised has
+  (openMSX's `MSXMemoryMapperBase::reset`, and the MSX1 BIOS never
+  writes them). All four are kept out; page 2's is written back after
+  every transfer.
+
+Every transfer goes through `BkCode`, 63 bytes copied to work RAM at
+init, because it puts the page the ROM sits in on the RAM slot for one
+LDIR: under DI it reads `PSLOT` and the secondary register at $FFFF,
+selects the page (and the segment), copies up to 256 bytes between a
+page-3 buffer and the window and writes both registers back exactly.
+`ENASLT` cannot do page 0 and nothing in ROM can do its own page. The
+routine is a template whose operands the ROM patches: the masks and
+bits for both registers, the segment, the window and the buffer. On a
+plain page-3 slot $FFFF is RAM and gets its own byte back; on an
+expanded one it reads inverted and the register is written as read.
+Measured with breakpoints on the routine's DI and EI (`machine_info
+time`): a 64 byte directory chunk **476 us**, a 256 byte block
+**1,709 us** on the 50 Hz machines and **1,721 us** on the MSX2,
+where the mapper window has one more OUT. The VDP holds its interrupt
+until the status register is read, so a window that short loses
+nothing: `bank-irq` saves a document to the bank with GRAPH+S while the
+clock runs and RIGHT is held and asserts **Dropped = 0** on both C-BIOS
+machines, the clock's seconds equal to the interrupt model and the
+pointer moved by the ramp for the frames held. The first save of a
+document goes through the name dialogue, whose closing frame is
+**19.5 ms** on RAM at 50 Hz (**21.4 ms** at 60 Hz) and 22.4 ms with the
+bank's 3.7 ms of transfers in it, and opening the clock is 18.6 ms:
+those frames drop with or without the bank at 60 Hz, so the subject
+counts from the held key on. The Commander's 30 by 12 repaint is a
+20 ms frame on its own (24.9 ms opening it), the same story.
+
+The disk is 256 byte blocks: one summary block per 256 (a byte per
+entry, the name's hash, 0 while free), then a directory block per
+seventeen of the rest (sixteen byte entries in the RAM backend's
+layout: name, size, used) and a file per block left, 256 bytes at most
+like the RAM backend. Both are read in 64 byte chunks through one
+cache and written through. A name is looked up, a free entry found and
+the directory counted on the summary, 64 entries a transfer, and an
+entry is only read when its hash matches: with 4 entries a transfer
+filling the 512K bank's 1,859 files took over 650 s of emulated time
+(the TEST run on 180 files alone took 11 s), which is also what a save
+on a full bank would have cost in frames. A free-entry hint keeps
+filling linear. Capabilities `WRITE|RANDOM|DIR`, not `PERSIST`.
+
+| machine | source | bank |
+|---|---|---|
+| C-BIOS_MSX1_EU/JP, Roms_MSX1, + Roms_Disk | 1: pages 0-2 of slot 3, less the first block | 191 blocks (48 KB rounded up), 178 files |
+| Roms_MSX2 | 2: slot 3-2, 128K, segments 3,2,1,0 kept out | 64 KB, 240 files |
+| Roms_MSX1 + Mapper512 | 2: slot 1, 512K, segment 0 under every page | 496 KB, 1,859 files |
+
+Found on the way, on Roms_MSX1 + Roms_Disk: the H.TIMI hook was a
+`JP` into page 1 of this cartridge, but the BDOS pages the disk ROM
+into page 1 for the length of a call and its driver enables
+interrupts while it waits, so a frame interrupt in that window ran
+the disk ROM's bytes at `IrqTick`'s address (`ld (hl),c`, HL on the
+kernel's directory buffer: a file's first byte became 0 and it was
+gone). Whether a frame fell in the window was a matter of when the
+call started: the bank's 50 ms of detection moved it there, and a
+40 ms delay before the TEST storage subject did the same on `main`
+(`store-dir` 3 files, `del` lost). The handler now runs from 8 bytes
+of work RAM (`IrqCode`), valid whatever sits in page 1.
+
+`harness/extensions/Mapper512.xml` is openMSX's own 512K mapper
+cartridge under a name the harness can read as a debuggable; on
+Roms_MSX1 the BIOS puts page 3 on it (slot 1, `PSLOT` $68), so the 64K
+in slot 3 is hidden entirely and source 2 wins. openMSX's `MapperIO`
+debuggable shows random bits for registers never written, so the
+harness finds page 3's segment by looking for the work RAM's marker in
+the dumped device instead. `test-all.sh` adds `--bank` on that
+configuration after the five machines.
+
+**SETTINGS > BACKEND** goes round RAM, BANK and DISK, those that are
+there, in both directions; BANK shows its size after the label:
+`BACKEND 48 KB   [BANK]`. A 16K or 32K MSX1 has no hidden pages and
+no BANK (a 32K machine's page 2 RAM is behind the cartridge too, 16 KB,
+not measured here). In the Commander **B** takes the other pane round
+the same ring (from PRN to RAM), so RAM, DISK and BANK copy both ways;
+the help row reads `TAB PANE P PRN B BANK R LIST`. A document saved on
+the bank keeps it as its backend, as with RAM.
+
+`./test.sh --bank` runs, on every machine: `bank-detect` (source,
+blocks, page and slot tables or the kept-out segments and the mapper's
+slot, against the machine), `bank-format` (geometry, no entry used),
+`bank-irq`, the Commander ring, copies RAM/DISK -> BANK -> RAM/DISK
+with the bytes read out of the bank device and back in the source,
+`bank-note` (SETTINGS to BANK, type, save, edit, close and discard,
+FILE > OPEN: the document is the saved one, in the bank), and
+`bank-picker`. The TEST build's `bank-sys` writes a hundred 256 byte
+files with interrupts off throughout (the routine's EI is a NOP for the
+duration) and the harness snapshots $F380-$FFFF and the whole ROM at
+`TbsStart` and `TbsEnd`: identical, and the ROM equals the image.
+`bank-rw` round trips 64 bytes, fills the bank until `STERR_FULL`
+(**77** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
+on 496 KB: 412 s of emulated time, the whole TEST run), counts the
+directory (to 255, the index's width), deletes `F0002`, sees `NEW`
+take entry 103 and reads a full file back; `bank-dir` parses the
+dumped device itself: every entry, summary byte and data block. Every
+bank file's bytes are read from the openMSX device (`Main RAM`,
+`Mapper512`), not through the ROM.
+
+Measured against `8118c5d`: normal ROM **15,870 -> 18,006 bytes
+(+2,136)**, now into page 2 (`$4000-$8656`); TEST ROM **17,147 ->
+19,731**. Static RAM **3,543 -> 3,716 bytes (+173)**: the 63 byte
+routine, 64 bytes of chunk cache, 46 bytes of geometry and state;
+heap **8,572** bytes without a disk ROM, **3,187** with one (TEST
+**5,840 / 455**). The TEST build's heap subject allocates 160, 120 and
+96 bytes now, what fits behind the disk ROM. The bank allocates no
+heap. Commander and notepad buffers are unchanged.
+
 ## Review of the printer (lf-1536)
 
 Two findings from the review of lf-1524, both fixed here.
