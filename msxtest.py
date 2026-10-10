@@ -203,11 +203,12 @@ class Run:
     """One boot of the ROM through a step list: (frames, tcl) pairs, the
     frames counted on the ROM's own counter. Holds the dumps."""
 
-    def __init__(self, syms, steps, name, rom=ROM, files=None, setup=(), guard=120):
+    def __init__(self, syms, steps, name, rom=ROM, files=None, setup=(), guard=120, machine=None):
         """`setup`: Tcl run at start up, before the machine boots, for
         breakpoints that must be there before the TEST build's subjects,
         which run before the first frame a step could see. `guard`: the
-        driver's real time limit in seconds."""
+        driver's real time limit in seconds. `machine`: another config
+        than MSX_MACHINE's, with the same extensions."""
         self.syms = syms
         out = os.path.join(OUT, name)
         os.makedirs(out, exist_ok=True)
@@ -228,7 +229,7 @@ class Run:
         # The cartridge goes in slot 2 so a disk interface extension takes
         # slot 1 and the BIOS runs its init first: it must lower HIMEM and
         # plant the BDOS jump before this ROM's Init reads them.
-        cmd = ["openmsx", "-machine", MACHINE, "-cartb", rom, "-romtype", "page12",
+        cmd = ["openmsx", "-machine", machine or MACHINE, "-cartb", rom, "-romtype", "page12",
                "-script", os.path.join(ROOT, "harness", "run.tcl")]
         for ext in EXTS:
             cmd += ["-ext", ext]
@@ -1349,6 +1350,35 @@ def bank_checks(syms, fails):
           and bank_files(r, "bank-note") == {"NOTE": (0, document)},
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, backend {r.peek('NoteBackend')}, "
           f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    # A 32K MSX1 whose RAM shows again in pages 0 and 1 of its slot, as
+    # hardware that does not decode A15 does (harness/machines/
+    # C-BIOS_MSX1_Mirror32): page 1 is page 3, the work RAM, and page 2
+    # is page 0, so the bank is page 0 alone, 63 blocks. The same route
+    # with the free hint on the last entry puts the document in the
+    # bank's last block and the work RAM keeps the document it reopens.
+    if MACHINE == "C-BIOS_MSX1_EU" and not EXTS:
+        mirror = "C-BIOS_MSX1_Mirror32"
+        size = 'note "ramsize [debug size {Main RAM}]"'
+        r = Run(syms, [(10, size)] + bank_dump_step(), "bank-mirror", machine=mirror)
+        ramsize = re.search(r"ramsize (\d+)", r.log)
+        ok = (ramsize and int(ramsize.group(1)) == 0x8000 and r.peek("BkSource") == 1 and r.peek("BkBlocks", 2) == 63
+              and r.bytes("BkPageTab", 1) == bytes((0,)) and r.bytes("BkSlotTab", 1) == bytes((3,))
+              and bank_files(r, "bank-mirror") == {})
+        check(fails, "bank-mirror", ok,
+              f"Main RAM {ramsize.group(1) if ramsize else '?'} bytes: source {r.peek('BkSource')}, "
+              f"{r.peek('BkBlocks', 2)} blocks, pages {tuple(r.bytes('BkPageTab', 3))} of slots {tuple(r.bytes('BkSlotTab', 3))}")
+        last = bank_geometry(r)[3] - 1
+        hint = [(5, f"debug write memory {syms['BkTop']} {last}; debug write memory {syms['BkFreeHint']} {last}")]
+        steps = (to_bank + hint + typed + file_save + input_note_name() + tap(5, 0x20) + press(66, 50) + press(60, 98)
+                 + file_open + enter + [(15, "")] + bank_dump_step())
+        r = Run(syms, steps, "bank-mirror-note", files={}, machine=mirror)
+        want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 0, 0, title=b"NOTE")])
+        check(fails, "bank-mirror-note", r.peek("NoteBackend") == 4 and r.bytes("NoteBuf", 256) == document
+              and r.peek("NoteSaved") == 1 and r.peek("WndCount") == 1 and r.nt() == want
+              and bank_files(r, "bank-mirror-note") == {"NOTE": (last, document)},
+              f"entry {last}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
     r = Run(syms, to_bank + typed + file_save + input_note_name() + file_open + [(15, "")], "bank-picker")
     want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"NOTE"),
                                    (2, 4, 30, 12, b"COMMANDER", [(1, 1, b"BANK", True), (2, 1, b"NOTE", True), (2, 22, b"00256", True),

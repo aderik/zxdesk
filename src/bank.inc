@@ -294,6 +294,8 @@ BkSave0         equ     CmdWork+8
 BkSave1         equ     CmdWork+9
 BkS0            equ     CmdWork+10
 BkRead          equ     CmdWork+11              ; a probe's read back; a transfer leaves BC 0
+BkWit           equ     CmdWork+12              ; source 1's witness: $FF page 3, else a found page
+BkSlotC         equ     BkS1                    ; source 1's candidate slot; BkS1 is source 2's
 
 BkInit:
                 ld      hl,BkTpl
@@ -352,6 +354,8 @@ BkInitCand:
                 ld      a,(BkPg)
                 ld      (BkPage),a
                 call    BkProbeRam
+                jr      nz,BkInitCand
+                call    BkProbeOwn
                 jr      nz,BkInitCand
                 ld      a,(BkFound)
                 ld      c,a
@@ -579,6 +583,70 @@ BkProbeRam:
                 ld      a,(BkSave1)
                 ld      hl,BkRead
                 cp      (hl)
+                ret
+
+; Z if the RAM behind the window is its own: not page 3 and none of
+; the pages found before it. A 16K or 32K MSX that does not decode
+; every address line shows its RAM again in the other pages of its
+; slot, and BkProbeRam passes a page that mirrors page 3 since the
+; probe's offset is BkProbe's own; a bank there wrote into the work
+; RAM. A witness, BkProbe or a found page at the same offset, is read
+; before and after an inverted write through the window: an alias
+; sees it change. The window's byte is put back as it was.
+BkProbeOwn:
+                ld      a,(BkSlot)
+                ld      (BkSlotC),a
+                ld      a,$FF
+                ld      (BkWit),a               ; page 3 first
+BkOwnLoop:
+                call    BkProbeGet
+                ld      (BkSave0),a
+                call    BkWitness
+                ld      (BkSave1),a
+                ld      a,(BkSave0)
+                cpl
+                call    BkProbePut
+                call    BkWitness
+                ld      (BkRead),a
+                ld      a,(BkSave0)
+                call    BkProbePut
+                ld      a,(BkSave1)
+                ld      hl,BkRead
+                cp      (hl)
+                ret     nz                      ; the witness moved: an alias
+                ld      hl,BkWit
+                inc     (hl)
+                ld      a,(BkFound)
+                cp      (hl)
+                jr      nz,BkOwnLoop
+                ret                             ; Z: every witness held
+; A = the witness's byte at the probe's offset; the window is the
+; candidate's again afterwards.
+BkWitness:
+                ld      a,(BkWit)
+                inc     a
+                jr      nz,BkWitPage
+                ld      a,(BkProbe)
+                ret
+BkWitPage:
+                dec     a
+                ld      c,a
+                ld      b,0
+                ld      hl,BkPageTab
+                add     hl,bc
+                ld      a,(hl)
+                ld      (BkPage),a
+                ld      hl,BkSlotTab
+                add     hl,bc
+                ld      a,(hl)
+                ld      (BkSlot),a
+                call    BkProbeGet
+                push    af
+                ld      a,(BkPg)
+                ld      (BkPage),a
+                ld      a,(BkSlotC)
+                ld      (BkSlot),a
+                pop     af
                 ret
 
 ; Z if segments 0 and 1 are different memory behind the window: a
