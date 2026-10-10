@@ -1322,3 +1322,99 @@ Padded ROM CRC32: normal `6704eb41`, TEST `8498aabb`.
 Roms_MSX1 + Roms_Disk **22** assertions, none failed (the disk run omits
 the RAM-only raw-stream fixture, as before). The full suite is the
 pipeline's.
+
+## lf-1526: Notepad selection
+
+SELECT toggles marking at the caret; holding it does not repeat the
+toggle. While marking, SHIFT+arrows extend the selection with KEY PTR ON,
+and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
+drag selects whole cells, and dragging beyond the viewport scrolls it.
+SELECT again stops extending while retaining the selection. ESC or a
+click without dragging clears it. Typing replaces it; BS and DEL delete
+it. HELP > KEYS now includes SELECT MARK, below D DESKTOP: 22 rows,
+opened at row 1, the lowest row a list of that height fits at above the
+status row.
+
+Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
+in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
+no selection. Continuation chunks remain part of the same logical line.
+Selection uses the existing inverse bank, only in the front window.
+Focus changes recompose Notepad content so the background loses inversion
+without losing its selection. Mouse composition and desktop repaint use
+successive frames; all output still goes through the shadow nametable.
+
+`./test.sh --note-selection` adds 17 assertions, also included in the
+pipeline's default suite. They compare memory and compositor bytes for
+keyboard/mouse equivalence, both KEY PTR modes, SELECT toggling and repeat
+suppression, replacement, BS/DEL, ESC/click clearing, per-instance focus,
+reverse selection across chunks, three-line deletion and drag scrolling.
+The three-line deletion compares all 256 document bytes.
+
+Focused verification, rebased on `40b7e5a` (the icons of lf-1527 lie
+under every window, so the screen checksums include them; the bank
+backend of lf-1525 moved the RAM layout again):
+
+| Configuration | Group | Assertions |
+|---|---|---:|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--print`, `--resize-scroll` | 17, 23, 20 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-selection`, `--resize-scroll` | 17, 20 |
+| Roms_MSX1 + Roms_Disk | `--settings` (the TEST build's heap subject) | 170 |
+| Roms_MSX1 + Mapper512 | `--bank` | 20 |
+
+On the earlier base `0ed9256` the pipeline's full `test-all.sh` passed
+on C-BIOS EU, C-BIOS JP and Roms_MSX1 and failed only `heap-stat` on
+Roms_MSX1 + Roms_Disk, which the bank backend's smaller heap subject
+(160, 120, 96 bytes) now covers: on this base the three blocks fill
+the disk machine's 388 byte TEST heap exactly, with nothing to split
+off, and the stats agree with the formula (after the allocations 0,
+after the free 120, after the free by owner 224). The next ticket that
+adds static RAM will have to shrink that subject again.
+
+Keyboard and mouse selection both have nametable CRC32 **4f499791**.
+Replacement with X gives document CRC32 **fb9f7a1f**; BS/DEL give
+**3bc1feef**; deletion across three logical lines including a continuation
+chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
+**96518af1** and, typed over, document CRC32 **27fb7f93**. HELP > KEYS
+has CRC32 **6f18e610**.
+
+The drag-scroll subject measures **Dropped = 0** on both frequencies for
+the drag alone: the counter is zeroed after the typed preamble. Measured
+with breakpoints at `FrameWatch` and `MainLoop` on the 60 Hz machine, a
+typed key frame with the icons under the window is 15.7 to 15.9 ms on
+`0ed9256` and 16.0 to 16.3 ms here (state write-back and row marking
+2.7 ms, lattice 0.9 ms, icon rows 1.6 ms, the Notepad compose 6.5 ms,
+the blit 1.6 ms), and both drop 11 of the preamble's 23 key frames at
+60 Hz; that cost is main's, not this change's, and is noted for the
+owner. The drag's own frames are at most 13.2 ms. This is not a claim
+about other editing operations or window sizes.
+
+The chunk painter leaves the selection code alone when the anchor row
+is $FF, which is the usual case: one load, an INC and a jump, 27 T a
+chunk, where the call into the painter and its two checks cost 240 T
+for the same answer. Measured on the 60 Hz machine with breakpoints
+on every chunk of the `resize-screen-edge` compose, a 24 by 17
+Notepad: a chunk took 427 us on main (`8fefef5`), 495 us with the call
+and 440 us with the early-out, so the compose frame went from 14,420
+to 15,607 us and dropped one frame, and is 14,665 us now, none
+dropped. A front window with a selection still pays the 68 us a chunk
+while it is drawn.
+
+The mouse capture byte is cleared at `Start`, with `DskDrag`: openMSX
+fills RAM with a pattern, and on the rebased layout the byte came up set,
+so the caret followed the idle pointer until the first release, which
+reversed the typed text in the `--print` subjects.
+
+Measured against `8fefef5`: normal ROM **19,353 → 19,875 bytes (+522)**,
+TEST **21,090 → 21,612 (+522)**; both run on into page 2, which `Start`
+maps. Static RAM grows **20 bytes** (four live state bytes, one mouse
+capture byte, fifteen paint scratch bytes), **3,759 → 3,779** normal and
+**6,491 → 6,511** TEST. The heap falls by 20: **8,529 → 8,509** bytes
+without a disk ROM, **3,144 → 3,124** with one (TEST **5,797 → 5,777 /
+412 → 392**). Each Notepad's existing state allocation grows **4
+bytes**, from **278 to 282**, with no new allocation. The KEYS window at
+22 rows uses **15 more heap bytes** than main's 21 while it is open.
+Padded ROM CRC32: normal **673eee09**, TEST **ecc22aa8**.
+
+The full six-configuration `test-all.sh` is left to the pipeline, as
+required by this implementation run's focused-tests-only instruction.
+No real-ROM matrix results are claimed here.

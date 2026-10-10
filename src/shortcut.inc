@@ -85,7 +85,7 @@ WndNext:
 ;  there is nothing to type at a list.
 ; ------------------------------------------------------------
 KEYSW           equ     15
-KEYSH           equ     21
+KEYSH           equ     22
 
 KeysOpen:
                 ld      a,APP_KEYS
@@ -132,6 +132,7 @@ KeysText:
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
+                defb    "SELECT MARK",0
                 defb    "CALENDAR:",0
                 defb    ", . MONTH",0
                 defb    "< > YEAR",0
