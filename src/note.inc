@@ -380,6 +380,7 @@ NoteMarkEdited:
                 ld      a,1
                 ld      (NoteEdited),a
                 ld      (NoteModified),a
+                or      a                       ; carry clear: the edit went in
                 ret
 
 NoteBlankRow:
@@ -1205,6 +1206,199 @@ NmoOk:
 
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
+
+; ---- The EDIT menu: CUT, COPY and PASTE (GRAPH+E, Y, P) through one
+; clipboard shared by every notepad, ClipBuf and ClipLen. The text is
+; the selection's cells with a CLIP_CR for every hard line break it
+; crosses; a line-ending chunk loses its padding, a continued chunk
+; is text through to its 14th cell. Each action wants the front
+; window to be a notepad and does nothing otherwise, like the menu
+; items that have nothing to act on.
+CLIP_CR         equ     13
+CLIPSIZE        equ     NOTEROWS*NOTECOLS       ; 224, the document budget
+
+NoteMenuCopy:
+                call    NoteIsFront
+                ret     nz
+                jp      NoteClipCopy
+
+NoteMenuCut:
+                call    NoteIsFront
+                ret     nz
+                call    NoteClipCopy
+                ret     c                       ; nothing copied, nothing cut
+                call    NoteEraseSelection
+                jp      NoteRefresh
+
+; The clipboard goes in at the caret, through NoteInsert and NoteEnter
+; as if typed, over a selection if there is one. Everything that could
+; change is saved first, and a byte that does not fit puts it all back
+; and says so: no half pasted text.
+NoteMenuPaste:
+                call    NoteIsFront
+                ret     nz
+                ld      a,(ClipLen)
+                or      a
+                ret     z
+                ld      hl,NoteBuf
+                ld      de,CmdBuf               ; free: no dialogue is open
+                ld      bc,NOTESIZE
+                ldir
+                ld      hl,NoteCX
+                ld      de,CmdWork              ; 13 bytes, NOTECURSZ of them
+                ld      bc,NOTECURSZ
+                ldir
+                call    NoteEraseSelection
+                xor     a
+                ld      (ClipIx),a
+NpaLoop:
+                ld      a,(ClipIx)
+                ld      hl,ClipLen
+                cp      (hl)
+                jr      z,NoteRefresh
+                ld      hl,ClipBuf
+                ld      c,a
+                ld      b,0
+                add     hl,bc
+                inc     a
+                ld      (ClipIx),a
+                ld      a,(hl)
+                cp      CLIP_CR
+                jr      z,NpaBreak
+                call    NoteInsert
+                jr      nc,NpaLoop
+                jr      NpaFull
+NpaBreak:
+                call    NoteEnter
+                jr      nc,NpaLoop
+NpaFull:
+                ld      hl,CmdBuf
+                ld      de,NoteBuf
+                ld      bc,NOTESIZE
+                ldir
+                ld      hl,CmdWork
+                ld      de,NoteCX
+                ld      bc,NOTECURSZ
+                ldir
+                ld      hl,TxtNoteFull
+                ld      de,0
+                jp      DlgAlert
+TxtNoteFull:    defb    "DOCUMENT FULL",0
+
+; The caret back in view, the buffer composed now and the desktop
+; and blit next frame, the split mouse selection uses: a paste of
+; HELLO measured 7.3 ms (1.8 of them the snapshot) before the 6 ms
+; compose, and the repaint on top of that dropped a frame at 50 Hz.
+NoteRefresh:
+                call    NoteScroll
+                call    RowsAddLive
+                jp      NoteComposeLater
+
+; A = a packed endpoint (NotePack). Returns A = its chunk row.
+NoteUnpackRow:
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ret
+
+; The selection into the clipboard. It is built in CmdBuf, which
+; holds the most a selection can give (224 cells and 15 breaks), and
+; moved when it fits: carry, and the clipboard as it was, when it
+; does not or when there is no selection.
+NoteClipCopy:
+                call    NoteSelectionBounds
+                scf
+                ret     z
+                ld      a,c
+                ld      (NoteChar),a            ; the exclusive upper endpoint
+                call    NoteUnpackRow
+                ld      (NoteExtendRow),a       ; and its row
+                ld      a,b
+                and     $0F
+                ld      (NoteJoinAt),a          ; the first chunk's start column
+                ld      a,b
+                call    NoteUnpackRow
+                ld      (NoteRowIx),a
+                ld      de,CmdBuf
+NccChunk:
+                push    de                      ; the row routines take DE
+                ld      a,(NoteRowIx)
+                call    NoteLinkAddr
+                ld      a,(hl)
+                ld      (NoteOldLink),a
+                ld      a,(NoteRowIx)
+                ld      hl,NoteExtendRow
+                cp      (hl)
+                ld      a,NOTECOLS              ; a chunk before the last: all of it
+                jr      c,NccEnd
+                ld      a,(NoteChar)
+                and     $0F                     ; the last: up to the endpoint
+NccEnd:
+                cp      NOTECOLS
+                jr      nz,NccCopy
+                ld      a,(NoteOldLink)
+                or      a
+                ld      a,NOTECOLS
+                jr      nz,NccCopy              ; a continued chunk is all text
+                ld      a,(NoteRowIx)
+                call    NoteLineLen             ; a line's end, without its padding
+NccCopy:
+                ld      hl,NoteJoinAt
+                sub     (hl)
+                jr      c,NccSkip               ; the start is past the text
+                jr      z,NccSkip
+                ld      c,a
+                ld      b,0
+                ld      a,(NoteRowIx)
+                call    NoteRowAddr
+                ld      a,(NoteJoinAt)
+                add     a,l
+                ld      l,a
+                jr      nc,NccFrom
+                inc     h
+NccFrom:
+                pop     de
+                ldir
+                push    de
+NccSkip:
+                pop     de
+NccBreak:
+                xor     a
+                ld      (NoteJoinAt),a          ; later chunks start at column 0
+                ld      a,(NoteRowIx)
+                ld      hl,NoteExtendRow
+                cp      (hl)
+                jr      nc,NccDone              ; the last chunk is in
+                inc     a
+                ld      (NoteRowIx),a
+                ld      a,(NoteOldLink)
+                or      a
+                jr      nz,NccChunk             ; the line goes on in the next chunk
+                ld      a,CLIP_CR
+                ld      (de),a
+                inc     de
+                jr      NccChunk
+NccDone:
+                ld      hl,CmdBuf
+                ex      de,hl
+                or      a
+                sbc     hl,de                   ; the length, at most 239
+                ld      a,l
+                cp      CLIPSIZE+1
+                ccf
+                ret     c                       ; more than the clipboard holds
+                ld      (ClipLen),a
+                or      a
+                ret     z                       ; padding alone: an empty clipboard
+                ld      c,a
+                ld      b,0
+                ld      de,ClipBuf
+                ld      hl,CmdBuf
+                ldir
+                or      a
+                ret
 
 ; Scroll model: count hard lines, not the chunks of a long line.
 NoteScrollInfo:
