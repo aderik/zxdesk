@@ -19,7 +19,10 @@ set log [open $out/log.txt w]
 proc note {msg} { puts $::log $msg; flush $::log }
 
 set throttle off
-after realtime 120 { note "TIMEOUT"; exit 3 }
+# MSXTEST_GUARD: seconds of real time a run may take; a subject that
+# fills a 512K bank file by file needs more than the usual two minutes.
+set guard [expr {[info exists ::env(MSXTEST_GUARD)] ? $::env(MSXTEST_GUARD) : 120}]
+after realtime $guard { note "TIMEOUT"; exit 3 }
 
 proc key_down {row mask} { keymatrixdown $row $mask }
 proc key_up {row mask} { keymatrixup $row $mask }

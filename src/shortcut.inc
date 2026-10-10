@@ -9,19 +9,18 @@
 ;  text can be, and HdlKey takes those before any application is
 ;  offered a key. An open menu or a dialogue swallows them.
 ;
-;  Only what the port can already do has a letter.
-;  PRINT and the desktop shortcuts panel are not here yet, so
-;  neither are R and D. O is new: the ZX's F was its file
-;  manager, which here is the commander, and the MSX has an OPEN.
+;  O is new: the ZX's F was its file manager, which here is the
+;  commander, and the MSX has an OPEN. D opens the DESKTOP window,
+;  which icons are on the desktop, as it did on the ZX.
 ;
 ;  A shortcut does not repeat when held, so holding GRAPH and N
 ;  opens one notepad rather than filling the window table.
 ; ============================================================
 SC_BASE         equ     $80
-SCCOUNT         equ     13
+SCCOUNT         equ     15
 
 ; The letters, in code order: the Nth letter is SC_BASE+N.
-ScLetters:      defb    "XCTWNOSKLFGIV"
+ScLetters:      defb    "XCTWNOSKLFGIVRD"
 
 ; ------------------------------------------------------------
 ;  ScDispatch
@@ -64,6 +63,8 @@ ScTable:
                 defw    SetOpen                 ; G
                 defw    AboutOpen               ; I
                 defw    NoteMenuSaveAs          ; V
+                defw    NoteMenuPrint           ; R
+                defw    DskSetOpen              ; D
 
 ; The window at the back comes to the front, so pressing it again and
 ; again walks the whole z order rather than swapping two for ever.
@@ -84,11 +85,11 @@ WndNext:
 ;  there is nothing to type at a list.
 ; ------------------------------------------------------------
 KEYSW           equ     15
-KEYSH           equ     20
+KEYSH           equ     22
 
 KeysOpen:
                 ld      a,APP_KEYS
-                jp      WndOpen
+                jp      WndOpenLater
 
 KeysDraw:
                 xor     a
@@ -120,6 +121,7 @@ KeysText:
                 defb    "O OPEN",0
                 defb    "S SAVE",0
                 defb    "V SAVE AS",0
+                defb    "R PRINT",0
                 defb    "W CLOSE",0
                 defb    "X NEXT WINDOW",0
                 defb    "C CASCADE",0
@@ -129,6 +131,7 @@ KeysText:
                 defb    "F COMMANDER",0
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
+                defb    "D DESKTOP",0
                 defb    "SELECT MARK",0
                 defb    "CALENDAR:",0
                 defb    ", . MONTH",0

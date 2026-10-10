@@ -35,6 +35,7 @@ APP_CLOCK       equ     3
 APP_CMD         equ     4
 APP_SETTINGS    equ     5
 APP_KEYS        equ     6
+APP_DESK        equ     7
 
 AppTable:
 AppCal:         defw    CALSTSZ, CalState, CalInit, CalDraw
@@ -80,7 +81,13 @@ AppSettings:    defw    1, SetRow, SetInit, SetDraw
                 ; The shortcut list: nothing to type at and nothing to lose.
 AppKeys:        defw    0, 0, 0, KeysDraw
                 defw    0, TxtKeysTitle
-                defb    16, 3, KEYSW, KEYSH
+                defb    16, 1, KEYSW, KEYSH     ; 22 rows: row 1 is as low as it goes
+                defw    0, 0, 0
+                defb    0
+                ; The desktop's shortcuts as toggles: a byte of focus a window.
+AppDesk:        defw    1, DskSetRow, DskSetInit, DskSetDraw
+                defw    DskSetKey, TxtDskSetup
+                defb    10, 5, DSKSW, DSKSH
                 defw    0, 0, 0
                 defb    0
 

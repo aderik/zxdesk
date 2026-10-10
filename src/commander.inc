@@ -168,6 +168,12 @@ CmdDrawPane:
                 cp      ST_DISK
                 ld      hl,TxtCmdDisk
                 jr      z,CdpHeader
+                cp      ST_PRINT
+                ld      hl,TxtCmdPrn
+                jr      z,CdpHeader
+                cp      ST_BANK
+                ld      hl,TxtCmdBank
+                jr      z,CdpHeader
                 ld      hl,TxtCmdRam
 CdpHeader:
                 push    hl
@@ -362,6 +368,10 @@ CmdKey:
                 xor     a
                 ret
 CkTransfer:
+                cp      'P'
+                jr      z,CmdPrinterTarget
+                cp      'B'
+                jr      z,CmdBankTarget
                 cp      KEY_LEFT
                 jr      z,CmdLeftPane
                 cp      KEY_RIGHT
@@ -378,6 +388,39 @@ CkTransfer:
                 jp      z,CmdOpen
                 xor     a
                 ret
+; P toggles the opposite pane between PRN and RAM; browse cannot reach it.
+CmdPrinterTarget:
+                ld      a,(CmdActive)
+                xor     1
+                ld      (CmdPane),a
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_PRINT
+                ld      a,ST_PRINT
+                jr      nz,CptSet
+                ld      a,ST_RAM
+CptSet:
+                ld      (hl),a
+                jp      CmdReload
+; B takes the opposite pane round RAM, BANK and DISK, those that are
+; there; from PRN it goes to RAM.
+CmdBankTarget:
+                ld      a,(CmdActive)
+                xor     1
+                ld      (CmdPane),a
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_PRINT
+                ld      a,ST_RAM
+                jr      z,CptSet
+                ld      a,(hl)
+                ld      b,1
+                push    hl
+                call    StRingStep
+                pop     hl
+                jr      CptSet
 CmdLeftPane:
                 xor     a
                 jr      CmdPaneSet
@@ -603,6 +646,9 @@ CcpSourceClosed:
                 xor     1
                 ld      (CmdPane),a
                 call    CmdUse
+                call    StIdent
+                cp      ST_PRINT
+                jr      z,CmdPrintCopy
                 ld      hl,CmdWork
                 ld      b,FA_READ
                 call    StOpen
@@ -639,6 +685,33 @@ CcpTargetClosed:
                 call    CmdRefresh
                 ld      a,1
                 jp      CmdResult
+CmdPrintCopy:
+                ld      hl,(CmdSize)
+                ld      de,NOTESIZE
+                or      a
+                sbc     hl,de
+                jr      z,CpcDocument
+                ld      b,FA_OVERWRITE
+                call    StOpen
+                jr      c,CpcError
+                ld      hl,CmdBuf
+                ld      bc,(CmdSize)
+                call    StWrite
+                jr      c,CpcError
+                call    StClose
+                jr      CpcResult
+CpcDocument:
+                ld      hl,CmdBuf
+                call    PrintDocument
+CpcResult:
+                jr      c,CpcError
+                ld      a,1
+                jp      CmdResult
+CpcError:
+                call    CmdIoError
+                call    PrintAlert
+                ld      a,1
+                ret
 CmdAbortCopy:
                 ; The destination did not exist before this copy. Remove a
                 ; partial new file, never an existing target or the source.
@@ -739,11 +812,13 @@ CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
                 defw    TxtCmdLarge, TxtCmdError, TxtCmdNone, TxtCmdNoRoom
                 defw    TxtCmdSame, TxtCmdDeleted, TxtCmdNotNote
 TxtCmdTitle:    defb    "COMMANDER",0
+TxtCmdPrn:      defb    "PRN",0
+TxtCmdBank:     defb    "BANK",0
 TxtCmdRam:      defb    "RAM",0
 TxtCmdDisk:     defb    "DISK",0
 TxtCmdEmpty:    defb    "(EMPTY)",0
 TxtCmdBlank:    defb    0
-TxtCmdHelp1:    defb    "TAB PANE SHIFT+ARROWS R LIST",0
+TxtCmdHelp1:    defb    "TAB PANE P PRN B BANK R LIST",0
 TxtCmdHelp2:    defb    "ENTER OPEN C COPY D DELETE",0
 TxtCmdReady:    defb    "READY",0
 TxtCmdCopied:   defb    "COPIED",0

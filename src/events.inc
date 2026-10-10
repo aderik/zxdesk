@@ -125,8 +125,8 @@ HdlPtrMove:
                 inc     (hl)
                 ld      a,(Dragging)
                 or      a
-                ret     z
-                jp      DdMove
+                jp      nz,DdMove
+                jp      DskDragMove             ; an icon being dragged, if any
 HdlBtnDown:
                 ld      hl,EvCounts+1
                 inc     (hl)
@@ -184,7 +184,15 @@ HbdNoMenu:
                 pop     bc
                 cp      CTL_NONE
                 jr      nz,HbdWindow
-                ret
+                ; Bare desktop: an icon, if one is under the cell. They lie
+                ; under the windows, which is why they are tried last.
+                ld      a,(LastHit)
+                cp      CTL_DESKTOP
+                ret     nz
+                call    DskHit
+                or      a
+                ret     z
+                jp      DskPress
 HbdWindow:
                 ld      (LastHit),a
                 push    af
@@ -207,6 +215,11 @@ HbdWindow:
                 sbc     hl,de
                 jp      z,SetPress
                 ld      hl,(WinApp)
+                ld      de,AppDesk
+                or      a
+                sbc     hl,de
+                jp      z,DskSetPress
+                ld      hl,(WinApp)
                 ld      de,AppCommander
                 or      a
                 sbc     hl,de
@@ -225,7 +238,8 @@ HdlBtnUp:
                 xor     a
                 ld      (Dragging),a
                 ld      (NoteMouse),a
-                jp      RszEnd
+                call    RszEnd
+                jp      DskRelease              ; an icon pressed opens or drops
 HdlKey:
                 ld      hl,EvCounts+3
                 inc     (hl)

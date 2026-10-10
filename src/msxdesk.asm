@@ -87,6 +87,7 @@ _ram            defl    _ram+size
                 var     Marker, 8       ; "ZXMSX",0 at $C000
                 var     Frames, 2       ; main loop iterations, at $C008
                 var     IrqCnt, 2       ; interrupts taken, counted by H.TIMI
+                var     IrqCode, 8      ; the H.TIMI handler, IRQCODESZ bytes, in RAM
                 var     Dropped, 2      ; frames the loop was late for
                 var     DropLog, 32     ; the frame numbers of the first 16 late ones
                 var     DropN, 1
@@ -152,6 +153,35 @@ _ram            defl    _ram+size
                 var     RamCnt, 2
                 var     RamDir, RAMFILES*RAMENTSZ
                 var     RamHeap, RAMFILES*RAMCHUNK
+                ; the bank backend: the transfer routine runs from RAM
+                ; because it switches the page the ROM sits in
+                var     BkCode, BKCODESZ
+                var     BkPage, 1       ; the window page of the next transfer
+                var     BkSlot, 1       ; its slot id
+                var     BkSeg, 1        ; its mapper segment, $FF for none
+                var     BkDirn, 1       ; 0 bank to buffer, 1 buffer to bank
+                var     BkWin, 2        ; the window address
+                var     BkSource, 1     ; 0 none, 1 hidden pages, 2 mapper
+                var     BkBlocks, 2     ; 256 byte blocks in the bank
+                var     BkSumBlocks, 2  ; the first hold a byte per entry, its name's hash
+                var     BkDirBlocks, 2  ; then the directory
+                var     BkDataBlock, 2  ; the first block that holds a file
+                var     BkFiles, 2      ; how many, one block each
+                var     BkPageTab, 3    ; source 1: the page behind each 16K
+                var     BkSlotTab, 3    ; and its slot id
+                var     BkMapSlot, 1    ; source 2: the mapper's slot id
+                var     BkSkip, 5       ; its segments the system uses, ascending, $FF end
+                var     BkSegHome, 1    ; the segment the window page had
+                var     BkProbe, 1      ; the byte every probe aims at
+                var     BkTop, 2        ; entries ever used
+                var     BkFreeHint, 2   ; no entry below this one is free
+                var     BkMode, 1       ; the open file's mode, 0 for none
+                var     BkEntry, 2      ; its directory entry
+                var     BkPos, 2
+                var     BkCache, 2      ; the directory chunk in BkDirBuf, $FFFF none
+                var     BkDirBuf, BKCHUNK
+                var     BkIdx, 2
+                var     BkTmp, 2
                 ; menus, the part hit testing reads
                 var     MenuOpen, 1
                 var     MnX, 1
@@ -197,7 +227,8 @@ _ram            defl    _ram+size
                 var     ArrI, 1
                 var     ArrTab, 2
                 var     WndCur, 1
-                var     Resizing, 1     ; 0 idle, 1 held, 2 composed: defer blit
+                var     Resizing, 1     ; 0 idle, 1 held, 3 allocated: compose next
+                                        ; frame, 2 composed: blit next frame
                 var     ScrFirst, 1
                 var     ScrShow, 1
                 var     ScrThumb, 1
@@ -334,11 +365,29 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetSound, 1
                 var     SetKeyPtr, 1
                 var     SetLattice, 1
+                var     DskTab, 18      ; DSKTABSZ: the desktop icons, present, x, y each
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1
                 var     AccelPtr, 2
                 var     SetRow, 1
+                ; desktop icons: the slot being worked on, the drag
+                var     DskIx, 1
+                var     DskPx, 1
+                var     DskPy, 1
+                var     DskLx, 1
+                var     DskLen, 1
+                var     DskSx, 1
+                var     DskSw, 1
+                var     DskLabel, 2
+                var     DskBase, 1
+                var     DskDrag, 1      ; the icon being pressed, plus one
+                var     DskMoved, 1
+                var     DskPressX, 1
+                var     DskPressY, 1
+                var     DskOffX, 1      ; the press's cell within the slot
+                var     DskOffY, 1
+                var     DskSetRow, 1    ; the DESKTOP window's focus, per window
 IFDEF TEST
                 var     TestDone, 1
                 var     ThPtr, 6
@@ -476,7 +525,8 @@ Start:
                 call    LoadTiles
                 call    LoadColours
                 call    LoadSprite
-                call    InitScreen
+                ; The desktop is painted after SetLoad: the icons on it
+                ; come out of the SETTINGS record. The display is still off.
                 ld      a,$FF                   ; the whole shadow goes out on
                 ld      (DirtyRows),a           ; the first frame, whatever
                 ld      (DirtyRows+1),a         ; the marks say
@@ -514,9 +564,12 @@ Start:
                 ld      (SetDevice),a
                 call    SetLoad
                 call    SetApply
+                call    InitScreen
                 call    CtlInit
                 xor     a
                 ld      (LastHit),a
+                ld      (DskDrag),a
+                ld      (NoteMouse),a           ; no notepad drag at the start
                 ld      (MnLastMenu),a
                 dec     a
                 ld      (MenuPick),a
@@ -572,21 +625,36 @@ MainLoop:
 ;  H.TIMI. The BIOS interrupt handler saves every register
 ;  before calling the hook, so unlike the ZX handler this one
 ;  can use HL. INC HL still leaves the flags alone.
+;
+;  The handler runs from work RAM, not from this ROM: the BDOS
+;  pages the disk ROM into page 1 for the length of a call and
+;  its driver enables interrupts while it waits, so a JP into
+;  page 1 lands in the disk ROM's bytes at that address. Measured
+;  on Roms_MSX1 + Roms_Disk with the hook in ROM: an interrupt
+;  during a directory write ran `ld (hl),c` there, HL on the
+;  kernel's directory buffer, and files vanished whenever the
+;  frame happened to fall in that window.
 ; ------------------------------------------------------------
 SetupIrq:
                 di
-                ld      a,$C3           ; JP IrqTick
-                ld      (HTIMI),a
                 ld      hl,IrqTick
+                ld      de,IrqCode
+                ld      bc,IRQCODESZ
+                ldir
+                ld      a,$C3           ; JP IrqCode
+                ld      (HTIMI),a
+                ld      hl,IrqCode
                 ld      (HTIMI+1),hl
                 ei
                 ret
 
-IrqTick:
+IrqTick:                                ; the template of IrqCode
                 ld      hl,(IrqCnt)
                 inc     hl
                 ld      (IrqCnt),hl
                 ret
+IRQCODESZ       equ     $-IrqTick
+                defs    8-IRQCODESZ     ; negative: the template outgrew IrqCode
 
 ; Counts the frames the loop reached; the difference from IrqCnt is
 ; the number the loop was late for.
@@ -1252,6 +1320,9 @@ LtThird:
                 ld      hl,Tiles
                 ld      bc,TILESEND-Tiles
                 call    CopyVram
+                ld      hl,DskShapes            ; the icon tiles follow at T_ICON
+                ld      bc,DSKSHAPESEND-DskShapes
+                call    CopyVram
                 pop     hl
                 ld      bc,$0800
                 add     hl,bc
@@ -1370,6 +1441,7 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "kbd.inc"
                 include "heap.inc"
                 include "storage.inc"
+                include "printer.inc"
                 include "disk.inc"
                 include "tape.inc"
                 include "settings.inc"
@@ -1387,6 +1459,9 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "note.inc"
                 include "commander.inc"
                 include "shortcut.inc"
+                include "bank.inc"
+                include "desktop.inc"
+                include "dsksetup.inc"
                 include "test.inc"
 
 RomEnd:

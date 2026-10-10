@@ -1,9 +1,12 @@
-; MSX format v4: magic 'M', version, ramp (0..2), mouse Y inverted
+; MSX format v5: magic 'M', version, ramp (0..2), mouse Y inverted
 ; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
-; key pointer (0/1), lattice (0..2). Separate magic from the ZX record.
+; key pointer (0/1), lattice (0..2), then the six desktop icons at
+; three bytes each: present (0/1), cell column, cell row. Separate
+; magic from the ZX record. Version 4 is the same without the icons.
 SETMAGIC        equ     $4D
-SETVERSION      equ     4
-SETSIZE         equ     8
+SETVERSION      equ     5
+SETHDR          equ     8               ; the record before the icons
+SETSIZE         equ     SETHDR+DSKTABSZ
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -14,6 +17,13 @@ SetDefaults:
                 ld      (SetBackend),a
                 ret
 SetInitial:     defb    SETMAGIC,SETVERSION,1,0,ST_RAM,1,1,1
+DskDefault:                                     ; continues the record: DskInit
+                defb    1, 1, 2                 ; copies these alone
+                defb    1, 1, 6
+                defb    1, 1, 10
+                defb    1, 1, 14
+                defb    1, 1, 18
+                defb    1, 10, 18
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -40,10 +50,10 @@ SetLoad:
                 push    af
                 ld      a,(SetDevice)
                 cp      ST_TAPE                 ; never wait for tape at boot
-                jr      z,SetLoadBad
+                jp      z,SetLoadBad
                 ld      b,FA_READ
                 call    SetFileOpen
-                jr      c,SetLoadBad
+                jp      c,SetLoadBad
                 ld      (SetHandle),a
                 ld      hl,SetRec
                 ld      bc,SETSIZE+1
@@ -54,12 +64,12 @@ SetLoad:
                 call    StClose
                 pop     bc
                 pop     de                      ; E = read flags
-                jr      c,SetLoadBad
+                jp      c,SetLoadBad
                 bit     0,e
-                jr      nz,SetLoadBad
+                jp      nz,SetLoadBad
                 ld      a,b
                 or      a
-                jr      nz,SetLoadBad
+                jp      nz,SetLoadBad
                 ld      a,(SetRec)
                 cp      SETMAGIC
                 jr      nz,SetLoadBad
@@ -70,6 +80,8 @@ SetLoad:
                 jr      z,SetLoadV2
                 cp      3
                 jr      z,SetLoadV3
+                cp      4
+                jr      z,SetLoadV4
                 cp      SETVERSION
                 jr      nz,SetLoadBad
                 ld      a,c
@@ -99,7 +111,14 @@ SetLoadV3:
 SetLoadLattice:
                 ld      a,1
                 ld      (SetLattice),a
-                ld      a,SETVERSION
+                jr      SetLoadDesk
+SetLoadV4:
+                ld      a,c
+                cp      SETHDR
+                jr      nz,SetLoadBad
+SetLoadDesk:
+                call    DskInit                 ; the icons where a fresh
+                ld      a,SETVERSION            ; machine has them
                 ld      (SetRec+1),a
                 or      a
                 jp      SetRestore
@@ -147,6 +166,7 @@ SetSaveBad:
 
 SetApply:
                 call    SetApplyLattice
+                call    DskApply
                 ld      a,(SetKeyPtr)
                 cp      2
                 jr      c,SetKeyPtrOK
@@ -187,11 +207,15 @@ IF TAPE
                 cp      ST_TAPE
                 jr      z,SetBackendOK
 ENDIF
+                cp      ST_BANK
+                jr      z,SetBackendAvail
                 cp      ST_DISK
                 jr      nz,SetBackendDefault
-                call    DskPresent
+SetBackendAvail:
+                ld      b,a
+                call    StAvail                 ; a bank, a BDOS
+                ld      a,b
                 jr      nz,SetBackendDefault
-                ld      a,ST_DISK
 SetBackendOK:
                 jp      StSelect
 SetBackendDefault:
@@ -280,26 +304,7 @@ SetMouseY:
 
 SetOpen:
                 ld      a,APP_SETTINGS
-                call    WndOpen
-                ret     c
-                ; Compose now, then restore the desktop and blit next frame,
-                ; as for resize: doing both while opening misses NTSC frames.
-                call    WinDraw
-                ld      a,(WndCur)
-                ld      b,a
-                inc     b
-                ld      a,$80
-SetOpenBit:
-                rlca
-                djnz    SetOpenBit
-                cpl
-                ld      hl,WndDirty
-                and     (hl)
-                ld      (hl),a                  ; new buffer is already composed
-                ld      a,2
-                ld      (RepaintDue),a
-                or      a                       ; retain successful open's carry
-                ret
+                jp      WndOpenLater
 SetInit:
                 xor     a
                 ld      (SetRow),a
@@ -392,15 +397,10 @@ SetCycleY:
                 xor     1
                 ld      (SetInvertY),a
                 jp      SetActivate
+; B = 1 for the next backend round RAM, BANK, DISK, 2 for the previous
 SetCycleBackend:
-                call    DskPresent
-                ld      a,ST_RAM
-                jp      nz,SetCycleDevice
                 ld      a,(SetBackend)
-                cp      ST_DISK
-                ld      a,ST_RAM
-                jp      z,SetCycleDevice
-                ld      a,ST_DISK
+                call    StRingStep
 SetCycleDevice:
                 ld      (SetBackend),a
 SetActivate:
@@ -541,10 +541,23 @@ SetDrawY:
                 ld      hl,SetTapeLabel
                 cp      ST_TAPE
                 jr      z,SetDrawBackend
+                ld      hl,SetBankLabel
+                cp      ST_BANK
+                jr      z,SetDrawBank
                 ld      hl,SetDiskLabel
 SetDrawBackend:
                 ld      b,3
                 call    SetButton
+                jr      SetDrawRow4
+SetDrawBank:
+                ld      b,3
+                call    SetButton
+                xor     a                       ; the bank's size after the label
+                ld      (PrintInv),a
+                call    BkKbText
+                ld      bc,$0309
+                call    WinPrint
+SetDrawRow4:
                 ld      a,(SetSound)
                 ld      hl,SetOff
                 or      a
@@ -604,6 +617,7 @@ SetOn:          defb    "[ON  ]",0
 SetRamLabel:    defb    "[RAM ]",0
 SetTapeLabel:   defb    "[TAPE]",0
 SetDiskLabel:   defb    "[DISK]",0
+SetBankLabel:   defb    "[BANK]",0
 SetSaveLabel:   defb    "[SAVE]",0
 SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0

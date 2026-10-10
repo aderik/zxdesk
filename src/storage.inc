@@ -102,6 +102,13 @@ StRegistry:
                 defb    ST_TAPE, STCAP_WRITE|STCAP_PERSIST
                 defw    TapeOpen, TapeClose, TapeRead, TapeWrite, StNoDir
                 defw    StNoDelete
+                defb    ST_PRINT, STCAP_WRITE
+                defw    PrintOpen, PrintClose, StNoDelete, PrintWrite, StNoDir
+                defw    StNoDelete
+                defb    ST_BANK
+                defb    STCAP_WRITE|STCAP_RANDOM|STCAP_DIR
+                defw    BankOpen, BankClose, BankRead, BankWrite, BankDirEnt
+                defw    BankDelete
                 defb    $FF
 
 ; A backend that cannot enumerate says so rather than being absent
@@ -163,6 +170,7 @@ StInit:
                 ld      (TapeMode),a
                 ld      (TapeBusy),a
                 call    RamInit
+                call    BkInit                  ; the bank, if the machine has one
                 call    DskPresent              ; a disk ROM planted the BDOS
                 ld      a,ST_DISK               ; jump: everything persists
                 jp      z,StSelect              ; on the disk

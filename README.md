@@ -142,8 +142,10 @@ modifier. GRAPH+letter decodes to a code from $81 up that no text table
 produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
-K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS. R (PRINT) and D (desktop shortcuts) wait for those features.
-HELP > KEYS opens the list, with the calendar's keys, as a window.
+K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
+window that says which icons are on the desktop.
+HELP > KEYS opens the list, with the calendar's keys, as a window;
+at 21 rows it opens at row 2, the lowest it fits.
 333 ROM bytes, no RAM.
 
 | subject | asserts |
@@ -151,7 +153,7 @@ HELP > KEYS opens the list, with the calendar's keys, as a window.
 | sc-next | GRAPH+L, GRAPH+K, GRAPH+X: two windows, the calendar back in front, z (0, 1) |
 | sc-close | then GRAPH+W: the clock alone, nothing echoed on the status row |
 | sc-repeat | GRAPH+N held 60 frames opens one notepad (4 without the repeat guard) |
-| keys-win | HELP > KEYS: the name table equals the compositor's list window at (16, 3), crc32 8dba7685 |
+| keys-win | HELP > KEYS: the name table equals the compositor's list window at (16, 2) |
 
 Applications (phase 4 so far: `note.inc`, `clock.inc`):
 
@@ -196,8 +198,12 @@ Drag the bottom-right grip and release to resize in cells, with a minimum
 of 6 columns by 4 rows and the desktop as the outer limit. The pointer
 hotspot reaches column 31 and row 22 so every grip remains accessible.
 The old buffer is freed through `WndAllocBuf`; allocation failure restores
-the old dimensions and buffer size. Buffer composition and desktop repaint
-use successive frames, keeping large resizes within the tested frame budget.
+the old dimensions and buffer size. Allocation, buffer composition and
+desktop repaint use three successive frames, keeping large resizes within
+the tested frame budget: with lf-1527 the release frame of the 24x17
+resize measured 15.9 ms on the 60 Hz machine (allocation 1.1 ms, the
+compose 13.0 ms) and dropped a frame once the main loop grew by a few
+dozen microseconds, so the compose moved to the frame after the release.
 
 Notepad's right frame column contains up/down arrows, a track and a position
 marker. Arrows move the view by one line; clicking above/below the marker
@@ -243,18 +249,23 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The eight bytes are `4D 04 rr yy bb ss kk ll`: MSX
+`SetLoad` then `SetApply`. The record is 26 bytes, `4D 05 rr yy bb ss kk ll`
+followed by the six desktop icons at three bytes each: MSX
 magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
-`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), and lattice (0 NONE, 1 DOTS,
-2 GRID).
+`TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), lattice (0 NONE, 1 DOTS,
+2 GRID), then for each icon present (0/1), cell column and cell row
+(see "Desktop shortcuts").
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
-inversion 0, sound 1, key pointer 1, lattice 1 and the detected boot backend. Missing
+inversion 0, sound 1, key pointer 1, lattice 1, the detected boot backend
+and the six icons down the left. Missing
 files, I/O failures, incorrect magic/version and incorrect lengths give defaults. Version 1
 five-byte records migrate with sound and key pointer ON; version 2 six-byte
 records retain sound and migrate with key pointer ON; version 3 seven-byte
 records retain both fields and migrate with lattice
-DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 requires
-eight bytes.
+DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 is the
+eight-byte record without the icons; versions 1 to 4 all load with the
+default icons. Version 5 requires 26 bytes; a present byte other than 0
+becomes 1 and a position is clamped so the whole slot is on the desktop.
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -430,6 +441,17 @@ The flush of the resulting rows lands in the next frame: OUTI, NOP,
 JP NZ at 30 cycles a cell, 16 rows about 5.6 ms. `drag-frames` asserts
 zero dropped frames on both machines, so this is a guarded number.
 
+With the desktop icons (lf-1527) the same scenario was measured again
+on the 60 Hz machine, breakpoints at the loop's HALT and the
+instruction after it: the calendar open had grown to 15.9 ms before
+the icons and went to 18.2 ms with the first icon painter, one frame
+dropped. The painter was rewritten (see "Desktop shortcuts") and the
+simple openers now go through `WndOpenLater`, the split SETTINGS
+already used: the buffer is composed in the frame of the open and the
+desktop repaint and blit happen in the next. Longest iterations now:
+the repaint after ABOUT opens over the calendar 13.4 ms, the raise
+13.1 ms, the calendar open 11.7 ms and its repaint 11.6 ms; 0 dropped.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
@@ -488,8 +510,9 @@ Getting there took three measurements:
 
 The stack and the heap's end come from HIMEM at run time, STACKRES
 ($380) apart, not from an equate. The TEST build's records leave
-986 usable bytes of heap under a disk ROM, so its heap subject allocates
-256, 200 and 128 bytes (reduced for the tape buffer).
+593 bytes of heap under a disk ROM, so its heap subject allocates
+256, 160 and 128 bytes (reduced first for the tape buffer, then for the
+desktop icons).
 
 Subjects on the disk machine: `note-file` finds NOTE, 256 bytes, on
 the image with the document's bytes; `store-disk` finds SETTINGS (five
@@ -585,7 +608,14 @@ so the font is loaded twice: at $20-$7F black on white and at $A0-$FF
 white on black, the same bytes with the colours swapped, in all three
 thirds. Inverted text is a code with bit 7 set, anywhere on the
 screen; the status band is inverted spaces and a front window's title
-row too. Codes $80-$9F are the desktop and frame tiles. Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
+row too. Codes $80-$87 are the desktop and frame tiles: lattice, rule,
+the window's left and right edges, bottom, both bottom corners and the
+close box. The desktop icons take $88-$97, four tiles a shape for the
+four shapes (document, clock, calendar, drawer), copied by LoadTiles
+right after the frame tiles and given the text colours by the colour
+table's fill; they are the first free codes after the chrome. $98-$9F
+and $00-$1F are still free (counted: nothing paints a code below $20,
+and the inverted bank starts at $A0). Sprites are 16x16 (VDP R1 $E2; CHGMOD leaves 8x8).
 
 The stack is set from HIMEM at startup ($F380 without a disk ROM): the BIOS called the cartridge on
 its own stack, and C-BIOS and a real BIOS need not agree where that
@@ -973,6 +1003,286 @@ The additional HELP > KEYS row increases that window's heap buffer by
 
 Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
 
+## Printer (lf-1524)
+
+FILE > PRINT and GRAPH+R print the front notepad through the write-only
+`ST_PRINT` (8) backend. In COMMANDER, **P** toggles the opposite pane
+between PRN and RAM; **C** copies the selected file there. A 256-byte
+notepad is printed as logical lines, joining continuation chunks and
+omitting empty trailing lines; each line ends in CR LF and the job ends
+in FF. Other files within the commander's existing 256-byte copy limit
+are sent as raw bytes followed by FF. Printing never changes the source.
+PRN has only `STCAP_WRITE`, no directory, and is excluded from FILE > OPEN
+and SETTINGS > BACKEND. HELP > KEYS includes R PRINT.
+
+The backend uses inter-slot CALSLT calls to BIOS LPTSTT ($00A8) and
+LPTOUT ($00A5). It checks readiness before opening and before each output
+byte, and reports `PRINTER NOT READY` for busy status or output carry.
+[C-BIOS implements both calls](https://github.com/cbios/cbios/blob/master/src/main.asm);
+its LPTOUT implementation includes a busy loop, hence the explicit status
+check. The logger subjects run on C-BIOS as well as the real BIOS machines;
+no alternate printer port driver is needed.
+
+`./test.sh --print` uses openMSX `plug printerport logger` and
+`set printerlogfilename` to assert complete output bytes. Subjects cover
+the menu, shortcut, front document, empty document, continuation lines,
+internal empty lines, commander copy from a UI-saved document, raw streams,
+unplugged printer, injected LPTOUT carry after three bytes, capabilities,
+settings cycling and the KEYS name table. No screenshot is an assertion.
+
+Measured against repository base `666af80`: normal ROM **15,483 → 15,870
+bytes (+387)**, leaving **514 bytes** in page 1. TEST ROM **16,760 → 17,147
+bytes (+387)**. Static RAM remains **3,543 bytes (+0)** (TEST **6,275**),
+and the normal heap budget remains **8,745 bytes** without disk or **3,360**
+with disk. Printing allocates **0 heap bytes**. The expanded KEYS window
+uses **15 additional heap bytes** while open.
+
+The print-note and print-cmd byte stream `HI\r\nTHERE\r\n\f` has CRC32
+**6cea7f8e**; the unchanged document CRC32 is **b1bdd139**. The long-line
+stream has CRC32 **bddae9d6**, and HELP > KEYS **f3f4bf42**.
+The focused machine results are recorded in the commit message. The full
+suite is left to the pipeline as required by this implementation run.
+
+## Desktop shortcuts (lf-1527)
+
+`desktop.inc` and `dsksetup.inc`, the ZX's icons on the cell grid. An
+icon is a block of two by two tiles with its label on the row below,
+one bit, no bevel and no shadow. The label is centred under the icon
+and may be wider than it (COMMANDER is nine cells against the icon's
+two), so the slot, icon and label together, is what the hit test and
+the repaint go by. Six icons: NOTEPAD, CLOCK, CALENDAR, COMMANDER and
+SETTINGS down the left at column 1, rows 2, 6, 10, 14 and 18, and
+ABOUT beside SETTINGS at (10, 18), as SETUP sat beside ABOUT on the ZX.
+The four shapes are the ZX's bitmaps (document, clock, calendar,
+drawer) as tiles $88-$97; SETTINGS and ABOUT share the document, as
+they did there.
+
+A press and release without movement opens; a press and a move of
+three pixels or more drags the icon, in whole cells, keeping the cell
+of the press within the slot, clamped so the whole slot stays on the
+desktop. The release after a drag opens nothing. An entry carries a
+routine (`NoteMenuNew`, `ClockOpen`, `WndOpenCal`, `CommanderOpen`,
+`SetOpen`, `AboutOpen`), not an application index. Icons lie under the
+windows: `DrawDesktopRows` paints the lattice for the pending row range
+and then every present icon's rows within that range, and the windows
+are blitted on top as before. A row outside the range is not touched,
+so a window dragged over an icon and away leaves the name table as it
+was, which `dsk-under` asserts byte for byte.
+
+**VIEW > DESKTOP** and **GRAPH+D** open the DESKTOP window: six rows of
+label and [ON  ]/[OFF ], then [SAVE] and [DONE], with the SETTINGS
+keys (TAB and SHIFT+arrows move the focus, ENTER, SPACE, LEFT and
+RIGHT act, ESC closes) and a click on a button. A toggle repaints the
+icon's rows under the window at once; SAVE writes the SETTINGS record.
+HELP > KEYS lists D DESKTOP.
+
+Which icons are present and where they sit are the three bytes an
+entry that follow the eight settings bytes in the **version 5**
+SETTINGS record, so they are saved and loaded with the rest and a
+desktop a person has arranged comes back. Version 1 to 4 files load
+with the default icons; a version 5 record is clamped on load (present
+to 0 or 1, the position so the slot fits). The label, the action and
+the tile are constants in ROM; the ZX's pack and unpack went with the
+split.
+
+`./test.sh --desktop` (in the default suite):
+
+| subject | asserts |
+|---|---|
+| dsk-init | a fresh boot: name table = the compositor with six icons, crc32 169916c1 on C-BIOS; the table in RAM = the defaults; the 128 tile bytes at $0440 in all three thirds; 0 dropped |
+| dsk-open, dsk-open-label | a press and release on CLOCK's tile, and on its label: the clock window in front, crc32 7212e959 |
+| dsk-open-drag | pressed and dragged one cell: no window, CLOCK at (2, 6) |
+| dsk-drag, dsk-drag-frames | dragged five cells right: table (1, 6, 6), name table = the compositor with the icon there and lattice in the old slot, crc32 448ef56f; 0 dropped |
+| dsk-drag-clamp | dragged off the bottom left corner: (0, 20) |
+| dsk-over, dsk-under, dsk-under-frames | ABOUT dragged to (0, 10) over CALENDAR and COMMANDER (crc32 36155273) and back to (8, 12): name table identical to before the drag, 0ca883d3; 0 dropped |
+| dsk-panel, dsk-panel-key | VIEW > DESKTOP and GRAPH+D: the window at (10, 5), crc32 f832251e |
+| dsk-toggle-mouse, dsk-toggle-key | CLOCK off by a click and by TAB, ENTER: the table and the screen without it, 6bb5dd27 |
+| dsk-setup | then SAVE: the 26-byte record on the device, `4D 05 01 00 bb 01 01 01` and the icons, CLOCK's present byte 0 |
+| dsk-reload | the table reset to the defaults and the header cleared, then the real SetLoad, SetApply and a repaint in place of the next key: CLOCK stays off, from the file |
+| dsk-reload-v4 | the same with an eight-byte version 4 file: the six default icons again |
+| dsk-boot-saved, dsk-boot-v4 | on the disk machine, real reboots on a seeded version 5 and a version 4 SETTINGS |
+
+The settings subjects carry the icons too: every SAVE compares all 26
+bytes, the seeded boots include version 5 records with icons moved,
+off, all zero and all 255 (clamped to (1, 30, 20)), and short and long
+ones, each with the name table it should give; the TEST build clamps
+255 in every icon byte through `SetApply`. The window subjects compose
+over the icon desktop, so every window test now also checks that the
+icons stay under the windows.
+
+Measured against `8118c5d`: the normal ROM goes from 15,870 to
+**17,166 bytes (+1,296)**; page 1 was 514 bytes from full, so the code
+now runs 782 bytes into page 2, which `Start` maps before anything
+there is reached. The TEST ROM goes from 17,147 to **18,452 bytes**.
+Static RAM grows **35 bytes** (18 for the table inside the SETTINGS
+record, 17 of slot, drag and focus scratch), to **3,578 bytes**
+(TEST **6,310**); the heap is **8,710 bytes** without a disk ROM and
+**3,325** with one (TEST **5,978 / 593**). The TEST heap subject's
+middle block went from 200 to 160 bytes to fit. The DESKTOP window
+uses **199 heap bytes** while open (190 cells, 1 byte of focus, two
+headers); HELP > KEYS grows by 15 for its extra row. Dragging an icon
+allocates nothing.
+
+The icon painter, measured with breakpoints at its entry and return
+on the 60 Hz machine for the calendar open (NOTEPAD's label row, CLOCK
+and CALENDAR in range): 2.2 ms as a straight port, 1.5 ms after the
+rewrite that walks the tables with pointers, rejects an icon on two
+compares, takes one shadow address a slot and copies the label with
+LDIR. The lattice fill for the same ten rows is 1.0 ms. Both drag
+subjects report **Dropped = 0** at 50 and at 60 Hz.
+
+Focused verification (the full `test-all.sh` is the pipeline's):
+
+| Configuration | Groups | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--desktop`, `--arrange`, `--settings`, `--dialogs`, `--print`, `--saveas`, `--sound-only` | 17, 106, 153, 30, 18, 21, 11 |
+| C-BIOS_MSX1_JP, 60 Hz | `--desktop`, `--arrange` | 17, 106 |
+
+Roms_MSX1, Roms_MSX1 with Roms_Disk and Roms_MSX2 were not available
+in this environment; the disk-only subjects (`dsk-boot-*`, the seeded
+version 5 boots) run there in the pipeline.
+
+## The bank backend (lf-1525)
+
+`ST_BANK` (4, `bank.inc`) is a RAM disk in memory the desktop cannot
+see, the way `bank.inc` on the ZX 128K used the free banks. An MSX has
+two kinds of it, and `BkInit` measures both at `StInit` and keeps the
+larger:
+
+- **Source 1, hidden pages.** On a 64K MSX1 the BIOS sits in page 0 and
+  this cartridge in pages 1 and 2, so 48K of the RAM is behind them.
+  For each page the slot id of the first slot whose byte at a test
+  address takes a write is recorded: page 3's slot first (the same
+  chip), then the primary slots that are not expanded and, when page
+  3's is, its secondary slots from `EXPTBL`/`SLTTBL`. An expanded slot
+  other than page 3's is not probed: reaching its register means
+  switching page 3 itself, which nothing in RAM can do. The first
+  block of the first hidden page is left alone: a disk ROM keeps its
+  RST and interrupt vectors in the first 256 bytes of page 0's RAM for
+  the time it pages the BIOS out (measured on Roms_MSX1 + Roms_Disk:
+  formatting that block corrupted the FAT buffer and lost files), so
+  48K of hidden pages is 191 blocks, shown rounded up as 48 KB.
+- **Source 2, a memory mapper.** 16K segments selected per page through
+  ports $FC-$FF, which on an expansion are write-only, so nothing is
+  ever read back from them. A slot is a mapper when a marker written
+  with segment 1 selected leaves the one written with segment 0 in
+  place; its size comes from writing every segment number into its
+  segment and reading what segment 0 ends up with (a register with
+  fewer bits wraps). The segments the system keeps are found with
+  markers too: segment number k into every segment through page 0,
+  then what pages 1 and 2 show through their own windows and what page
+  3 shows in the probe byte itself. Page 0's own segment is the one
+  register that cannot be told without writing it first; it is taken
+  as 3 when pages 1-3 hold 2, 1, 0 (the BIOS's layout) and as 0
+  otherwise, which is what a mapper nobody initialised has
+  (openMSX's `MSXMemoryMapperBase::reset`, and the MSX1 BIOS never
+  writes them). All four are kept out; page 2's is written back after
+  every transfer.
+
+Every transfer goes through `BkCode`, 63 bytes copied to work RAM at
+init, because it puts the page the ROM sits in on the RAM slot for one
+LDIR: under DI it reads `PSLOT` and the secondary register at $FFFF,
+selects the page (and the segment), copies up to 256 bytes between a
+page-3 buffer and the window and writes both registers back exactly.
+`ENASLT` cannot do page 0 and nothing in ROM can do its own page. The
+routine is a template whose operands the ROM patches: the masks and
+bits for both registers, the segment, the window and the buffer. On a
+plain page-3 slot $FFFF is RAM and gets its own byte back; on an
+expanded one it reads inverted and the register is written as read.
+Measured with breakpoints on the routine's DI and EI (`machine_info
+time`): a 64 byte directory chunk **476 us**, a 256 byte block
+**1,709 us** on the 50 Hz machines and **1,721 us** on the MSX2,
+where the mapper window has one more OUT. The VDP holds its interrupt
+until the status register is read, so a window that short loses
+nothing: `bank-irq` saves a document to the bank with GRAPH+S while the
+clock runs and RIGHT is held and asserts **Dropped = 0** on both C-BIOS
+machines, the clock's seconds equal to the interrupt model and the
+pointer moved by the ramp for the frames held. The first save of a
+document goes through the name dialogue, whose closing frame is
+**19.5 ms** on RAM at 50 Hz (**21.4 ms** at 60 Hz) and 22.4 ms with the
+bank's 3.7 ms of transfers in it, and opening the clock is 18.6 ms:
+those frames drop with or without the bank at 60 Hz, so the subject
+counts from the held key on. The Commander's 30 by 12 repaint is a
+20 ms frame on its own (24.9 ms opening it), the same story.
+
+The disk is 256 byte blocks: one summary block per 256 (a byte per
+entry, the name's hash, 0 while free), then a directory block per
+seventeen of the rest (sixteen byte entries in the RAM backend's
+layout: name, size, used) and a file per block left, 256 bytes at most
+like the RAM backend. Both are read in 64 byte chunks through one
+cache and written through. A name is looked up, a free entry found and
+the directory counted on the summary, 64 entries a transfer, and an
+entry is only read when its hash matches: with 4 entries a transfer
+filling the 512K bank's 1,859 files took over 650 s of emulated time
+(the TEST run on 180 files alone took 11 s), which is also what a save
+on a full bank would have cost in frames. A free-entry hint keeps
+filling linear. Capabilities `WRITE|RANDOM|DIR`, not `PERSIST`.
+
+| machine | source | bank |
+|---|---|---|
+| C-BIOS_MSX1_EU/JP, Roms_MSX1, + Roms_Disk | 1: pages 0-2 of slot 3, less the first block | 191 blocks (48 KB rounded up), 178 files |
+| Roms_MSX2 | 2: slot 3-2, 128K, segments 3,2,1,0 kept out | 64 KB, 240 files |
+| Roms_MSX1 + Mapper512 | 2: slot 1, 512K, segment 0 under every page | 496 KB, 1,859 files |
+
+Found on the way, on Roms_MSX1 + Roms_Disk: the H.TIMI hook was a
+`JP` into page 1 of this cartridge, but the BDOS pages the disk ROM
+into page 1 for the length of a call and its driver enables
+interrupts while it waits, so a frame interrupt in that window ran
+the disk ROM's bytes at `IrqTick`'s address (`ld (hl),c`, HL on the
+kernel's directory buffer: a file's first byte became 0 and it was
+gone). Whether a frame fell in the window was a matter of when the
+call started: the bank's 50 ms of detection moved it there, and a
+40 ms delay before the TEST storage subject did the same on `main`
+(`store-dir` 3 files, `del` lost). The handler now runs from 8 bytes
+of work RAM (`IrqCode`), valid whatever sits in page 1.
+
+`harness/extensions/Mapper512.xml` is openMSX's own 512K mapper
+cartridge under a name the harness can read as a debuggable; on
+Roms_MSX1 the BIOS puts page 3 on it (slot 1, `PSLOT` $68), so the 64K
+in slot 3 is hidden entirely and source 2 wins. openMSX's `MapperIO`
+debuggable shows random bits for registers never written, so the
+harness finds page 3's segment by looking for the work RAM's marker in
+the dumped device instead. `test-all.sh` adds `--bank` on that
+configuration after the five machines.
+
+**SETTINGS > BACKEND** goes round RAM, BANK and DISK, those that are
+there, in both directions; BANK shows its size after the label:
+`BACKEND 48 KB   [BANK]`. A 16K or 32K MSX1 has no hidden pages and
+no BANK (a 32K machine's page 2 RAM is behind the cartridge too, 16 KB,
+not measured here). In the Commander **B** takes the other pane round
+the same ring (from PRN to RAM), so RAM, DISK and BANK copy both ways;
+the help row reads `TAB PANE P PRN B BANK R LIST`. A document saved on
+the bank keeps it as its backend, as with RAM.
+
+`./test.sh --bank` runs, on every machine: `bank-detect` (source,
+blocks, page and slot tables or the kept-out segments and the mapper's
+slot, against the machine), `bank-format` (geometry, no entry used),
+`bank-irq`, the Commander ring, copies RAM/DISK -> BANK -> RAM/DISK
+with the bytes read out of the bank device and back in the source,
+`bank-note` (SETTINGS to BANK, type, save, edit, close and discard,
+FILE > OPEN: the document is the saved one, in the bank), and
+`bank-picker`. The TEST build's `bank-sys` writes a hundred 256 byte
+files with interrupts off throughout (the routine's EI is a NOP for the
+duration) and the harness snapshots $F380-$FFFF and the whole ROM at
+`TbsStart` and `TbsEnd`: identical, and the ROM equals the image.
+`bank-rw` round trips 64 bytes, fills the bank until `STERR_FULL`
+(**77** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
+on 496 KB: 412 s of emulated time, the whole TEST run), counts the
+directory (to 255, the index's width), deletes `F0002`, sees `NEW`
+take entry 103 and reads a full file back; `bank-dir` parses the
+dumped device itself: every entry, summary byte and data block. Every
+bank file's bytes are read from the openMSX device (`Main RAM`,
+`Mapper512`), not through the ROM.
+
+Measured against `8118c5d`: normal ROM **15,870 -> 18,006 bytes
+(+2,136)**, now into page 2 (`$4000-$8656`); TEST ROM **17,147 ->
+19,731**. Static RAM **3,543 -> 3,716 bytes (+173)**: the 63 byte
+routine, 64 bytes of chunk cache, 46 bytes of geometry and state;
+heap **8,572** bytes without a disk ROM, **3,187** with one (TEST
+**5,840 / 455**). The TEST build's heap subject allocates 160, 120 and
+96 bytes now, what fits behind the disk ROM. The bank allocates no
+heap. Commander and notepad buffers are unchanged.
+
 ## lf-1526: Notepad selection
 
 SELECT toggles marking at the caret; holding it does not repeat the
@@ -981,7 +1291,9 @@ and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
 drag selects whole cells, and dragging beyond the viewport scrolls it.
 SELECT again stops extending while retaining the selection. ESC or a
 click without dragging clears it. Typing replaces it; BS and DEL delete
-it. HELP > KEYS now includes SELECT MARK.
+it. HELP > KEYS now includes SELECT MARK, below D DESKTOP: 22 rows,
+opened at row 1, the lowest row a list of that height fits at above the
+status row.
 
 Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
 in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
@@ -998,32 +1310,60 @@ suppression, replacement, BS/DEL, ESC/click clearing, per-instance focus,
 reverse selection across chunks, three-line deletion and drag scrolling.
 The three-line deletion compares all 256 document bytes.
 
-Focused verification:
+Focused verification, rebased on `40b7e5a` (the icons of lf-1527 lie
+under every window, so the screen checksums include them; the bank
+backend of lf-1525 moved the RAM layout again):
 
-| Configuration | Selection | Existing width/chunk checks | Existing application checks |
-|---|---:|---:|---:|
-| C-BIOS_MSX1_EU, 50 Hz | 17 | 16 | 7 |
-| C-BIOS_MSX1_JP, 60 Hz | 17 | — | — |
+| Configuration | Group | Assertions |
+|---|---|---:|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--print` | 17, 18 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-selection` | 17 |
+| Roms_MSX1 + Roms_Disk | `--settings` (the TEST build's heap subject) | 170 |
+| Roms_MSX1 + Mapper512 | `--bank` | 20 |
 
-Keyboard and mouse selection both have nametable CRC32 **f4052d28**.
+On the earlier base `0ed9256` the pipeline's full `test-all.sh` passed
+on C-BIOS EU, C-BIOS JP and Roms_MSX1 and failed only `heap-stat` on
+Roms_MSX1 + Roms_Disk, which the bank backend's smaller heap subject
+(160, 120, 96 bytes) now covers: on this base the three blocks fill
+the disk machine's 388 byte TEST heap exactly, with nothing to split
+off, and the stats agree with the formula (after the allocations 0,
+after the free 120, after the free by owner 224). The next ticket that
+adds static RAM will have to shrink that subject again.
+
+Keyboard and mouse selection both have nametable CRC32 **4f499791**.
 Replacement with X gives document CRC32 **fb9f7a1f**; BS/DEL give
 **3bc1feef**; deletion across three logical lines including a continuation
 chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
-**2d1d3048**. HELP > KEYS has CRC32 **91f6a615**. The drag-scroll subject
-measures **Dropped = 0** on both frequencies; this is not a claim about
-all editing operations or window sizes.
+**96518af1** and, typed over, document CRC32 **27fb7f93**. HELP > KEYS
+has CRC32 **6f18e610**.
 
-The actual checkout base is `666af80`, whose assembled normal/TEST ROMs
-use **15,483 / 16,760 bytes**. This change adds **512 ROM bytes**:
-normal **15,995**, TEST **17,272**. Normal page 1 has **389 bytes** left;
-page 2 was already mapped. Static RAM grows **20 bytes** (four live state
-bytes, one mouse capture byte, fifteen paint scratch bytes), to **3,563**
-normal / **6,295** TEST. Normal heap capacity falls by 20 to **8,725**
-bytes without disk or **3,340** with disk. Each Notepad's existing state
-allocation grows **4 bytes**, from **278 to 282**, with no new allocation.
-The additional HELP row uses **15 extra heap bytes** while that window
-is open. Padded ROM CRC32: normal **82db8c77**, TEST **6d2aed3f**.
+The drag-scroll subject measures **Dropped = 0** on both frequencies for
+the drag alone: the counter is zeroed after the typed preamble. Measured
+with breakpoints at `FrameWatch` and `MainLoop` on the 60 Hz machine, a
+typed key frame with the icons under the window is 15.7 to 15.9 ms on
+`0ed9256` and 16.0 to 16.3 ms here (state write-back and row marking
+2.7 ms, lattice 0.9 ms, icon rows 1.6 ms, the Notepad compose 6.5 ms,
+the blit 1.6 ms), and both drop 11 of the preamble's 23 key frames at
+60 Hz; that cost is main's, not this change's, and is noted for the
+owner. The drag's own frames are at most 13.2 ms. This is not a claim
+about other editing operations or window sizes.
 
-The full five-configuration `test-all.sh` is left to the pipeline, as
+The mouse capture byte is cleared at `Start`, with `DskDrag`: openMSX
+fills RAM with a pattern, and on the rebased layout the byte came up set,
+so the caret followed the idle pointer until the first release, which
+reversed the typed text in the `--print` subjects.
+
+Measured against `40b7e5a`: normal ROM **19,318 → 19,833 bytes (+515)**,
+TEST **21,055 → 21,570 (+515)**; both run on into page 2, which `Start`
+maps. Static RAM grows **20 bytes** (four live state bytes, one mouse
+capture byte, fifteen paint scratch bytes), **3,759 → 3,779** normal and
+**6,491 → 6,511** TEST. The heap falls by 20: **8,529 → 8,509** bytes
+without a disk ROM, **3,144 → 3,124** with one (TEST **5,797 → 5,777 /
+412 → 392**). Each Notepad's existing state allocation grows **4
+bytes**, from **278 to 282**, with no new allocation. The KEYS window at
+22 rows uses **15 more heap bytes** than main's 21 while it is open.
+Padded ROM CRC32: normal **ae86c09a**, TEST **ed042bf7** (main: a3e64a62, 8ee3ab2d).
+
+The full six-configuration `test-all.sh` is left to the pipeline, as
 required by this implementation run's focused-tests-only instruction.
 No real-ROM matrix results are claimed here.

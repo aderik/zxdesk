@@ -60,10 +60,12 @@ RszPaint:
                 jr      nc,RszDraw
                 ld      (hl),a
 RszDraw:
-                ; Compose the replacement now, blit next frame. Combining
-                ; a large recompose with desktop restoration exceeds NTSC.
-                call    WinDraw
-                ld      a,2
+                ; Allocated now; WinRedraw composes the replacement next
+                ; frame and blits it the frame after. Allocation plus the
+                ; compose of a 24 by 17 notepad measured 15.9 ms on the
+                ; 60 Hz machine, the whole frame, and combining the compose
+                ; with the desktop restoration exceeded NTSC before that.
+                ld      a,3
                 ld      (Resizing),a
                 jp      RowsAddLive
 RszClamp:

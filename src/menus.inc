@@ -327,6 +327,8 @@ MnActions:
                 defw    NoteMenuSave            ; FILE, SAVE
                 defb    2,3
                 defw    NoteMenuSaveAs
+                defb    2,4
+                defw    NoteMenuPrint
                 defb    2,5
                 defw    NoteMenuDelete           ; FILE, DELETE
                 defb    3,0
@@ -337,6 +339,8 @@ MnActions:
                 defw    WndCascade
                 defb    3,3
                 defw    WndTile
+                defb    3,4
+                defw    DskSetOpen              ; VIEW, DESKTOP
                 defb    3,5
                 defw    CommanderOpen
                 defb    4,0
