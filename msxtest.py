@@ -2434,26 +2434,38 @@ def tape_checks(syms, fails):
     snapshot = [(5, f'set f [open $::out/document.bin wb]; puts -nonewline $f '
                  f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
     rewind = [(5, 'cassetteplayer rewind; cassetteplayer play')]
-    for closed in (False, True):
-        name = "note-tape-closed" if closed else "note-tape"
-        # Sequential tape loading needs a target: after DISCARD, FILE > NEW.
-        target = press(66, 50) + press(60, 98) + new if closed else []
+    edited = [(5, f'set f [open $::out/edited.bin wb]; puts -nonewline $f '
+               f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
+    # FILE > OPEN takes the next file and its name off the tape, so a
+    # SAVE AS name survives closing the window (lf-1537). After the
+    # close, FILE > NEW is the load target and is named NOTE.
+    for variant, after in (("", []),
+                           ("-closed", press(66, 50) + press(60, 98) + new + rewind + reopen),
+                           ("-saved", edited + press(66, 50) + press(60, 106) + new
+                            + rewind + reopen + reopen)):
+        name = "note-tape" + variant
         wide_base, wide_grow, _, _, _, wide_tap, _ = note_width_steps(ts)
-        filename = "NOTE" if closed else "LETTER"
+        filename = "LETTER"
         save_as = press(88, 3) + press(96, 35)
         r = Run(ts, record + wide_base + wide_grow + wide_tap(3, 64)*6
-                + snapshot + save_as + input_note_name(filename) + tap(5, 32) + tap(5, 32) + target + rewind + reopen
-                + [(10, 'cassetteplayer eject')], name, rom=rom)
+                + snapshot + save_as + input_note_name(filename) + tap(5, 32) + tap(5, 32)
+                + (after or rewind + reopen) + [(10, 'cassetteplayer eject')], name, rom=rom)
         document = open(os.path.join(OUT, name, "document.bin"), "rb").read()
-        check(fails, name, r.bytes("NoteBuf", 256) == document
-              == note_width_document([b'H'*14 + b'I'*6])
+        header = b"MSXT" + filename.encode().ljust(13, b"\0") + b"\0\1"
+        expected, wav = document, [header, document]
+        if variant == "-saved":
+            expected = open(os.path.join(OUT, name, "edited.bin"), "rb").read()
+            wav += [header, expected]
+        check(fails, name, r.bytes("NoteBuf", 256) == expected
+              and document == note_width_document([b'H'*14 + b'I'*6]) and (variant != "-saved" or expected != document)
               and r.peek("NoteResult") == 0 and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1
+              and r.bytes("NoteName", 7) == b"LETTER\0"
               and r.peek("WndCount") == 1 and r.peek("WinApp", 2) == ts["AppNote"],
               f"256 bytes crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
-              f"expected {zlib.crc32(document):08x}; Dropped {r.peek('Dropped', 2)}")
+              f"expected {zlib.crc32(expected):08x}; name {r.bytes('NoteName', 7)}; "
+              f"Dropped {r.peek('Dropped', 2)}")
         blocks = read_tape_wav(os.path.join(OUT, name, "note.wav"))
-        check(fails, name + "-wav", blocks == [b"MSXT" + filename.encode().ljust(13, b"\0")
-                                             + b"\0\1", document],
+        check(fails, name + "-wav", blocks == wav,
               f"Python decoded blocks {[len(b) for b in blocks]}, document crc32 {zlib.crc32(document):08x}")
 
     r = Run(ts, new + press(88,3) + press(96,35)
@@ -2473,12 +2485,11 @@ def tape_checks(syms, fails):
               and rr.peek("NoteResult") != 0 and rr.peek("TapeMode") == 0,
               "BIOS carry propagated, document remains unsaved")
 
-    # Real BIOS reads synthetic CAS headers: reject foreign format, a
-    # different filename and oversized payload before accepting a payload.
+    # Real BIOS reads synthetic CAS headers: reject foreign format and
+    # oversized payload before accepting a payload.
     marker = bytes.fromhex("1fa6debacc137d74")
     header = blocks[0]
     for name, bad in (("magic", b"BAD!" + header[4:]),
-                      ("name", header[:4] + b"OTHER".ljust(13, b"\0") + header[17:]),
                       ("length", header[:17] + b"\1\1")):
         path = os.path.join(BUILD, "tape-" + name + ".cas")
         with open(path, "wb") as f:
@@ -2488,6 +2499,20 @@ def tape_checks(syms, fails):
         check(fails, "tape-bad-" + name, rr.peek("NoteResult") != 0
               and rr.peek("TapeLen", 2) == 0 and rr.peek("TapeMode") == 0,
               "bad header rejected, no payload accepted")
+
+    # Any file name on tape opens and becomes the document's name; CAS
+    # blocks start on eight byte boundaries.
+    other = header[:4] + b"OTHER".ljust(13, b"\0") + header[17:]
+    payload = bytes(range(32, 128)) * 2 + bytes(range(32, 96))
+    path = os.path.join(BUILD, "tape-other.cas")
+    with open(path, "wb") as f:
+        f.write(marker + other + bytes(5) + marker + payload)
+    rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")]
+             + reopen + [(10, "")], "tape-other", rom=rom)
+    loaded = rr.bytes("NoteBuf", 256)
+    check(fails, "tape-other", rr.peek("NoteResult") == 0 and rr.bytes("NoteName", 6) == b"OTHER\0"
+          and loaded[:14] == payload[:14] and rr.peek("TapeMode") == 0,
+          f"name {rr.bytes('NoteName', 6)}, 256 bytes crc32 {zlib.crc32(loaded):08x}")
 
 
 def note_width_document(lines):

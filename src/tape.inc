@@ -1,6 +1,7 @@
 ; BIOS cassette stream: long leader + "MSXT", name[13], LE length;
 ; short leader + payload (0..256 bytes). Not an MSX BASIC file.
-; One buffered file, handle 1. No directory or delete. BIOS owns PSG
+; One buffered file, handle 1. No directory or delete. Reading an
+; empty name accepts whichever file comes next. BIOS owns PSG
 ; and interrupt masking during transfers; the wrapper preserves buffers.
 TAPION          equ     $00E1
 TAPIN           equ     $00E4
@@ -47,6 +48,10 @@ TapeOpenMode:
                 ld      hl,TapeHdr
                 ld      de,TapeIn
                 ld      b,17
+                ld      a,(RamName)
+                or      a
+                jr      nz,TapeCompare
+                ld      b,4                     ; empty name: the next file, name in TapeIn+4
 TapeCompare:
                 ld      a,(de)
                 cp      (hl)
