@@ -14,8 +14,9 @@ PrintOpen:
                 ret     c
                 ld      a,1
                 ret
-; Carry set if the printer stayed busy for PRINTWAIT interrupts. IrqCnt
-; keeps counting because PrintBios leaves interrupts enabled.
+; Carry set if the printer stayed busy for PRINTWAIT interrupts or ESC
+; was pressed while it was busy. IrqCnt keeps counting because PrintBios
+; leaves interrupts enabled.
 PrintReady:
                 push    hl
                 push    de
@@ -25,6 +26,8 @@ PrPoll:
                 call    PrintBios
                 or      a
                 jr      nz,PrDone            ; OR cleared carry: ready
+                call    PrintEsc
+                jr      z,PrCancel
                 ld      hl,(IrqCnt)
                 or      a
                 sbc     hl,de                ; interrupts waited so far
@@ -34,12 +37,29 @@ PrPoll:
                 ld      a,l
                 cp      PRINTWAIT
                 jr      c,PrPoll
+                jr      PrTimeout
+; ESC gives up at once. Wait for its release, or the alert that follows
+; would read the same key as its own ESC and close before it is seen.
+PrCancel:
+                call    PrintEsc
+                jr      z,PrCancel
 PrTimeout:
                 ld      a,STERR_NOTFOUND     ; no printer answered
                 scf
 PrDone:
                 pop     de
                 pop     hl
+                ret
+; Z while ESC (row 7, bit 2) is down. DI keeps the row select ours.
+PrintEsc:
+                di
+                in      a,(PPIC)
+                and     $F0
+                or      7
+                out     (PPIC),a
+                in      a,(PPIB)
+                ei
+                bit     2,a
                 ret
 PrintChar:
                 push    af
