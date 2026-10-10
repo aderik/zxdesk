@@ -1324,6 +1324,7 @@ Padded ROM CRC32: normal `6704eb41`, TEST `8498aabb`.
 Roms_MSX1 + Roms_Disk **22** assertions, none failed (the disk run omits
 the RAM-only raw-stream fixture, as before). The full suite is the
 pipeline's.
+
 ## lf-1526: Notepad selection
 
 SELECT toggles marking at the caret; holding it does not repeat the
@@ -1349,33 +1350,72 @@ suppression, replacement, BS/DEL, ESC/click clearing, per-instance focus,
 reverse selection across chunks, three-line deletion and drag scrolling.
 The three-line deletion compares all 256 document bytes.
 
-Focused verification:
+Focused verification, rebased on `40b7e5a` (the icons of lf-1527 lie
+under every window, so the screen checksums include them; the bank
+backend of lf-1525 moved the RAM layout again):
 
-| Configuration | Selection | Existing width/chunk checks | Existing application checks |
-|---|---:|---:|---:|
-| C-BIOS_MSX1_EU, 50 Hz | 17 | 16 | 7 |
-| C-BIOS_MSX1_JP, 60 Hz | 17 | — | — |
+| Configuration | Group | Assertions |
+|---|---|---:|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--print`, `--resize-scroll` | 17, 23, 20 |
+| C-BIOS_MSX1_JP, 60 Hz | `--note-selection`, `--resize-scroll` | 17, 20 |
+| Roms_MSX1 + Roms_Disk | `--settings` (the TEST build's heap subject) | 170 |
+| Roms_MSX1 + Mapper512 | `--bank` | 20 |
 
-Keyboard and mouse selection both have nametable CRC32 **f4052d28**.
+On the earlier base `0ed9256` the pipeline's full `test-all.sh` passed
+on C-BIOS EU, C-BIOS JP and Roms_MSX1 and failed only `heap-stat` on
+Roms_MSX1 + Roms_Disk, which the bank backend's smaller heap subject
+(160, 120, 96 bytes) now covers: on this base the three blocks fill
+the disk machine's 388 byte TEST heap exactly, with nothing to split
+off, and the stats agree with the formula (after the allocations 0,
+after the free 120, after the free by owner 224). The next ticket that
+adds static RAM will have to shrink that subject again.
+
+Keyboard and mouse selection both have nametable CRC32 **4f499791**.
 Replacement with X gives document CRC32 **fb9f7a1f**; BS/DEL give
 **3bc1feef**; deletion across three logical lines including a continuation
 chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
-**2d1d3048**. HELP > KEYS has CRC32 **91f6a615**. The drag-scroll subject
-measures **Dropped = 0** on both frequencies; this is not a claim about
-all editing operations or window sizes.
+**96518af1** and, typed over, document CRC32 **27fb7f93**. HELP > KEYS
+has CRC32 **6f18e610**.
 
-The actual checkout base is `666af80`, whose assembled normal/TEST ROMs
-use **15,483 / 16,760 bytes**. This change adds **512 ROM bytes**:
-normal **15,995**, TEST **17,272**. Normal page 1 has **389 bytes** left;
-page 2 was already mapped. Static RAM grows **20 bytes** (four live state
-bytes, one mouse capture byte, fifteen paint scratch bytes), to **3,563**
-normal / **6,295** TEST. Normal heap capacity falls by 20 to **8,725**
-bytes without disk or **3,340** with disk. Each Notepad's existing state
-allocation grows **4 bytes**, from **278 to 282**, with no new allocation.
-The additional HELP row uses **15 extra heap bytes** while that window
-is open. Padded ROM CRC32: normal **82db8c77**, TEST **6d2aed3f**.
+The drag-scroll subject measures **Dropped = 0** on both frequencies for
+the drag alone: the counter is zeroed after the typed preamble. Measured
+with breakpoints at `FrameWatch` and `MainLoop` on the 60 Hz machine, a
+typed key frame with the icons under the window is 15.7 to 15.9 ms on
+`0ed9256` and 16.0 to 16.3 ms here (state write-back and row marking
+2.7 ms, lattice 0.9 ms, icon rows 1.6 ms, the Notepad compose 6.5 ms,
+the blit 1.6 ms), and both drop 11 of the preamble's 23 key frames at
+60 Hz; that cost is main's, not this change's, and is noted for the
+owner. The drag's own frames are at most 13.2 ms. This is not a claim
+about other editing operations or window sizes.
 
-The full five-configuration `test-all.sh` is left to the pipeline, as
+The chunk painter leaves the selection code alone when the anchor row
+is $FF, which is the usual case: one load, an INC and a jump, 27 T a
+chunk, where the call into the painter and its two checks cost 240 T
+for the same answer. Measured on the 60 Hz machine with breakpoints
+on every chunk of the `resize-screen-edge` compose, a 24 by 17
+Notepad: a chunk took 427 us on main (`8fefef5`), 495 us with the call
+and 440 us with the early-out, so the compose frame went from 14,420
+to 15,607 us and dropped one frame, and is 14,665 us now, none
+dropped. A front window with a selection still pays the 68 us a chunk
+while it is drawn.
+
+The mouse capture byte is cleared at `Start`, with `DskDrag`: openMSX
+fills RAM with a pattern, and on the rebased layout the byte came up set,
+so the caret followed the idle pointer until the first release, which
+reversed the typed text in the `--print` subjects.
+
+Measured against `8fefef5`: normal ROM **19,353 → 19,875 bytes (+522)**,
+TEST **21,090 → 21,612 (+522)**; both run on into page 2, which `Start`
+maps. Static RAM grows **20 bytes** (four live state bytes, one mouse
+capture byte, fifteen paint scratch bytes), **3,759 → 3,779** normal and
+**6,491 → 6,511** TEST. The heap falls by 20: **8,529 → 8,509** bytes
+without a disk ROM, **3,144 → 3,124** with one (TEST **5,797 → 5,777 /
+412 → 392**). Each Notepad's existing state allocation grows **4
+bytes**, from **278 to 282**, with no new allocation. The KEYS window at
+22 rows uses **15 more heap bytes** than main's 21 while it is open.
+Padded ROM CRC32: normal **673eee09**, TEST **ecc22aa8**.
+
+The full six-configuration `test-all.sh` is left to the pipeline, as
 required by this implementation run's focused-tests-only instruction.
 No real-ROM matrix results are claimed here.
 
@@ -1471,26 +1511,26 @@ Two things the merge with lf-1526 turned up, both fixed here:
 - On main `8fefef5` the 24x17 resize's compose frame measured 15.6 ms
   at 60 Hz on this branch against 14.4 ms on main alone, one dropped
   frame: NoteDraw asked NotePaintSelection per chunk whether the
-  front window has a selection, 1.0 ms over sixteen chunks. The
-  answer is now taken once per draw (`NoteSelDraw`, one byte): the
-  compose frame is 14.7 ms, Dropped 0, and the typed-key compose
-  gains the same per chunk.
+  front window has a selection, 1.0 ms over sixteen chunks. PR #22's
+  squash (`8257a17`) answers that per chunk with a 27 T test of the
+  anchor row, which the merge takes in place of this branch's
+  once-per-draw flag: the compose frame is 14.7 ms, Dropped 0.
 
-Measured against main `8fefef5` (19,353 / 21,090 ROM bytes, 3,759 /
-6,491 RAM), which this branch merges: normal ROM **20,315 bytes
-(+962, of which lf-1526's selection 512)**, TEST **22,052 (+962)**;
-static RAM **+247 bytes** (lf-1526's 20, ClipBuf 224, ClipLen, ClipIx,
-NoteSelDraw), to **4,006** normal and **6,738** TEST; heap **8,282 /
-2,897** bytes without / with the disk ROM (TEST **5,550 / 165**). No
-heap allocation; the KEYS window's buffer is 27 by 16 while open.
-Padded ROM crc32: normal **b2a70fcf**, TEST **5453dd15**.
+Measured against main `8257a17` (PR #22's squash of lf-1526 on
+`8fefef5`; 19,869 / 21,606 ROM bytes, 3,779 / 6,511 RAM), which this
+branch merges: normal ROM **20,293 bytes (+424)**, TEST **22,030
+(+424)**; static RAM **+226 bytes** (ClipBuf 224, ClipLen, ClipIx), to
+**4,005** normal and **6,737** TEST; heap **8,283 / 2,898** bytes
+without / with the disk ROM (TEST **5,551 / 166**). No heap
+allocation; the KEYS window's buffer is 27 by 16 while open. Padded
+ROM crc32: normal **1fcd9bae**, TEST **e46f87a8**.
 
 Focused verification (the full `test-all.sh` is the pipeline's):
 
 | Configuration | Groups | Assertions |
 |---|---|---|
-| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--clipboard`, `--arrange`, `--resize-scroll`, `--note-width`, `--saveas`, `--print`, `--dialogs`, `--note-load`, `--settings`, `--commander`, `--desktop`, `--bank`, `--sound-only`, `--delete`, `--open-ui`, boot/mouse/keys/menus | 17, 16, 106, 20, 16, 21, 23, 30, 44, 156, 38, 17, 20, 11, 11, 4, 35 |
-| C-BIOS_MSX1_JP, 60 Hz | `--resize-scroll`, `--note-selection`, `--clipboard`, `--arrange`, `--note-width`, `--settings`, `--saveas`, `--print`, `--bank` | 20, 17, 16, 106, 16, 156, 21, 23, 20 |
-| Roms_MSX1 | `--tape`, `--arrange`, `--clipboard`; with Mapper512 `--bank` | 13, 106, 16; 20 |
-| Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--print`, `--desktop`, `--bank`, `--saveas` | 170, 16, 55, 22, 18, 20, 21 |
-| Roms_MSX2 | `--clipboard`, `--arrange`, `--bank` | 16, 106, 20 |
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--clipboard`, `--arrange`, `--resize-scroll`, `--saveas`, `--print`, `--note-width`, `--settings`, `--dialogs`, `--desktop`, `--commander`, `--bank`, boot/mouse/keys/menus | 17, 16, 106, 20, 21, 23, 16, 156, 30, 17, 38, 20, 35 |
+| C-BIOS_MSX1_JP, 60 Hz | `--resize-scroll`, `--note-selection`, `--clipboard`, `--arrange`, `--note-width` | 20, 17, 16, 106, 16 |
+| Roms_MSX1 | `--tape`, `--arrange`; with Mapper512 `--bank` | 13, 106; 20 |
+| Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--bank` | 170, 16, 55, 20 |
+| Roms_MSX2 | `--clipboard`, `--arrange` | 16, 106 |

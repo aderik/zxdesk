@@ -300,7 +300,6 @@ NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a pas
                 var     ClipLen, 1
                 var     ClipIx, 1       ; the byte a paste is at
                 var     NoteMouse, 1
-                var     NoteSelDraw, 1  ; this draw paints a selection
                 var     NotePaintBuf, 15
                 var     NoteCursorX, 1
                 var     NoteCursorY, 1
@@ -576,9 +575,9 @@ Start:
                 xor     a
                 ld      (LastHit),a
                 ld      (DskDrag),a
+                ld      (NoteMouse),a           ; no notepad drag at the start
                 ld      (MnLastMenu),a
                 ld      (ClipLen),a             ; an empty clipboard
-                ld      (NoteMouse),a           ; RAM comes up $FF: no drag until a press
                 dec     a
                 ld      (MenuPick),a
                 xor     a
