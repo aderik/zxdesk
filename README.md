@@ -110,7 +110,7 @@ item, save-under out of the shadow):
 | subject | what is checked |
 |---|---|
 | menu-open | a press on FILE opens menu 2: the name table equals the oracle built from the MenuDefs read out of the ROM, title inverted, six item rows |
-| menu-open-1/4 | ZX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
+| menu-open-1/5 | MSX DESK at the left edge and HELP, whose drop is nudged in from the right edge |
 | menu-pick | FILE then a press on row 3 picks SAVE (item 2 of menu 2), the menu closes |
 | menu-restore | after the pick the name table is byte for byte the boot one again |
 | menu-away | VIEW then a press on the desktop: no pick, closed, restored |
@@ -143,11 +143,12 @@ produces, and HdlKey dispatches it before any application sees a key;
 an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
 K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
-window that says which icons are on the desktop.
-HELP > KEYS opens the list, with the notepad's SELECT and HOME and the
-calendar's keys (their header folded into the two lines, `CAL , . MONTH`,
-so that the list keeps to 22 rows), as a window at row 1, the lowest it
-fits.
+window that says which icons are on the desktop. E, Y and P are CUT,
+COPY and PASTE (see "Clipboard and the EDIT menu").
+HELP > KEYS opens the list, with the calendar's keys and the notepad's
+HOME (the start of the screen row with WRAP), as a window of two
+columns, 28 by 16 at (2, 4): nineteen GRAPH letters no longer fit the
+desktop's 22 rows in one.
 333 ROM bytes, no RAM.
 
 | subject | asserts |
@@ -514,13 +515,23 @@ instance shows it); one without is flipped like any other window. An
 edit key leaves the repaint to the next frame: ENTER into a full line is
 5 ms before any layout.
 
-Budget: the normal ROM is 22,739 bytes (+1,556 against the base 8fefef5,
-the selection of lf-1526 included), static RAM 3,787 bytes (+8
-against main: the six wrap flags, SetWrap and RowsDesk), the heap 8,501
-bytes without a disk ROM and 3,116 with one. The TEST build leaves 384
-bytes behind the disk ROM; its heap subject's third block goes from 96
-to 88 bytes so the three fit exactly (the allocator does not split off
-less than 20 bytes). The table takes no heap and no RAM of its own.
+With the clipboard (lf-1545) merged in: CUT and PASTE change the text
+outside NoteKey, so `NoteRefresh` invalidates the table with WRAP on and
+leaves the layout and the composition to the service, a frame at a
+time, instead of composing in the frame of the paste.
+
+The SETTINGS menu pick over a notepad, which composes the window in
+the frame of the open (`WndOpenLater`) after the 2 ms state save of the
+notepad that loses the live slot, measured 14.9 ms with the EDIT menu
+in: SetDraw's seven labels are one block in ROM copied into the rows
+(2.2 ms of prints to 0.6), and the hit test flushes the records alone
+(`WndFlushRec`), for 14.3 ms.
+
+Budget: the normal ROM is 23,347 bytes, static RAM 4,014 bytes (+8
+against main: the six wrap flags, SetWrap and RowsDesk), the heap 8,274
+bytes without a disk ROM and 2,889 with one. The TEST build leaves 157
+bytes behind the disk ROM, 21 of them after the heap subject's 48, 40
+and 32 byte blocks. The table takes no heap and no RAM of its own.
 
 ## Frame budget, measured
 
@@ -1353,9 +1364,12 @@ configuration after the five machines.
 
 **SETTINGS > BACKEND** goes round RAM, BANK and DISK, those that are
 there, in both directions; BANK shows its size after the label:
-`BACKEND 48 KB   [BANK]`. A 16K or 32K MSX1 has no hidden pages and
-no BANK (a 32K machine's page 2 RAM is behind the cartridge too, 16 KB,
-not measured here). In the Commander **B** takes the other pane round
+`BACKEND 48 KB   [BANK]`. A 16K MSX1 has no hidden pages and no BANK.
+A 32K MSX1 ($8000-$FFFF) does: its page 2 RAM is behind the cartridge,
+a 16 KB bank of 63 blocks and 58 files, `BACKEND 16 KB   [BANK]`
+(measured in the lf-1525 test on a Roms_MSX1 with 32K: source 1, 63
+blocks, Commander B and the save/close/reopen route byte-identical;
+`bank-mirror` measures the same size here). In the Commander **B** takes the other pane round
 the same ring (from PRN to RAM), so RAM, DISK and BANK copy both ways;
 the help row reads `TAB PANE P PRN B BANK R LIST`. A document saved on
 the bank keeps it as its backend, as with RAM.
@@ -1368,14 +1382,16 @@ with the bytes read out of the bank device and back in the source,
 `bank-note` (SETTINGS to BANK, type, save, edit, close and discard,
 FILE > OPEN: the document is the saved one, in the bank), and
 `bank-picker`. The TEST build's `bank-sys` writes a hundred 256 byte
-files with interrupts off throughout (the routine's EI is a NOP for the
+files (half the bank's files when that is fewer, so `bank-rw` still
+has room: 89 on 48 KB, 29 on 16 KB) with interrupts off throughout (the routine's EI is a NOP for the
 duration) and the harness snapshots $F380-$FFFF and the whole ROM at
 `TbsStart` and `TbsEnd`: identical, and the ROM equals the image.
 `bank-rw` round trips 64 bytes, fills the bank until `STERR_FULL`
-(**77** files after the 101 before it on 48 KB, 139 on 64 KB, 1,758
-on 496 KB: 412 s of emulated time, the whole TEST run), counts the
-directory (to 255, the index's width), deletes `F0002`, sees `NEW`
-take entry 103 and reads a full file back; `bank-dir` parses the
+(**88** files after the 90 before it on 48 KB, 28 after 30 on 16 KB,
+139 after 101 on 64 KB, 1,758 on 496 KB: 412 s of emulated time, the
+whole TEST run), counts the directory (to 255, the index's width),
+deletes `F0002`, sees `NEW` take its entry (103 when `bank-sys` wrote
+a hundred, 92 on 48 KB) and reads a full file back; `bank-dir` parses the
 dumped device itself: every entry, summary byte and data block. Every
 bank file's bytes are read from the openMSX device (`Main RAM`,
 `Mapper512`), not through the ROM.
@@ -1435,9 +1451,7 @@ and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
 drag selects whole cells, and dragging beyond the viewport scrolls it.
 SELECT again stops extending while retaining the selection. ESC or a
 click without dragging clears it. Typing replaces it; BS and DEL delete
-it. HELP > KEYS now includes SELECT MARK, below D DESKTOP: 22 rows,
-opened at row 1, the lowest row a list of that height fits at above the
-status row.
+it. HELP > KEYS now includes SELECT MARK.
 
 Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
 in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
@@ -1522,3 +1536,166 @@ Padded ROM CRC32: normal **673eee09**, TEST **ecc22aa8**.
 The full six-configuration `test-all.sh` is left to the pipeline, as
 required by this implementation run's focused-tests-only instruction.
 No real-ROM matrix results are claimed here.
+
+## Clipboard and the EDIT menu (lf-1528)
+
+The bar is MSX DESK, FILE, EDIT, VIEW, HELP, two spaces apart from
+column 0 (the titles sit at 0, 10, 16, 22 and 28; FILE's cell did not
+move, VIEW's and HELP's did, and the subjects that press them moved
+with them). EDIT holds CUT, COPY, PASTE and UNDO; UNDO has no action
+until the undo ticket. GRAPH+E, GRAPH+Y and GRAPH+P are the keys, the
+free letters once X C T W N O S K L F G I V R D were taken, and HELP >
+KEYS lists them.
+
+One clipboard for every notepad: `ClipBuf`, 224 bytes, the document's
+text budget, and `ClipLen`. COPY takes the selection's cells from the
+lower endpoint to the upper, a byte 13 for every hard line break it
+crosses; a line-ending chunk loses its padding, a continued chunk is
+text through to its 14th cell, so a cut and a paste give the document
+back. It is built in `CmdBuf` (free: no dialogue is open while a menu
+item or a shortcut runs) and moved when it fits; a selection of padding
+alone leaves an empty clipboard, and the one selection that cannot fit,
+all sixteen chunks full with fifteen breaks, leaves the clipboard as it
+was and cuts nothing. CUT is COPY and the selection's erase. PASTE goes
+in at the caret through `NoteInsert` and `NoteEnter`, byte by byte as
+if typed, over a selection if there is one; the document and the
+thirteen cursor, flag and selection bytes (`NOTECURSZ`) are saved in
+`CmdBuf` and `CmdWork` first, and a byte that does not fit puts all of
+it back and opens DOCUMENT FULL: no half pasted text. Nothing to act on
+(no selection, an empty clipboard, no notepad in front) does nothing.
+
+After a cut or a paste the buffer is composed in the same frame and
+the desktop repaint and blit happen in the next, the split mouse
+selection uses. Measured with breakpoints on the 50 Hz machine: a
+paste of HELLO into HELLO WORLD at the caret is 7.3 ms (1.8 ms the
+snapshot, 3.9 ms the one insert that opens a continuation chunk, the
+same cost a typed 15th character pays) and the compose 6.1 ms; with
+the repaint on top that frame was 25.0 ms and dropped, with the split
+it ends at 14.4 ms and the next at 10.5 ms, 0 dropped. A typed key is
+16.0 ms and ENTER 20.7 ms in the same window (ENTER drops a frame
+already; so does every key once a second notepad is open, which is
+what `clip-paste2` and `clip-full` report as Dropped).
+
+`./test.sh --clipboard` (in the default suite):
+
+| subject | asserts |
+|---|---|
+| clip-bar, clip-menu | the boot name table with the five titles equals the compositor (crc32 bda22fd6 on C-BIOS), and EDIT open equals it painted from the ROM's MenuDefs (da32df12) |
+| clip-copy | HELLO selected, GRAPH+Y: ClipBuf HELLO, ClipLen 5, the 256 document bytes and the selection unchanged |
+| clip-cut, clip-cut-menu | GRAPH+E and EDIT > CUT: the document ` WORLD` (3bc1feef), clipboard HELLO, caret (0, 0), no selection, the screen as composed |
+| clip-paste2, clip-paste2-menu | copied in notepad 1, GRAPH+N, pasted in notepad 2 by key and by menu: notepad 2's 256 bytes are `HELLO` (3771117c), caret (5, 0), HELLO and the caret in its window, notepad 1's state block untouched |
+| clip-lines, clip-lines-cut, clip-lines-back | `B`, a break, `C` out of AB / CD: clipboard `B\rC`; pasted into a new notepad two lines (51b8db0c); cut, `AD` (ac2ff1c8); pasted back, AB / CD again (e1909815) |
+| clip-replace | pasted over WORLD: HELLO HELLO (53f0cc97) |
+| clip-empty, clip-nosel | an empty clipboard pasted and cut without a selection change nothing; COPY without a selection keeps HELLO; EDIT > UNDO is picked and does nothing |
+| clip-full, clip-full-after | HELLO pasted into 220 cells: DOCUMENT FULL, the 256 bytes identical (9845f0e9), caret (10, 15); OK and a key go on from there |
+| clip-keys | HELP > KEYS equals the two-column compositor window (a0bf828e) |
+
+Two things the merge with lf-1526 turned up, both fixed here:
+
+- `NoteMouse` was never initialised; openMSX fills RAM with $FF, so
+  until the first button release every frame moved the caret to the
+  pointer's cell. Typing after GRAPH+N without a mouse (the saveas and
+  print subjects) came out reversed at (6, 4). Init clears it.
+- The TEST build died on Roms_MSX1 with Roms_Disk within a frame of
+  its marker, before any subject: SP run down to $D029, PC in KEYINT,
+  the disk ROM in page 1. H.TIMI was a JP to IrqTick in page 1, and a
+  disk driver runs through an inter-slot call with the disk ROM mapped
+  there; an interrupt then executed the disk ROM's bytes at that
+  address. The baseline survived with IrqTick at $416E and died at
+  $4174, by what those bytes are. An inter-slot hook (RST $30) fixed it
+  but cost the 60 Hz resize release frame its last few dozen
+  microseconds (`resize-screen-edge` Dropped 1, `h.timi` 61 against
+  60), so IrqTick went to the end of the ROM, in page 2, which no
+  inter-slot call switches. Main's lf-1525 met the same interrupt
+  (files vanishing from a directory write) and runs the handler from
+  work RAM (`IrqCode`); the merge with main `8fefef5` takes that and
+  drops the page-2 copy and its build check. The TEST heap subject's
+  blocks are 48, 40 and 32 for the 165 bytes left under the disk ROM
+  once the bank backend's and the clipboard's RAM are both in.
+
+- `sel-scroll`, lf-1526's drag scroll, reported 11 dropped frames on
+  the 60 Hz C-BIOS machine, on main plus lf-1526 alone as well
+  (measured in a scratch worktree without this change). Probed frame
+  by frame, the drag itself was within budget: the eleven drops were
+  the eleven letters of HELLO WORLD typed before it. A typed key's
+  frame measured 16.1 ms there, over the 16.7 ms frame once the BIOS
+  handler is counted, 2.0 ms of it the 282-byte AppSave in the
+  repaint's WndFlush (icons 1.6 ms, lattice 0.9, frame 0.9, text 4.8,
+  blit 1.6). Every reader of a slot's state without a select
+  (ClkService, SetActivate, the hit test) flushes first and WndSelect
+  flushes at a switch, so the repaint now writes the window record
+  only (`WndFlushRec`): the typed key frame is 14.2 ms at 60 Hz and
+  `sel-scroll` reports 0 dropped on both machines.
+- On main `8fefef5` the 24x17 resize's compose frame measured 15.6 ms
+  at 60 Hz on this branch against 14.4 ms on main alone, one dropped
+  frame: NoteDraw asked NotePaintSelection per chunk whether the
+  front window has a selection, 1.0 ms over sixteen chunks. PR #22's
+  squash (`8257a17`) answers that per chunk with a 27 T test of the
+  anchor row, which the merge takes in place of this branch's
+  once-per-draw flag: the compose frame is 14.7 ms, Dropped 0.
+
+Measured against main `8257a17` (PR #22's squash of lf-1526 on
+`8fefef5`; 19,869 / 21,606 ROM bytes, 3,779 / 6,511 RAM), which this
+branch merges: normal ROM **20,293 bytes (+424)**, TEST **22,030
+(+424)**; static RAM **+226 bytes** (ClipBuf 224, ClipLen, ClipIx), to
+**4,005** normal and **6,737** TEST; heap **8,283 / 2,898** bytes
+without / with the disk ROM (TEST **5,551 / 166**). No heap
+allocation; the KEYS window's buffer is 27 by 16 while open. Padded
+ROM crc32: normal **1fcd9bae**, TEST **e46f87a8**.
+
+Focused verification (the full `test-all.sh` is the pipeline's):
+
+| Configuration | Groups | Assertions |
+|---|---|---|
+| C-BIOS_MSX1_EU, 50 Hz | `--note-selection`, `--clipboard`, `--arrange`, `--resize-scroll`, `--saveas`, `--print`, `--note-width`, `--settings`, `--dialogs`, `--desktop`, `--commander`, `--bank`, boot/mouse/keys/menus | 17, 16, 106, 20, 21, 23, 16, 156, 30, 17, 38, 20, 35 |
+| C-BIOS_MSX1_JP, 60 Hz | `--resize-scroll`, `--note-selection`, `--clipboard`, `--arrange`, `--note-width` | 20, 17, 16, 106, 16 |
+| Roms_MSX1 | `--tape`, `--arrange`; with Mapper512 `--bank` | 13, 106; 20 |
+| Roms_MSX1 + Roms_Disk | `--settings`, `--clipboard`, `--commander`, `--bank` | 170, 16, 55, 20 |
+| Roms_MSX2 | `--clipboard`, `--arrange` | 16, 106 |
+
+## Printer follow-up (lf-1546)
+
+Three remarks from the test of lf-1536.
+
+**P gives back the pane's own device.** P restored what `CmdInit` gave a
+pane, so a right pane that B had put on DISK came back as RAM. P now keeps
+the device the pane showed in `CmdPrnWas` and returns to it: on
+Roms_MSX1 + Roms_Disk, B B gives panes (5, 5) and B B P P (5, 5) again
+(`print-cmd-bb-back`).
+
+**One PRN pane.** P from a pane that is already PRN does nothing, so TAB P
+TAB P leaves (8, 1) rather than two write-only panes
+(`print-cmd-one-prn`).
+
+**ESC ends the wait.** While the printer stays busy, `PrintReady` reads
+ESC (row 7, bit 2) between polls and gives up on it, waiting for the key's
+release so the `PRINTER NOT READY` alert that follows does not take the
+same ESC as its own. `print-esc` holds ESC from 0.5 s into the job and
+releases it at 0.7 s: the alert opens after **35** interrupts (700,198 µs)
+at 50 Hz and **42** (700,214 µs) at 60 Hz, instead of after `PRINTWAIT`
+(150), and stays open with the document intact. No "PRINTING" status
+line: the ESC abort is the way out of a long wait.
+
+Measured against base `ca6f74d`: normal ROM **20,432 → 20,467 bytes
+(+35)**, TEST ROM **22,169 → 22,204 (+35)**. Static RAM **4,005 → 4,006
+(+1)**, TEST **6,737 → 6,738 (+1)**: `CmdPrnWas` sits in the commander
+state, so each open commander's heap copy grows by the same byte; heap
+**8,283 → 8,282** without disk, **2,898 → 2,897** with it. Padded ROM
+CRC32: normal `a3cf85e2`, TEST `cbf4d59e`.
+
+## Small banks in the TEST subjects (lf-1540)
+
+The lf-1525 test found two things on a 32K MSX1. The 16 KB bank there
+works and is now documented above (whether it is wanted is for the
+product owner; nothing in the ROM changed). And `bank-sys` wrote a
+hundred files on any bank, so on 58 files it filled the bank and
+`bank-rw` began with `STERR_FULL`: the rw route went untested.
+`TestBankSys` now writes `min(100, BkFiles / 2)` files and the harness
+works the expected entries out from that count. On C-BIOS_MSX1_EU,
+`./test.sh --bank` (and the full run) also runs the TEST subjects on
+`C-BIOS_MSX1_Mirror32`, a 63 block bank: `bank-sys-mirror` 29 files
+under DI, work area and ROM identical; `bank-rw-mirror` 28 files to
+`STERR_FULL`, `NEW` in entry 32; `bank-dir-mirror` 58 of 58 entries
+parsed from the device. Normal ROM unchanged (20,467 bytes, crc32
+`a3cf85e2`); TEST ROM 22,204 -> 22,221 bytes (+17); RAM and heap
+unchanged.

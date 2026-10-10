@@ -388,24 +388,28 @@ CkTransfer:
                 jp      z,CmdOpen
                 xor     a
                 ret
-; P toggles the opposite pane between PRN and the device CmdInit gave it:
-; the selected backend on the left, RAM on the right, so a DISK pane is
-; back after a print rather than turned into RAM. Browse cannot reach it.
+; P toggles the opposite pane between PRN and the device it showed
+; before, so a pane B put on DISK is DISK again after a print. One PRN pane
+; is enough: P from a PRN pane does nothing, since a write-only pane is no
+; source. Browse cannot reach it.
 CmdPrinterTarget:
-                ld      a,(CmdActive)
+                ld      hl,CmdBk0               ; CmdKey set CmdPane active
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_PRINT
+                jp      z,CmdDone
+                ld      a,(CmdPane)
                 xor     1
                 ld      (CmdPane),a
                 ld      hl,CmdBk0
                 call    CmdField
                 ld      a,(hl)
                 cp      ST_PRINT
+                ld      a,(CmdPrnWas)
+                jr      z,CptSet
+                ld      a,(hl)
+                ld      (CmdPrnWas),a
                 ld      a,ST_PRINT
-                jr      nz,CptSet
-                ld      a,(CmdPane)
-                or      a
-                ld      a,ST_RAM
-                jr      nz,CptSet
-                ld      a,(CmdWasK)             ; the global backend, as CmdInit
 CptSet:
                 ld      (hl),a
                 jp      CmdReload

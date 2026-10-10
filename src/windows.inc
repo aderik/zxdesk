@@ -65,7 +65,12 @@ WndSelect:
                 jp      AppLoad
 
 ; The live record and the live application state, written back to
-; their slots. Nothing to write when there is no window.
+; their slots. Nothing to write when there is no window. Whoever reads
+; a slot's state without selecting it (ClkService, SetActivate, the
+; hit test) calls this first; the repaint needs only the record, so
+; WndFlushRec spares it the 282-byte notepad copy, measured at 2.0 ms
+; of a 16.1 ms typed-key frame on the 60 Hz machine, where every
+; letter dropped a frame once the icons were in the desktop rows.
 WndFlush:
                 ld      a,(WndCount)
                 or      a
@@ -74,6 +79,13 @@ WndFlush:
                 cp      WNDMAX
                 ret     nc
                 call    AppSave
+WndFlushRec:
+                ld      a,(WndCount)
+                or      a
+                ret     z
+                ld      a,(WndCur)
+                cp      WNDMAX
+                ret     nc
                 ld      a,(WndCur)
                 call    WndRecAt
                 ex      de,hl
@@ -401,8 +413,8 @@ WndHitTest:
                 ld      (WhtCol),a
                 ld      a,c
                 ld      (WhtRow),a
-                call    WndFlush
-                ld      a,(WndCount)
+                call    WndFlushRec             ; the records alone: a select
+                ld      a,(WndCount)            ; saves the state itself
                 or      a
                 ret     z
                 ld      b,a
@@ -1030,7 +1042,7 @@ WrdPaint:
                 ld      hl,(Recomposes)
                 inc     hl
                 ld      (Recomposes),hl
-                call    WndFlush
+                call    WndFlushRec             ; the state goes with a select
                 call    MarkRows                ; once, for the whole range
                 ld      a,(RowsDesk)
                 or      a

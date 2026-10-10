@@ -213,17 +213,17 @@ TestHeap:
                 call    HeapInit
                 ; Sizes that fit the smallest heap the build sees: the TEST
                 ; build includes the tape buffer, the bank's transfer routine
-                ; and directory cache, the desktop icons and the test records;
-                ; the notepad's wrap flags took the last block from 96 to 88.
-                ld      bc,160
+                ; and directory cache, the desktop icons, the clipboard and the
+                ; test records: 166 bytes under a disk ROM, so 48, 40 and 32.
+                ld      bc,48
                 ld      a,$10
                 call    HeapAlloc
                 ld      (ThPtr),hl
-                ld      bc,120
+                ld      bc,40
                 ld      a,$11
                 call    HeapAlloc
                 ld      (ThPtr+2),hl
-                ld      bc,88
+                ld      bc,32
                 ld      a,$12
                 call    HeapAlloc
                 ld      (ThPtr+4),hl
@@ -236,7 +236,7 @@ TestHeap:
                 ld      de,(ThPtr+2)
                 inc     de
                 ld      (hl),$A5
-                ld      bc,119
+                ld      bc,39
                 ldir
                 ld      hl,(ThPtr+2)
                 call    HeapFree
@@ -494,7 +494,9 @@ TxtTsName5:     defb    "NOTE4",0
 TbResults       equ     CmdBuf+221              ; after the 21 bytes of TtResults
 TbName          equ     CmdWork                 ; "F0000" and so on
 
-; A hundred files of 256 bytes written with interrupts off throughout:
+; A hundred files of 256 bytes written with interrupts off throughout,
+; or half the bank's files when that is fewer (58 on a 16 KB bank), so
+; TestBank still has room to fill, delete and reuse:
 ; the routine's EI is a NOP while this runs, so the harness can
 ; compare the BIOS work area and the ROM before and after without a
 ; frame counter moving between the two snapshots.
@@ -510,10 +512,23 @@ TestBankSys:
                 ld      (BkCode+BkOEi),a        ; NOP for EI
                 di
 TbsStart:
-                ld      b,100
+                ld      hl,(BkFiles)
+                srl     h
+                rr      l                       ; half the bank's files
+                ld      a,h
+                or      a
+                jr      nz,TbsHundred
+                ld      a,l
+                cp      100
+                jr      c,TbsCount
+TbsHundred:
+                ld      a,100
+TbsCount:
+                ld      b,a
+                ld      c,a
 TbsLoop:
                 push    bc
-                ld      a,100
+                ld      a,c
                 sub     b
                 call    TbSetName
                 ld      a,'S'                   ; "S0000".."S0099"

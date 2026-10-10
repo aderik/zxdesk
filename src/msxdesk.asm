@@ -294,6 +294,12 @@ _ram            defl    _ram+size
                 var     NoteAnchor, 2          ; X (bit 7 = marking), chunk Y ($FF = none)
                 var     NoteEnd, 2             ; X, chunk Y; exclusive endpoint
 NOTESTSZ        equ     _ram-NoteState
+NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a paste's rollback
+                ; the clipboard, one for every notepad: the document's 224
+                ; text cells, a hard line break as CLIP_CR between them
+                var     ClipBuf, NOTEROWS*NOTECOLS
+                var     ClipLen, 1
+                var     ClipIx, 1       ; the byte a paste is at
                 var     NoteMouse, 1
                 var     NotePaintBuf, 15
                 var     NoteCursorX, 1
@@ -334,6 +340,7 @@ NOTESTSZ        equ     _ram-NoteState
                 var     CmdActive, 1
                 var     CmdStatus, 1
                 var     CmdPending, 1
+                var     CmdPrnWas, 1    ; the device a PRN pane had before P
                 var     CmdDeleteName, 13
                 var     CmdCache0, CMDCACHE
                 var     CmdCache1, CMDCACHE
@@ -582,6 +589,7 @@ Start:
                 ld      (DskDrag),a
                 ld      (NoteMouse),a           ; no notepad drag at the start
                 ld      (MnLastMenu),a
+                ld      (ClipLen),a             ; an empty clipboard
                 dec     a
                 ld      (MenuPick),a
                 xor     a
@@ -1283,7 +1291,7 @@ InitScreen:
                 call    FillRow
                 ld      hl,TxtMenu
                 ld      b,MENUROW
-                ld      c,1
+                ld      c,0                     ; five titles fill the row
                 call    PrintStr
                 call    DrawDesktop
                 ld      a,' '+INVBANK           ; the status band is inverted
@@ -1395,7 +1403,7 @@ LoadSprite:
 
 ; ---- Data
 TxtMarker:      defb    "ZXMSX",0
-TxtMenu:        defb    "MSX DESK  FILE   VIEW   HELP",0
+TxtMenu:        defb    "MSX DESK  FILE  EDIT  VIEW  HELP",0
 
 ; The measured default ramp: pixels per frame as the hold builds.
 AccelTabs:      defb    1,1,2,2,3

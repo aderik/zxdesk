@@ -584,30 +584,30 @@ SetPress:
                 call    WndTouch
                 jp      RowsAddLive
 
+; The seven labels are one block in ROM, a row of SETLABELW cells
+; each, copied into the rows: seven WinPrints measured 2.2 ms of the
+; 5.1 ms SetDraw, and the SETTINGS open over a notepad (WndOpenLater
+; composes in the frame of the open) was 14.9 ms, one 60 Hz frame.
+SETLABELW       equ     14
 SetDraw:
                 xor     a
                 ld      (PrintInv),a
-                ld      hl,SetSpeedLabel
-                ld      bc,$0101
-                call    WinPrint
-                ld      hl,SetYLabel
-                ld      bc,$0201
-                call    WinPrint
-                ld      hl,SetBackendLabel
-                ld      bc,$0301
-                call    WinPrint
-                ld      hl,SetSoundLabel
-                ld      bc,$0401
-                call    WinPrint
-                ld      hl,SetKeyPtrLabel
-                ld      bc,$0501
-                call    WinPrint
-                ld      hl,SetLatticeLabel
-                ld      bc,$0601
-                call    WinPrint
-                ld      hl,SetWrapLabel
-                ld      bc,$0701
-                call    WinPrint
+                ld      hl,SetLabels
+                ld      b,1
+SetDrawLabels:
+                push    bc
+                push    hl
+                ld      c,1
+                call    WinCell
+                ex      de,hl
+                pop     hl
+                ld      bc,SETLABELW
+                ldir
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      8
+                jr      c,SetDrawLabels
                 ld      b,1
 SetDrawLoop:
                 push    bc
@@ -718,9 +718,13 @@ SetButtonNormal:
                 ld      c,16
                 jp      WinPrint
 SetTitle:       defb    "SETTINGS",0
-SetSpeedLabel:  defb    "POINTER RAMP",0
-SetYLabel:      defb    "MOUSE Y INVERT",0
-SetBackendLabel: defb   "BACKEND",0
+SetLabels:      defb    "POINTER RAMP  "
+                defb    "MOUSE Y INVERT"
+                defb    "BACKEND       "
+                defb    "SOUND         "
+                defb    "KEY PTR       "
+                defb    "LATTICE       "
+                defb    "WRAP          "
 SetSlow:        defb    "[SLOW]",0
 SetMed:         defb    "[MED ]",0
 SetFast:        defb    "[FAST]",0
@@ -734,11 +738,7 @@ SetSaveLabel:   defb    "[SAVE]",0
 SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0
 
-SetSoundLabel:  defb    "SOUND",0
-SetKeyPtrLabel: defb    "KEY PTR",0
 
-SetLatticeLabel: defb   "LATTICE",0
-SetWrapLabel:   defb    "WRAP",0
 SetEmpty:       defb    "[NONE]",0
 SetDots:        defb    "[DOTS]",0
 SetDense:       defb    "[GRID]",0
