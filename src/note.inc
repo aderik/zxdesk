@@ -1097,7 +1097,9 @@ NoteRestoreBackend:
                 pop     af
                 ret
 
-; HL = a name, into NoteName, truncated to NOTENAMEMAX.
+; HL = a name, into NoteName, truncated to NOTENAMEMAX. Zeros fill
+; the rest of the field: a shorter name leaves nothing of the old one
+; behind its terminator (lf-1560).
 NoteSetName:
                 ld      de,NoteName
 NoteCopyName:                                   ; DE = where to
@@ -1106,12 +1108,17 @@ NsnLoop:
                 ld      a,(hl)
                 ld      (de),a
                 or      a
-                ret     z
+                jr      z,NsnPad
                 inc     hl
                 inc     de
                 djnz    NsnLoop
                 xor     a
                 ld      (de),a
+                ret
+NsnPad:
+                inc     de
+                ld      (de),a
+                djnz    NsnPad
                 ret
 
 ; Whatever came off the file: anything unprintable becomes a space,
