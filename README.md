@@ -144,7 +144,7 @@ an open menu or dialogue swallows it. Shortcuts do not auto-repeat.
 N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
 K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
 window that says which icons are on the desktop. E, Y and P are CUT,
-COPY and PASTE (see "Clipboard and the EDIT menu").
+COPY and PASTE (see "Clipboard and the EDIT menu"), U is UNDO (see "Undo").
 HELP > KEYS opens the list, with the calendar's keys and the notepad's
 HOME (the start of the screen row with WRAP), as a window of two
 columns, 28 by 16 at (2, 4): nineteen GRAPH letters no longer fit the
@@ -1764,3 +1764,73 @@ that check but `$FF` still the sentinel, at `$7F00`, segment 1.
 Normal ROM 20,467 -> 20,481 bytes (+14, crc32 `a3cf85e2` -> `edbcf735`);
 TEST ROM 22,221 -> 22,235 (+14); RAM 4,006 -> 4,007 bytes (+1,
 `BkSegOff`), heap 8,282 -> 8,281 without disk, 2,897 -> 2,896 with it.
+
+## Undo (lf-1530)
+
+One level a notepad: **EDIT > UNDO** and **GRAPH+U** put the document
+back as it was before the last edit group, and a second UNDO is the
+redo. The snapshot is a heap block of the window's own (owner $10 plus
+the slot, so closing frees it with the rest), allocated in `NoteInit`:
+the 256 document bytes, the 13-byte name and the nine bytes from
+`NoteCX` to `NoteBackend` (cursor, scroll, the saved and modified flags,
+the backend), **278 bytes** (`UNDOSZ`). UNDO swaps those bytes with the
+live ones. The ticket counted 262 (document, cursor, scroll); the name
+and the flags are in it so that FILE > OPEN undone is the previous
+document with its title, its device and its edited flag, not the old
+text under the new file's name. When the allocation fails the notepad
+opens and works as before, `NoteUndoP` is 0, UNDO does nothing and the
+EDIT menu paints it grey: codes $01-$04 hold U, N, D and O from the
+BIOS font in the lattice's grey (`LoadDim`, `T_DIM`), in all three
+thirds.
+
+A group starts at the first change after a cursor key, a click in the
+text, ENTER, a cut, a paste, an UNDO, a load or a save, so a run of
+typed characters and DELETEs is one group. Cut, paste, the erase of a
+selection (DELETE, ENTER or a character typed over it) and a load are
+each a group of their own. A paste takes its snapshot from the
+rollback copy it already makes, after it has all gone in: a paste that
+does not fit leaves the earlier snapshot alone. A save ends the group
+and makes the snapshot an earlier version of the file just written:
+its name and saved flag become the document's, and it is unmodified
+only if its 256 bytes are the bytes written. So SAVE, typing, UNDO is
+the saved text, unmodified, and closing asks nothing; the redo is
+modified again. The commander sets `NoteBackend` before it loads into
+a notepad; `NoteUndoBackend` puts the old device into the snapshot.
+
+HELP > KEYS gains `U UNDO`; the calendar's three lines moved to the
+second column under HOME ROW START to make room.
+
+`./test.sh --undo` (in the default suite):
+
+| subject | asserts |
+|---|---|
+| undo-type, -redo, -menu | HELLO, SHIFT+UP (on row 0, no move), ` WORLD`, GRAPH+U: `HELLO` (3771117c), caret (5, 0); again: `HELLO WORLD` (df37c4c1), caret (11, 0); the same through EDIT > UNDO |
+| undo-first | HELLO, UNDO: the blank document, NoteModified 0 |
+| undo-click, undo-enter | a click and ENTER end a group: only what follows is undone |
+| undo-cut, -redo, undo-erase | CUT of HELLO, UNDO: the 256 bytes from before the cut, caret (5, 0), clipboard still HELLO; redo ` WORLD`; DELETE on a selection is a group of its own |
+| undo-paste-before, undo-paste | `B\rC` pasted at AB / CD: AB / CB / CD (8cc09b01); UNDO: AB / CD byte for byte (e1909815), caret (1, 0) |
+| undo-saved-text, undo-saved, -redo | HI, SAVE as NOTE, X, UNDO: `HI`, NoteModified 0, then GRAPH+W closes without a dialogue; UNDO UNDO then GRAPH+W asks |
+| undo-past-save | HI, SAVE, UNDO: the blank document, modified, still named NOTE |
+| undo-open-before, undo-open, -redo | HI, FILE > OPEN BETA, UNDO: `HI`, name NOTE, title NOTEPAD, modified 1; redo BETA (5a0ad6a7), unmodified, title BETA |
+| undo-two | UNDO in a second notepad leaves the first's 256 bytes |
+| undo-heap-block | the notepad's heap blocks are 144, `NOTESTSZ` and `UNDOSZ`, all owner $10; EDIT shows UNDO in the font |
+| undo-heap, -after | the heap rewritten so that after the notepad's buffer and state 261 bytes are free: the notepad opens, `NoteUndoP` 0, GRAPH+U and EDIT > UNDO change nothing, no crash, the blocks are (144, 285, free 261); the UNDO cells are $01-$04 and their patterns and grey colours are in all three thirds; typing goes on |
+
+The subject that picked UNDO as a no-op (`clip-nosel`) no longer picks it.
+
+Measured with breakpoints (`machine_info time`), the same on C-BIOS EU
+and JP: the snapshot is **1.82 ms**, paid by the first key of a group
+(that key's loop iteration 11.0 ms against 9.1 ms for the next key);
+the swap is **4.69 ms**, and the loop iteration with UNDO in it
+**12.8 ms**, the redo the same; **Dropped 0** over typing, UNDO and the
+redo on both machines. With the snapshot on top, the default suites
+still pass: 630 ok lines on C-BIOS_MSX1_EU and 623 on C-BIOS_MSX1_JP.
+
+Measured against base `cedf91c`: normal ROM **23,362 → 23,756 bytes
+(+394)**, TEST ROM **25,119 → 25,513 (+394)**. Static RAM **4,015 →
+4,018 (+3)**, TEST **6,747 → 6,750 (+3)**: `NoteUndoP` and `NoteUndoSt`
+in the notepad's state, `NOTESTSZ` 282 → 285. Heap at boot **8,273 →
+8,270** without a disk ROM, **2,888 → 2,885** with one (TEST 5,541 →
+5,538 and 156 → 153). Each open notepad costs **285 heap bytes more**:
+the 278-byte snapshot, its 4-byte header and the 3 state bytes.
+

@@ -726,10 +726,10 @@ def cal_win(x, y, sel=1, year=1980, month=1):
 
 
 KEYS_TEXT = [b"GRAPH +", b"N NEW NOTE", b"O OPEN", b"S SAVE", b"V SAVE AS", b"R PRINT", b"W CLOSE",
-             b"E CUT", b"Y COPY", b"P PASTE", b"SELECT MARK", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+             b"E CUT", b"Y COPY", b"P PASTE", b"U UNDO", b"SELECT MARK"]
 KEYS_TEXT2 = [b"X NEXT WINDOW", b"C CASCADE", b"T TILE", b"K CLOCK", b"L CALENDAR", b"F COMMANDER",
-              b"G SETTINGS", b"I ABOUT", b"D DESKTOP", b"HOME ROW START"]
-KEYS_X, KEYS_Y, KEYS_W, KEYS_H, KEYS_COL2 = 2, 4, 28, 16, 13     # two columns: 19 GRAPH keys no longer fit one; 28 for HOME ROW START
+              b"G SETTINGS", b"I ABOUT", b"D DESKTOP", b"HOME ROW START", b"CALENDAR:", b", . MONTH", b"< > YEAR"]
+KEYS_X, KEYS_Y, KEYS_W, KEYS_H, KEYS_COL2 = 2, 4, 28, 16, 13     # two columns: 20 GRAPH keys no longer fit one; 28 for HOME ROW START
 
 
 def keys_win(x, y):
@@ -3001,7 +3001,7 @@ def resize_scroll_checks(syms, fails):
         free = [b[1] for b in blocks if not b[2]]
         check(fails, name, r.peek('WinW') == w and r.peek('WinH') == h
               and r.peek('LastHit') == 8 and r.nt() == want
-              and sorted(b[1] for b in used) == sorted([w * h, syms['NOTESTSZ']])
+              and sorted(b[1] for b in used) == sorted([w * h, syms['NOTESTSZ'], syms['UNDOSZ']])
               and all(b[3] == 0x10 for b in used) and r.peek('Dropped', 2) == 0
               and r.peek('HpTotal', 2) == sum(free) and r.peek('HpBiggest', 2) == max(free),
               f"size {r.peek('WinW')}x{r.peek('WinH')}, heap {[b[1] for b in used]}, "
@@ -3033,7 +3033,8 @@ def resize_scroll_checks(syms, fails):
         check(fails, name, r.nt() == want and r.peek('NoteCX') == cx and r.peek('NoteCY') == cy
               and r.peek('NoteTop') == min(top, 8)
               and r.bytes('NoteBuf', 256) == (b" " * 14 + b"\0\0") * 16
-              and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16,
+              and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16
+                 - syms['UNDOSZ'] - 4,
               f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), crc32 {zlib.crc32(r.nt()):08x}")
 
     clock = press(180, 3) + press(188, 11)
@@ -3660,14 +3661,15 @@ def clipboard_checks(syms, fails):
           and r.peek("NoteAnchor", 2) >> 8 == 255 and r.nt() == note_nt([b"HELLO HELLO"], 11, 0),
           f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}")
 
-    # Nothing to act on: an empty clipboard, no selection, UNDO.
+    # Nothing to act on: an empty clipboard, no selection. (UNDO acts
+    # since lf-1530: the undo subjects.)
     r = Run(syms, hello + paste + cut + [(10, "")], "clip-empty", files={})
     check(fails, "clip-empty", doc(r) == document and r.peek("ClipLen") == 0 and r.peek("DgOpenFlag") == 0
           and r.nt() == note_nt([b"HELLO WORLD"], 0, 0),
           f"document crc32 {zlib.crc32(doc(r)):08x}, ClipLen {r.peek('ClipLen')}")
-    r = Run(syms, selected + copy + escape + copy + cut + edit(35) + [(10, "")], "clip-nosel", files={})
+    r = Run(syms, selected + copy + escape + copy + cut + [(10, "")], "clip-nosel", files={})
     check(fails, "clip-nosel", clip(r) == b"HELLO" and doc(r) == document and r.peek("MenuOpen") == 0
-          and r.peek("MenuPick") == 3 and r.nt() == note_nt([b"HELLO WORLD"], 5, 0),
+          and r.nt() == note_nt([b"HELLO WORLD"], 5, 0),
           f"clipboard {clip(r)!r}, document crc32 {zlib.crc32(doc(r)):08x}, pick {r.peek('MenuPick')}")
 
     # Four of HELLO's five fit a 220-cell document: none goes in, the
@@ -3691,6 +3693,171 @@ def clipboard_checks(syms, fails):
     want = compose(nt0, [keys_win(KEYS_X, KEYS_Y)])
     check(fails, "clip-keys", r.nt() == want,
           f"HELP > KEYS crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
+
+def undo_checks(syms, fails):
+    """EDIT > UNDO and GRAPH+U (lf-1530): one level a notepad, the
+    snapshot swapped with the live document so a second UNDO is the
+    redo. Asserted on all 256 document bytes, the caret, NoteModified,
+    the name and the heap blocks; the screen against the compositor."""
+    print("undo:")
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    nt0 = expected_nt()
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n):
+        return [(5, 'key_down 6 1')] + tap(8, mask) * n + [(5, 'key_up 6 1')]
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    cut, copy, paste, undo = shortcut(3, 4), shortcut(5, 64), shortcut(4, 32), shortcut(5, 4)
+    save, close, new = shortcut(5, 1), shortcut(5, 16), shortcut(4, 8)
+    undo_menu = click(132, 3) + click(140, 35)          # EDIT, its fourth row
+    enter, select, escape = tap(7, 128), tap(7, 64), tap(7, 4)
+    def doc(r):
+        return r.bytes("NoteBuf", 256)
+    def caret(r):
+        return r.peek("NoteCX"), r.peek("NoteCY")
+    def note_nt(lines, cx, cy, title=b"NOTEPAD"):
+        painted = [(1 + i, 1, line, False) for i, line in enumerate(lines)]
+        painted += [(1 + cy, 1 + cx, (lines[cy][cx:cx + 1] or b" ") if cy < len(lines) else b" ", True),
+                    (-2, 16, b"", False), (-1, 0, b"", False)]      # the bar under any title
+        return compose(nt0, [(8, 6, 16, 9, title, painted)])
+    def expect(name, r, lines, cx, cy, modified=None, extra=True, detail="", title=b"NOTEPAD"):
+        want_doc = note_width_document(lines)
+        want = note_nt(lines, cx, cy, title)
+        check(fails, name, doc(r) == want_doc and caret(r) == (cx, cy) and r.nt() == want
+              and r.peek("NoteAnchor", 2) >> 8 == 255 and r.peek("DgOpenFlag") == 0
+              and (modified is None or r.peek("NoteModified") == modified) and extra,
+              f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, caret {caret(r)}, "
+              f"modified {r.peek('NoteModified')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"Dropped {r.peek('Dropped', 2)}" + detail)
+
+    # HELLO, a cursor key that does not move (SHIFT+UP on row 0), then
+    # WORLD: two groups. UNDO is HELLO with the caret where WORLD began,
+    # UNDO again HELLO WORLD.
+    typing = base + typed("HELLO") + arrows(32, 1) + typed(" WORLD")
+    r = Run(syms, typing + undo + [(10, "")], "undo-type", files={})
+    expect("undo-type", r, [b"HELLO"], 5, 0, 1)
+    r = Run(syms, typing + undo + undo + [(10, "")], "undo-type-redo", files={})
+    expect("undo-type-redo", r, [b"HELLO WORLD"], 11, 0, 1)
+    r = Run(syms, typing + undo_menu + [(10, "")], "undo-type-menu", files={})
+    expect("undo-type-menu", r, [b"HELLO"], 5, 0, 1, r.peek("MenuOpen") == 0)
+    # UNDO of the first group: the empty document, unmodified again.
+    r = Run(syms, base + typed("HELLO") + undo + [(10, "")], "undo-first", files={})
+    expect("undo-first", r, [], 0, 0, 0)
+    # A click ends the group too: X typed after it is undone alone.
+    r = Run(syms, base + typed("HELLO") + click(88, 56) + typed("X") + undo + [(10, "")],
+            "undo-click", files={})
+    expect("undo-click", r, [b"HELLO"], 2, 0, 1)
+    # ENTER ends the group it is in: what follows is a group of its own.
+    r = Run(syms, base + typed("AB") + enter + typed("CD") + undo + [(10, "")], "undo-enter", files={})
+    expect("undo-enter", r, [b"AB", b""], 0, 1, 1)
+
+    # CUT of a selection, UNDO: the 256 bytes from before the cut.
+    selected = base + typed("HELLO WORLD") + arrows(16, 11) + select + arrows(128, 5)
+    r = Run(syms, selected + cut + undo + [(10, "")], "undo-cut", files={})
+    expect("undo-cut", r, [b"HELLO WORLD"], 5, 0, 1, r.bytes("ClipBuf", 5) == b"HELLO")
+    r = Run(syms, selected + cut + undo + undo + [(10, "")], "undo-cut-redo", files={})
+    expect("undo-cut-redo", r, [b" WORLD"], 0, 0, 1)
+    # DELETE on a selection is a group of its own as well.
+    r = Run(syms, selected + tap(8, 8) + typed("J") + undo + [(10, "")], "undo-erase", files={})
+    expect("undo-erase", r, [b" WORLD"], 0, 0, 1)
+
+    # PASTE of two lines, B / C, at the B of AB / CD: UNDO is byte for
+    # byte the document before it, the caret where it was.
+    lines = base + typed("AB") + enter + typed("CD") + arrows(16, 1) + select + arrows(32, 1)
+    pasted = lines + copy + escape + paste
+    r = Run(syms, pasted + [(10, "")], "undo-paste-before", files={})
+    expect("undo-paste-before", r, [b"AB", b"CB", b"CD"], 1, 1, 1)
+    r = Run(syms, pasted + undo + [(10, "")], "undo-paste", files={})
+    expect("undo-paste", r, [b"AB", b"CD"], 1, 0, 1, r.bytes("ClipBuf", 3) == b"B\rC")
+
+    # SAVE, typing, UNDO: the saved text again, so closing asks nothing.
+    saved = base + typed("HI") + save + typed("NOTE") + enter + typed("X")
+    r = Run(syms, saved + undo + [(10, "")], "undo-saved-text", files={})
+    expect("undo-saved-text", r, [b"HI"], 2, 0, 0,
+           r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("NoteSaved") == 1, title=b"NOTE")
+    r = Run(syms, saved + undo + close + [(10, "")], "undo-saved", files={})
+    check(fails, "undo-saved", r.peek("WndCount") == 0 and r.peek("DgOpenFlag") == 0 and r.nt() == nt0,
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}")
+    # The redo is the edit again: modified, and closing asks.
+    r = Run(syms, saved + undo + undo + close + [(10, "")], "undo-saved-redo", files={})
+    check(fails, "undo-saved-redo", r.peek("WndCount") == 1 and r.peek("DgOpenFlag") == 1
+          and r.peek("NoteModified") == 1 and doc(r) == note_width_document([b"HIX"]),
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}, modified {r.peek('NoteModified')}")
+    # Typed, then saved: UNDO goes back past the save, to a text that is
+    # not the file's, so it is modified.
+    r = Run(syms, base + typed("HI") + save + typed("NOTE") + enter + undo + [(10, "")],
+            "undo-past-save", files={})
+    expect("undo-past-save", r, [], 0, 0, 1, title=b"NOTE")
+
+    # FILE > OPEN over HI: UNDO is HI again, its name, title and edited
+    # flag included; the redo is BETA as it was loaded.
+    beta = note_width_document([b"BETA"])
+    files = {"ALPHA": note_width_document([b"ALPHA"]), "BETA": beta}
+    seed = [] if EXT else seed_ram_steps(syms, files)
+    opened = seed + base + typed("HI") + menu(19) + [(15, "")] + arrows(64, 1) + enter
+    r = Run(syms, opened + [(10, "")], "undo-open-before", files=files if EXT else None)
+    check(fails, "undo-open-before", doc(r) == beta and r.bytes("NoteName", 5) == b"BETA\0"
+          and r.peek("NoteModified") == 0, f"document crc32 {zlib.crc32(doc(r)):08x}, name {r.bytes('NoteName', 5)!r}")
+    r = Run(syms, opened + undo + [(10, "")], "undo-open", files=files if EXT else None)
+    expect("undo-open", r, [b"HI"], 2, 0, 1,
+           r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("NoteSaved") == 0,
+           f", name {r.bytes('NoteName', 5)!r}")
+    r = Run(syms, opened + undo + undo + [(10, "")], "undo-open-redo", files=files if EXT else None)
+    want = compose(nt0, [note_win(8, 6, [b"BETA"] + [b""] * 15, 0, 0, title=b"BETA")])
+    check(fails, "undo-open-redo", doc(r) == beta and r.bytes("NoteName", 5) == b"BETA\0"
+          and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1 and caret(r) == (0, 0)
+          and r.nt() == want,
+          f"document crc32 {zlib.crc32(doc(r)):08x}, name {r.bytes('NoteName', 5)!r}, "
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
+    # Two notepads, a snapshot each: UNDO in the second leaves the first.
+    r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})
+    first = r.peek16_at(syms["WndTab"] + 10)
+    check(fails, "undo-two", doc(r) == note_width_document([]) and r.peek("WndCount") == 2
+          and r.ram[first - WORK:first - WORK + 256] == note_width_document([b"AB"]),
+          f"document crc32 {zlib.crc32(doc(r)):08x}, windows {r.peek('WndCount')}")
+
+    # The snapshot is a block of the window's own, freed on close.
+    r = Run(syms, base + typed("HI") + click(132, 3) + [(10, "")], "undo-heap-block", files={})
+    used = [b for b in heap_walk(r, syms["HeapBase"], r.peek("HeapEnd", 2)) if b[2]]
+    pointer = r.peek16_at(syms["NoteUndoP"])
+    check(fails, "undo-heap-block", sorted(b[1] for b in used) == sorted([16 * 9, syms["NOTESTSZ"], syms["UNDOSZ"]])
+          and all(b[3] == 0x10 for b in used) and pointer in [b[0] + 4 for b in used]
+          and r.nt()[4 * COLS + 17:4 * COLS + 21] == b"UNDO",
+          f"blocks {[(b[1], hex(b[3])) for b in used]}, NoteUndoP {pointer:04x}")
+
+    # A heap with less than UNDOSZ left once the notepad has its buffer
+    # and state: the notepad works, UNDO does nothing and is grey.
+    heap, free = syms["HeapBase"], 16 * 9 + 4 + syms["NOTESTSZ"] + 4 + 261
+    def wr(addr, value):
+        return f"debug write memory [expr {{{addr}}}] [expr {{({value}) & 255}}]"
+    fill = [(5, f"set ::he [expr {{[debug read memory {syms['HeapEnd']}] + 256 * [debug read memory {syms['HeapEnd'] + 1}]}}]; "
+                f"set ::s1 [expr {{$::he - {heap} - 8 - {free}}}]; "
+                + "; ".join([wr(heap, "$::s1"), wr(heap + 1, "$::s1 >> 8"), wr(heap + 2, "1"), wr(heap + 3, "1"),
+                             wr(f"{heap} + 4 + $::s1", free), wr(f"{heap} + 5 + $::s1", free >> 8),
+                             wr(f"{heap} + 6 + $::s1", "0"), wr(f"{heap} + 7 + $::s1", "0")]))]
+    full = fill + base + typed("HI")
+    r = Run(syms, full + undo + undo_menu + undo + click(132, 3) + [(10, "")], "undo-heap", files={})
+    blocks = heap_walk(r, heap, r.peek("HeapEnd", 2))
+    dim = r.nt()[4 * COLS + 17:4 * COLS + 21]
+    glyphs = all(r.vram[t * 0x800 + 8:t * 0x800 + 40] == b"".join(
+        r.vram[t * 0x800 + ord(c) * 8:t * 0x800 + ord(c) * 8 + 8] for c in "UNDO")
+        and r.vram[0x2000 + t * 0x800 + 8:0x2000 + t * 0x800 + 40] == b"\xef" * 32 for t in range(3))
+    check(fails, "undo-heap", r.peek("WndCount") == 1 and r.peek16_at(syms["NoteUndoP"]) == 0
+          and doc(r) == note_width_document([b"HI"]) and caret(r) == (2, 0) and r.peek("MenuOpen") == 3
+          and [b[1:] for b in blocks[1:]] == [(16 * 9, 1, 0x10), (syms["NOTESTSZ"], 1, 0x10), (261, 0, 0)]
+          and dim == bytes((1, 2, 3, 4)) and glyphs,
+          f"windows {r.peek('WndCount')}, NoteUndoP {r.peek16_at(syms['NoteUndoP']):04x}, "
+          f"blocks {[b[1:] for b in blocks]}, UNDO cells {dim.hex()}, grey glyphs {glyphs}")
+    r = Run(syms, full + undo + typed("J") + [(10, "")], "undo-heap-after", files={})
+    expect("undo-heap-after", r, [b"HIJ"], 3, 0, 1)
 
 
 def note_selection_checks(syms, fails):
@@ -3838,6 +4005,9 @@ def main():
     if sys.argv[1:] == ["--clipboard"]:
         clipboard_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--undo"]:
+        undo_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--saveas"]:
         saveas_checks(syms, fails)
         return bool(fails)
@@ -3903,6 +4073,7 @@ def main():
     wrap_checks(syms, fails)
     note_selection_checks(syms, fails)
     clipboard_checks(syms, fails)
+    undo_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)
