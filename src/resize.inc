@@ -44,6 +44,7 @@ RszAlloc:
                 ld      (WinH),a
                 call    WndAllocBuf
                 pop     hl
+                push    hl                      ; the old size, for RszDraw
                 jr      nc,RszPaint
                 ; Free-before-allocate guarantees the old size fits again.
                 ld      (WinW),hl
@@ -65,6 +66,23 @@ RszDraw:
                 ; compose of a 24 by 17 notepad measured 15.9 ms on the
                 ; 60 Hz machine, the whole frame, and combining the compose
                 ; with the desktop restoration exceeded NTSC before that.
+                ; Smaller in either direction, a notepad's view follows
+                ; the caret at the new size, as after a key (lf-1555).
+                ; Larger, it stays where the scroll bar left it.
+                pop     hl
+                ld      a,(WinW)
+                cp      l
+                jr      c,RszShrunk
+                ld      a,(WinH)
+                cp      h
+                jr      nc,RszCompose
+RszShrunk:
+                ld      hl,(WinApp)
+                ld      de,AppNote
+                or      a
+                sbc     hl,de
+                call    z,NoteScroll
+RszCompose:
                 ld      a,3
                 ld      (Resizing),a
                 jp      RowsAddLive

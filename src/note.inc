@@ -2088,6 +2088,9 @@ NwDrvCX         equ     TapeBuf+187     ; generation and width (1.4 ms for 57
 NwDrvCY         equ     TapeBuf+188     ; rows, twice in a cursor key's frame)
 NwDrvGen        equ     TapeBuf+189
 NwDrvW          equ     TapeBuf+190
+NwLnX           equ     TapeBuf+191     ; the caret's column in the line laid out, NWNONE: not its line
+NwCaretEnt      equ     TapeBuf+192     ; NwDerive: the entry of the caret's row
+NwPastEnd       equ     TapeBuf+193     ; and 1 when the caret is past the edge of its line's last row
 NwLinks         equ     TapeBuf+160     ; the sixteen links before an edit
 
 ; NZ when the table is not the live window's at its width.
@@ -2266,7 +2269,7 @@ NccNone:
                 call    NoteLineLen
                 ld      hl,NoteCX
                 cp      (hl)
-                ret     nc                      ; text at the caret or after it
+                jr      nc,NccEdge              ; text at the caret or after it
                 ld      a,(NoteCY)
 NccChunkNext:
                 call    NoteLinkAddr
@@ -2280,7 +2283,7 @@ NccChunkNext:
                 or      a
                 pop     af
                 jr      z,NccChunkNext
-                ret                             ; text further on
+                jr      NccEdge                 ; text further on
 NccFull:
                 ld      a,(NoteCY)
                 call    NwLineOf                ; C = the line's first chunk
@@ -2317,8 +2320,17 @@ NccNoOld:
 NccWithin:
                 ld      a,(NwExtLine)
                 cp      c
-                ret     nz                      ; nothing extended here
-                jp      NwEditLine              ; the extension goes
+                jp      z,NwEditLine            ; the extension goes
+                ; nothing extended here: a caret after a line that fills
+                ; its last row has a row of its own, which a line laid out
+                ; with the caret elsewhere lacks (lf-1555). The draw
+                ; derives the same caret and finds it done.
+NccEdge:
+                call    NwDerive
+                ld      a,(NwPastEnd)
+                or      a
+                ret     z
+                jp      NwEditLine
 
 ; The sixteen links as they are, kept across an edit (NwLinksSave),
 ; and Z when they are still the same (NwLinksSame).
@@ -2523,6 +2535,8 @@ NwCharge:
 NwLineBegin:
                 ld      a,NWLINECOST
                 call    NwCharge
+                ld      a,NWNONE
+                ld      (NwLnX),a
                 ld      a,(NwLine)
                 call    NwTrimmed
                 ld      c,a
@@ -2540,6 +2554,7 @@ NwLbCaret:
                 call    NwTimes14
                 ld      hl,NoteCX
                 add     a,(hl)                  ; A = the caret's column
+                ld      (NwLnX),a
                 cp      c
                 jr      z,NwLbNoExt
                 jr      c,NwLbNoExt
@@ -2586,6 +2601,27 @@ NwRow:
                 ld      a,(NwWidth)
                 cp      c
                 jr      c,NwScanInit            ; more than fits: find a break
+                jr      nz,NwRowEnd
+                ; the rest fills the row and the caret sits after it: the
+                ; caret's empty row ends the line (lf-1555), and the line
+                ; counts as extended to the caret, so it is laid out again
+                ; when the caret leaves
+                ld      a,(NwLnX)
+                ld      hl,NwN
+                cp      (hl)
+                jr      nz,NwRowEnd
+                ld      (NwExtX),a
+                ld      a,(NwLine)
+                ld      (NwExtLine),a
+                ld      hl,(NoteCX)
+                ld      (NwExtCX),hl
+                ld      a,c
+                call    NwPut                   ; a row W long, as a hard break
+                ld      a,(NwN)
+                ld      (NwPos),a               ; and nothing left: the empty row
+                or      1
+                ret
+NwRowEnd:
                 ld      a,c
                 or      NW_END
                 call    NwPut
@@ -2828,6 +2864,8 @@ NwdGo:
                 xor     a
                 ld      (NoteCursorY),a
                 ld      (NwCaretCol),a
+                ld      (NwCaretEnt),a
+                ld      (NwPastEnd),a
                 ld      a,(NwTabN)
                 ld      hl,NwTab
                 ld      c,0                     ; the row
@@ -2846,6 +2884,8 @@ NwdLoop:
                 jr      c,NwdNext               ; the row starts after the caret
                 ld      a,c
                 ld      (NoteCursorY),a
+                ld      a,(hl)
+                ld      (NwCaretEnt),a
                 ld      a,(NoteCursorX)
                 sub     d
                 ld      (NwCaretCol),a
@@ -2879,6 +2919,11 @@ NwdPast:
                 ld      (hl),0                  ; past the edge: the first cell
                 ld      hl,NoteCursorY          ; of the row after
                 inc     (hl)
+                ld      a,(NwCaretEnt)          ; the line's last row: the
+                and     NW_END                  ; table lacks the caret's own
+                jr      z,NwdRows               ; row (NwCaretCheck)
+                ld      a,1
+                ld      (NwPastEnd),a
 NwdRows:
                 ld      a,(NwTabN)
                 ld      c,a
