@@ -1060,6 +1060,8 @@ NoteLoadFile:
                 sbc     hl,de
                 jr      nz,NlFail
                 call    NoteUndoTake            ; the document it replaces
+                ld      hl,NoteUndoSt
+                set     UNDO_OTHERB,(hl)        ; not this one, whatever its name
                 ld      hl,CmdBuf
                 ld      de,NoteBuf
                 ld      bc,NOTESIZE
@@ -1508,6 +1510,8 @@ UNDOCURSZ       equ     NoteAnchor-NoteCX       ; 9, the head of NOTECURSZ
 UNDO_HAVE       equ     1                       ; the snapshot holds a state
 UNDO_OPENB      equ     1                       ; bit: a group is open
 UNDO_DUEB       equ     2                       ; bit: the next change takes it
+UNDO_OTHERB     equ     3                       ; bit: a load took it, another document
+UNDO_OTHER      equ     8
 
 ; Before NoteKey acts: a character, DELETE or ENTER is an edit, which
 ; starts a group when none is open; anything else ends the group. The
@@ -1603,8 +1607,10 @@ NufNone:
 ; it is not that file (lf-1558). Nor is an unsaved snapshot when the
 ; document had a file before this write: an untitled notepad is named
 ; NOTE as well, and OPEN of a file NOTE over it is still another
-; document (lf-1561). D = NoteSaved before the write. Returns carry
-; clear, the save's success.
+; document (lf-1561). Nor when a load took the snapshot (UNDO_OTHER),
+; even if FILE > DELETE left this document without a file since
+; (lf-1566). A saved snapshot is the file its name says. D = NoteSaved
+; before the write. Returns carry clear, the save's success.
 NoteUndoSaved:
                 push    hl
                 ld      hl,NoteUndoSt
@@ -1613,16 +1619,18 @@ NoteUndoSaved:
                 ld      a,h
                 or      l
                 jr      z,NusOther
-                ld      a,d
-                or      a
-                jr      z,NusFile               ; no file yet: this write is its first
                 push    hl
-                ld      de,NoteSaved-NoteBuf
-                add     hl,de
+                ld      bc,NoteSaved-NoteBuf
+                add     hl,bc
                 ld      a,(hl)
                 pop     hl
                 or      a
-                jr      z,NusOther              ; never saved: not this file
+                jr      nz,NusFile              ; a file's version: by its name
+                or      d
+                jr      nz,NusOther             ; never saved, and this had a file
+                ld      a,(NoteUndoSt)
+                bit     UNDO_OTHERB,a
+                jr      nz,NusOther             ; never saved, and loaded over
 NusFile:
                 ld      de,NoteBackend-NoteBuf
                 add     hl,de
@@ -1685,10 +1693,12 @@ NoteUndoBackend:
 NoteMenuUndo:
                 call    NoteIsFront
                 ret     nz
-                ld      a,(NoteUndoSt)
-                and     UNDO_HAVE
+                ld      hl,NoteUndoSt
+                bit     0,(hl)                  ; UNDO_HAVE
                 ret     z                       ; nothing to go back to
-                ld      (NoteUndoSt),a          ; the group ends here
+                ld      a,(hl)
+                and     UNDO_HAVE|UNDO_OTHER    ; the group ends here; two
+                ld      (hl),a                  ; documents stay two
                 ld      de,(NoteUndoP)
                 ld      hl,NoteBuf
                 ld      bc,UNDOSZ
