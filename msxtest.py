@@ -1130,11 +1130,13 @@ def ring_step(device, back=False):
 BANK_DEVICE = "Mapper512" if MAPPER else "Main RAM"   # the openMSX debuggable the bank lives in
 
 
-def bank_dump_step(frames=5):
-    """The whole of that device into bank.bin, so the directory and the
-    files are asserted from the memory itself, not through the ROM."""
+def bank_dump_step(frames=5, device=None):
+    """The whole of that device (or `device`) into bank.bin, so the
+    directory and the files are asserted from the memory itself, not
+    through the ROM."""
+    device = device or BANK_DEVICE
     return [(frames, f'set f [open $::out/bank.bin wb]; puts -nonewline $f '
-                     f'[debug read_block {{{BANK_DEVICE}}} 0 [debug size {{{BANK_DEVICE}}}]]; close $f')]
+                     f'[debug read_block {{{device}}} 0 [debug size {{{device}}}]]; close $f')]
 
 
 def bank_geometry(r):
@@ -1377,6 +1379,39 @@ def bank_checks(syms, fails):
               and r.peek("NoteSaved") == 1 and r.peek("WndCount") == 1 and r.nt() == want
               and bank_files(r, "bank-mirror-note") == {"NOTE": (last, document)},
               f"entry {last}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+    # A 4 MB mapper (harness/machines/C-BIOS_MSX1_Mapper4M): 256 segments,
+    # every number a real one. Page 3 is plain RAM in slot 3-0, the
+    # mapper in 3-1, so BkSkip keeps none out and the bank's last 16K is
+    # segment 255, the value of the $FF that ends BkSkip and that BkSeg
+    # used for "no segment" (lf-1545: that 16K wrapped to segment 0, and
+    # with the wrap fixed it went to whatever segment page 2 showed). The
+    # same route with the free hint on the last entry: its block is the
+    # bank's last, and the dump must hold the document there.
+    if MACHINE == "C-BIOS_MSX1_EU" and not EXTS:
+        big = "C-BIOS_MSX1_Mapper4M"
+        r = Run(syms, [(10, "")], "bank-4m", machine=big)
+        kept = [k for k in r.bytes("BkSkip", 4) if k != 255]
+        blocks, _, _, files = bank_geometry(r)
+        check(fails, "bank-4m", r.peek("BkSource") == 2 and r.peek("BkMapSlot") == 0x87 and kept == []
+              and blocks == (256 - len(kept)) * 64 and bank_offset(r, blocks - 1) == 255 * 0x4000 + 63 * 256,
+              f"source {r.peek('BkSource')}, {blocks} blocks in slot {r.peek('BkMapSlot'):#04x}, kept out {kept}, "
+              f"last block at {bank_offset(r, blocks - 1):#x}")
+        last = files - 1
+        hint = [(5, f"debug write memory {syms['BkTop']} {last & 255}; debug write memory {syms['BkTop'] + 1} {last >> 8}; "
+                    f"debug write memory {syms['BkFreeHint']} {last & 255}; "
+                    f"debug write memory {syms['BkFreeHint'] + 1} {last >> 8}")]
+        steps = (to_bank + hint + typed + file_save + input_note_name() + tap(5, 0x20) + press(66, 50) + press(60, 98)
+                 + file_open + enter + [(15, "")] + bank_dump_step(device="Mapper4M"))
+        r = Run(syms, steps, "bank-4m-note", files={}, machine=big)
+        want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 0, 0, title=b"NOTE")])
+        bank = open(os.path.join(OUT, "bank-4m-note", "bank.bin"), "rb").read()
+        check(fails, "bank-4m-note", r.peek("NoteBackend") == 4 and r.bytes("NoteBuf", 256) == document
+              and r.peek("NoteSaved") == 1 and r.peek("WndCount") == 1 and r.nt() == want
+              and bank[255 * 0x4000 + 63 * 256:] == document
+              and bank_files(r, "bank-4m-note") == {"NOTE": (last, document)},
+              f"entry {last}, segment 255's last block crc32 {zlib.crc32(bank[-256:]):08x}, "
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
               f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
     r = Run(syms, to_bank + typed + file_save + input_note_name() + file_open + [(15, "")], "bank-picker")

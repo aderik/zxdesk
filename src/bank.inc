@@ -91,8 +91,8 @@ BkOBc           equ     BkTBc+1-BkTpl
 BkOEi           equ     BkTEi-BkTpl
 
 ; Moves BC bytes between the buffer HL in page 3 and the window
-; address DE, with page BkPage on slot BkSlot and, unless BkSeg is
-; $FF, mapper segment BkSeg under it (BkSegHome afterwards). BkDirn
+; address DE, with page BkPage on slot BkSlot and, unless BkSegOff,
+; mapper segment BkSeg under it (BkSegHome afterwards). BkDirn
 ; is 0 from the bank into the buffer, 1 the other way.
 BkRaw:
                 ld      (BkCode+BkOBc),bc
@@ -159,15 +159,32 @@ BkRawSx:
                 ld      (BkCode+BkOSg),a
                 ld      a,(BkSegHome)
                 ld      (BkCode+BkOSh),a
-                ld      a,(BkSeg)
-                inc     a
-                ld      a,4                     ; $FF: no mapper, skip both OUTs
-                jr      z,BkRawJump
+                ld      a,(BkSegOff)
+                or      a
+                ld      a,4                     ; no mapper: skip both OUTs
+                jr      nz,BkRawJump
                 xor     a
 BkRawJump:
                 ld      (BkCode+BkOJ1),a
                 ld      (BkCode+BkOJ2),a
                 jp      BkCode
+
+; A = the mapper segment the next transfers select, 0-255; kept.
+BkSegSel:
+                ld      (BkSeg),a
+                push    af
+                xor     a
+                jr      BkSegFlag
+; The next transfers leave the mapper registers alone. A kept. A flag
+; of its own, not a segment number: on a 256 segment mapper every
+; number is a segment, $FF too (lf-1545).
+BkSegNone:
+                push    af
+                ld      a,1
+BkSegFlag:
+                ld      (BkSegOff),a
+                pop     af
+                ret
 
 ; A shifted left twice for every page in C: the two bits a page has
 ; in a slot register. B and C are kept.
@@ -223,8 +240,7 @@ BkXfer:
                 ld      a,(hl)
                 ld      (BkSlot),a
                 pop     hl
-                ld      a,$FF
-                ld      (BkSeg),a
+                call    BkSegNone
                 jr      BkXferWin
 BkXferMap:
                 ld      a,BKWIN
@@ -232,7 +248,9 @@ BkXferMap:
                 ld      a,(BkMapSlot)
                 ld      (BkSlot),a
                 ; the 16K index, moved up past every segment the system
-                ; keeps (BkSkip is ascending)
+                ; keeps (BkSkip is ascending); the $FF that ends it is no
+                ; segment, else index 255 of a 256 segment mapper would
+                ; pass it and wrap to 0
                 ld      a,e
                 rlca
                 rlca
@@ -246,6 +264,9 @@ BkXferMap:
                 ld      hl,BkSkip
                 ld      b,4
 BkXferSkip:
+                ld      c,(hl)
+                inc     c
+                jr      z,BkXferSeg
                 cp      (hl)
                 jr      c,BkXferSeg
                 inc     a
@@ -253,7 +274,7 @@ BkXferSkip:
                 djnz    BkXferSkip
 BkXferSeg:
                 pop     hl
-                ld      (BkSeg),a
+                call    BkSegSel
 BkXferWin:
                 ; the window: page * $4000 + (block & 63) * 256 + offset
                 ld      a,e
@@ -315,7 +336,7 @@ BkInit:
                 ld      (BkCache),hl
                 ld      a,$FF
                 ld      (BkSkip),a
-                ld      (BkSeg),a
+                call    BkSegNone
                 ; page 3's slot id: primary from the register, secondary
                 ; from SLTTBL when that primary slot is expanded
                 in      a,(PSLOT)
@@ -540,6 +561,7 @@ BkCandQ:
                 cp      c
                 jr      z,BkCand                ; index 0 had it
                 ld      a,c
+                or      a                       ; no carry: the CP left one above page 3's id
                 ret
 
 ; One byte from or to the window at the probe's offset in BkPage,
@@ -653,35 +675,34 @@ BkWitPage:
 ; marker in each, and the first one is still there.
 BkProbeMapper:
                 xor     a
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 ld      (BkSave0),a
                 ld      a,1
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 ld      (BkSave1),a
                 xor     a
-                ld      (BkSeg),a
+                call    BkSegSel
                 ld      a,$5A
                 call    BkProbePut
                 ld      a,1
-                ld      (BkSeg),a
+                call    BkSegSel
                 ld      a,$A5
                 call    BkProbePut
                 xor     a
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 ld      (BkRead),a
                 ld      a,1
-                ld      (BkSeg),a
+                call    BkSegSel
                 ld      a,(BkSave1)
                 call    BkProbePut
                 xor     a
-                ld      (BkSeg),a
+                call    BkSegSel
                 ld      a,(BkSave0)
                 call    BkProbePut
-                ld      a,$FF
-                ld      (BkSeg),a
+                call    BkSegNone
                 ld      a,(BkRead)
                 cp      $5A
                 ret
@@ -694,7 +715,7 @@ BkMapperSize:
                 ld      (BkIdx),a
 BkMsWrite:
                 ld      a,(BkIdx)
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 ld      e,a
                 call    BkMsSlot
@@ -705,7 +726,7 @@ BkMsWrite:
                 inc     (hl)
                 jr      nz,BkMsWrite
                 xor     a
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 neg                             ; 256 minus what segment 0 holds
                 ld      (BkTmp),a               ; the size's low byte, 0 for 256
@@ -713,7 +734,7 @@ BkMsWrite:
                 ld      (BkIdx),a
 BkMsBack:
                 ld      a,(BkIdx)
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkMsSlot
                 ld      a,(hl)
                 call    BkProbePut
@@ -750,7 +771,7 @@ BkMapperUsed:
                 ld      (BkIdx),a
 BkMuMark:
                 ld      a,(BkIdx)
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkProbeGet
                 ld      e,a
                 call    BkMsSlot
@@ -762,8 +783,7 @@ BkMuMark:
                 ld      a,(BkTmp)
                 cp      (hl)
                 jr      nz,BkMuMark
-                ld      a,$FF
-                ld      (BkSeg),a
+                call    BkSegNone
                 ld      a,1
                 ld      (BkPage),a
                 call    BkProbeGet
@@ -779,7 +799,7 @@ BkMuMark:
                 ld      (BkIdx),a
 BkMuBack:
                 ld      a,(BkIdx)
-                ld      (BkSeg),a
+                call    BkSegSel
                 call    BkMsSlot
                 ld      a,(hl)
                 call    BkProbePut
@@ -808,7 +828,7 @@ BkMuGuessed:
                 ld      a,(BkS2)
                 ld      (BkSegHome),a           ; the window page's own segment
                 ld      a,$FF
-                ld      (BkSeg),a
+                call    BkSegNone
                 ld      (BkSkip),a
                 pop     hl                      ; the size
                 ; page 3 on this mapper: its segment and the others the
