@@ -297,7 +297,7 @@ _ram            defl    _ram+size
                 var     NoteEnd, 2             ; X, chunk Y; exclusive endpoint
 NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a paste's rollback
                 var     NoteUndoP, 2           ; the snapshot's heap block, 0 = none
-                var     NoteUndoSt, 1          ; UNDO_HAVE, UNDO_OPEN
+                var     NoteUndoSt, 1          ; UNDO_HAVE, UNDO_OPEN, UNDO_DUE
 NOTESTSZ        equ     _ram-NoteState
                 ; the clipboard, one for every notepad: the document's 224
                 ; text cells, a hard line break as CLIP_CR between them
