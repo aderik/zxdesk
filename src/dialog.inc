@@ -73,6 +73,10 @@ DgPaintRow:
                 cp      c
                 ld      a,' '
                 jr      nz,DgFill
+                ld      a,(DgMode)              ; the text field has no button row
+                cp      4
+                ld      a,' '
+                jr      z,DgFill
                 or      INVBANK
 DgFill:
                 ld      b,DGW
@@ -243,6 +247,15 @@ DgRestoreRow:
                 jp      (hl)
 DgNoCallback:
                 pop     af
+                ret
+; Z when the open dialogue is the text field. Its plain arrows move the
+; caret and the key pointer rests; button dialogues keep SHIFT+arrows.
+DgFieldOpen:
+                ld      a,(DgOpenFlag)
+                dec     a
+                ret     nz
+                ld      a,(DgMode)
+                cp      4
                 ret
 DgAnswers:      defb    "CANCEL",0,"DISCARD",0,"SAVE",0
 DgDelete:       defb    "CANCEL",0,"DELETE",0
