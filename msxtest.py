@@ -2924,6 +2924,22 @@ def wrap_checks(syms, fails):
     view("wrap-shrink-left", shrunk + left, [words], 1, 2, 8, w=6, h=4, caret_want=(8, 3))
     view("wrap-shrink-left-right", shrunk + left + right, [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
     view("wrap-narrow-typed", new + s.to_minimum + text(words.decode()), [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
+    # ENTER after a line that fills its row (lf-1564): the caret's empty
+    # row goes with the caret, no blank row stays between the lines, and
+    # UP lands on the full line, not on that row. ENTER after a line of
+    # 13 or more drops a frame at 60 Hz already on cbfb61d (max frame
+    # 17199 us), so Dropped counts from the key after it.
+    full = b"ABCDEFGHIJKLMN"
+    enter_counted = enter + [(1, f"debug write memory {syms['Dropped']} 0; "
+                                 f"debug write memory {syms['Dropped'] + 1} 0")]
+    full_enter = new + text(full.decode()) + enter_counted + text("X")
+    view("wrap-full-enter", full_enter, [full, b"X"], 1, 1, 0,
+         rows_want=[full, b"X"], caret_want=(1, 1))
+    view("wrap-full-enter-again", full_enter + enter_counted + text("Y"), [full, b"X", b"Y"], 1, 2, 0,
+         rows_want=[full, b"X", b"Y"], caret_want=(2, 1))
+    view("wrap-full-enter-up", full_enter + up, [full, b"X"], 1, 0, 0, caret_want=(0, 1))
+    view("wrap-narrow-full-enter", new + s.to_minimum + text("ABCD") + enter_counted + text("X"), [b"ABCD", b"X"],
+         1, 1, 0, w=6, h=4, rows_want=[b"ABCD", b"X"], caret_want=(1, 1))
     # WRAP off: eight lines, the grip to 6x4, and the caret on line 8 is in
     # view (NoteTop 7, the line before it above)
     off_lines = [(5, f"debug write memory {syms['SetWrap']} 0")] + new + (text("A") + enter) * 8
