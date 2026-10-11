@@ -3966,6 +3966,22 @@ def undo_checks(syms, fails):
           and doc(r) == note_width_document([b"HI"]) and kept == old,
           f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, "
           f"file FOO crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(old):08x}")
+    # UNDO of the OPEN of NOTE, SAVE AS FOO: the snapshot is now the
+    # saved file NOTE, still the other document (lf-1569). UNDO is
+    # OLDNOTE as the file NOTE, and SAVE writes it there, not over FOO.
+    swapped = seed + base + typed("HI") + menu(19) + [(15, "")] + enter + undo + save + typed("FOO") + enter + undo
+    r = Run(syms, swapped + [(10, "")], "undo-open-swap", files=notes if EXT else None)
+    check(fails, "undo-open-swap", doc(r) == old and r.bytes("NoteName", 5) == b"NOTE\0"
+          and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 0
+          and file_foo(r) == note_width_document([b"HI"]),
+          f"name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}, modified {r.peek('NoteModified')}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}")
+    r = Run(syms, swapped + save + [(10, "")], "undo-open-swap-save", files=notes if EXT else None)
+    kept = file_foo(r)
+    check(fails, "undo-open-swap-save", r.peek("DgOpenFlag") == 0 and r.bytes("NoteName", 5) == b"NOTE\0"
+          and kept == note_width_document([b"HI"]),
+          f"dialogue {r.peek('DgOpenFlag')}, name {r.bytes('NoteName', 5)!r}, "
+          f"file FOO crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(note_width_document([b'HI'])):08x}")
 
     # Two notepads, a snapshot each: UNDO in the second leaves the first.
     r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})
