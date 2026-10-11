@@ -245,6 +245,7 @@ _ram            defl    _ram+size
                 var     RepaintDue, 1
                 var     RowLo, 1        ; the pending repaint's rows
                 var     RowHi, 1
+                var     RowsDesk, 1     ; and whether the desktop under them changed
                 var     WndDirty, 1     ; a bit per slot whose buffer is stale
                 var     WndCapDirty, 1  ; and per slot whose title row is
                 var     SpSave, 2       ; while the stack fills the desktop
@@ -318,6 +319,15 @@ NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a pas
                 var     NoteGot, 2
                 var     NoteResult, 1
                 var     NotePrevBackend, 1
+                ; word wrap: the table, the job that fills it and the
+                ; painter's scratch live in TapeBuf (note.inc); these say
+                ; whose the table is and what is under way
+                var     NoteFollow, 1   ; slot+1 whose draw follows the caret after a key
+                var     NoteLayOK, 1    ; the table describes NoteLayWnd at NwCacheW
+                var     NoteLayWnd, 1
+                var     NwCacheW, 1
+                var     NwBusy, 1       ; a layout job is under way
+                var     NwToggled, 1    ; WRAP changed: every notepad composed again, one a frame
                 ; Commander: cached visible names belong to each instance.
                 var     CmdNumber, 6
                 var     CmdState, 0
@@ -374,6 +384,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     SetKeyPtr, 1
                 var     SetLattice, 1
                 var     DskTab, 18      ; DSKTABSZ: the desktop icons, present, x, y each
+                var     SetWrap, 1      ; notepad word wrap (0/1), version 6
                 var     SetExtra, 1
                 var     SetDevice, 1
                 var     SetHandle, 1

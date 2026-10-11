@@ -94,7 +94,7 @@ WndNext:
 ;  the window keys and the first the files, the EDIT keys, SELECT
 ;  and the calendar.
 ; ------------------------------------------------------------
-KEYSW           equ     27
+KEYSW           equ     28              ; HOME ROW START reaches column 26
 KEYSH           equ     16
 KEYSCOL2        equ     13
 
@@ -156,4 +156,5 @@ KeysText2:
                 defb    "G SETTINGS",0
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
+                defb    "HOME ROW START",0      ; the notepad, with WRAP the screen row
                 defb    0

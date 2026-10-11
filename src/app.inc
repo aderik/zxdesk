@@ -75,7 +75,7 @@ AppCommander:   defw    CMDSTSZ, CmdState, CmdInit, CmdDraw
 
 AppSettings:    defw    1, SetRow, SetInit, SetDraw
                 defw    SetKey, SetTitle
-                defb    6, 6, 24, 10
+                defb    6, 6, 24, SETH
                 defw    0, 0, 0
                 defb    0
                 ; The shortcut list: nothing to type at and nothing to lose.

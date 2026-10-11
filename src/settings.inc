@@ -1,12 +1,16 @@
-; MSX format v5: magic 'M', version, ramp (0..2), mouse Y inverted
+; MSX format v6: magic 'M', version, ramp (0..2), mouse Y inverted
 ; (0 = as the hand moves, 1 = upside down), backend id, sound (0/1),
 ; key pointer (0/1), lattice (0..2), then the six desktop icons at
-; three bytes each: present (0/1), cell column, cell row. Separate
-; magic from the ZX record. Version 4 is the same without the icons.
+; three bytes each: present (0/1), cell column, cell row, then the
+; notepad's word wrap (0/1). Separate magic from the ZX record.
+; Version 5 ends at the icons, version 4 before them; both load
+; with WRAP on.
 SETMAGIC        equ     $4D
-SETVERSION      equ     5
+SETVERSION      equ     6
 SETHDR          equ     8               ; the record before the icons
-SETSIZE         equ     SETHDR+DSKTABSZ
+SETSIZE         equ     SETHDR+DSKTABSZ+1
+SETH            equ     11              ; the window: nine rows of buttons
+SETROWS         equ     9
 
 SetDefaults:
                 ld      hl,SetInitial
@@ -24,6 +28,7 @@ DskDefault:                                     ; continues the record: DskInit
                 defb    1, 1, 14
                 defb    1, 1, 18
                 defb    1, 10, 18
+                defb    1                       ; WRAP on
 SetName:        defb    "SETTINGS",0
 
 ; Always use the boot device for the preferences file, even when
@@ -82,6 +87,8 @@ SetLoad:
                 jr      z,SetLoadV3
                 cp      4
                 jr      z,SetLoadV4
+                cp      5
+                jr      z,SetLoadV5
                 cp      SETVERSION
                 jr      nz,SetLoadBad
                 ld      a,c
@@ -89,6 +96,11 @@ SetLoad:
                 jr      nz,SetLoadBad
                 or      a
                 jp      SetRestore
+SetLoadV5:
+                ld      a,c
+                cp      SETSIZE-1               ; the icons, no wrap byte
+                jr      nz,SetLoadBad
+                jr      SetLoadWrap
 SetLoadV1:
                 ld      a,c
                 cp      5
@@ -118,7 +130,10 @@ SetLoadV4:
                 jr      nz,SetLoadBad
 SetLoadDesk:
                 call    DskInit                 ; the icons where a fresh
-                ld      a,SETVERSION            ; machine has them
+SetLoadWrap:                                    ; machine has them
+                ld      a,1
+                ld      (SetWrap),a             ; and the notepad wrapping
+                ld      a,SETVERSION
                 ld      (SetRec+1),a
                 or      a
                 jp      SetRestore
@@ -167,6 +182,12 @@ SetSaveBad:
 SetApply:
                 call    SetApplyLattice
                 call    DskApply
+                ld      a,(SetWrap)
+                cp      2
+                jr      c,SetWrapOK
+                ld      a,1
+                ld      (SetWrap),a
+SetWrapOK:
                 ld      a,(SetKeyPtr)
                 cp      2
                 jr      c,SetKeyPtrOK
@@ -310,7 +331,7 @@ SetInit:
                 ld      (SetRow),a
                 ret
 
-; Eight rows: cyclic values, SAVE, DONE. Focus is per window.
+; Nine rows: cyclic values, SAVE, DONE. Focus is per window.
 SetKey:
                 cp      KEY_ESC
                 jp      z,SetDone
@@ -335,7 +356,7 @@ SetKey:
 SetNext:
                 ld      a,(SetRow)
                 inc     a
-                cp      8
+                cp      SETROWS
                 jp      c,SetFocus
                 xor     a
                 jp      SetFocus
@@ -343,18 +364,51 @@ SetPrev:
                 ld      a,(SetRow)
                 sub     1
                 jp      nc,SetFocus
-                ld      a,7
+                ld      a,SETROWS-1
+; A = the row to focus. The two buttons change places in the live
+; buffer, their cells flipped between the banks, which is what SetDraw
+; would compose: the whole window (sixteen prints, 4.5 ms) stays as it
+; is. Returns 2: rows to blit, nothing to recompose.
 SetFocus:
-                ld      (SetRow),a
+                ld      hl,SetRow
+                ld      b,(hl)
+                ld      (hl),a
+                cp      b
+                jr      z,SetRowsOnly
+                push    af
+                ld      a,b
+                call    SetFlipButton
+                pop     af
+                call    SetFlipButton
+SetRowsOnly:
+                call    RowsLiveText
+                ld      a,2
+                ret
 SetChanged:
                 ld      a,1
                 ret
+; A = a row: its button's six cells, the other bank.
+SetFlipButton:
+                ld      b,a
+                inc     b
+                ld      c,16
+                call    WinCell
+                ld      b,6
+SetFlipCell:
+                ld      a,(hl)
+                xor     INVBANK
+                ld      (hl),a
+                inc     hl
+                djnz    SetFlipCell
+                ret
 SetChange:
                 ld      a,(SetRow)
-                cp      7
+                cp      8
                 jp      z,SetDone
-                cp      6
+                cp      7
                 jp      z,SetStore
+                cp      6
+                jp      z,SetCycleWrap
                 cp      5
                 jp      z,SetCycleLattice
                 cp      4
@@ -387,6 +441,18 @@ SetCycleKeyPtr:
                 xor     1
                 ld      (SetKeyPtr),a
                 jp      SetActivate
+; Every open notepad is composed again, one a frame (NoteLayService):
+; the setting is global, the layout is per window.
+SetCycleWrap:
+                ld      a,(SetWrap)
+                xor     1
+                ld      (SetWrap),a
+                ld      a,1
+                ld      (NwToggled),a
+                call    WndFlush
+                ld      hl,AppNote
+                call    SetTouchApp
+                jp      SetMark                 ; nothing for SetApply to do
 SetCycleSound:
                 ld      a,(SetSound)
                 xor     1
@@ -406,11 +472,29 @@ SetCycleDevice:
 SetActivate:
                 call    SetApply
                 ; Values are global, but each window has its own buffer
-                ; and focus. Mark every SETTINGS slot without selecting it.
+                ; and focus. The live window gets the button printed again
+                ; where it is; every other SETTINGS slot is marked, without
+                ; selecting it. Returns 2: rows to blit, no recompose.
+SetMark:
                 call    WndFlush
+                ld      hl,AppSettings
+                call    SetTouchApp
+                ld      a,(SetRow)
+                inc     a
+                ld      b,a
+                call    SetDrawRow
+                call    RowsLiveText
+                ld      a,2
+                ret
+
+; HL = an application descriptor: every window of it is recomposed
+; and its rows repainted. The live record is flushed by the caller.
+SetTouchApp:
+                push    hl
+                pop     ix
                 ld      a,(WndCount)
                 or      a
-                jp      z,SetChanged
+                ret     z
                 ld      b,a
                 ld      c,0
 SetTouchSlot:
@@ -427,19 +511,23 @@ SetTouchSlot:
                 ld      e,(hl)
                 inc     hl
                 ld      d,(hl)
-                ld      hl,AppSettings
+                push    ix
+                pop     hl
                 or      a
                 sbc     hl,de
                 jr      nz,SetTouchNext
+                ld      a,(WndCur)
+                cp      c
+                jr      z,SetTouchNext          ; the live one prints its own
                 ld      a,c
                 call    WndTouch
                 ld      a,c
-                call    RowsAddSlot
+                call    RowsAddSlotText         ; its content: the desktop under it stays
 SetTouchNext:
                 pop     bc
                 inc     c
                 djnz    SetTouchSlot
-                jp      SetChanged
+                ret
 SetStore:
                 call    SetSave
                 jp      nc,SetChanged
@@ -454,7 +542,7 @@ SetDone:
                 ret
 
 ; Called after focusing a body hit. Derive coordinates again because
-; WndFocusTo uses BC. Only the eight visible button rectangles activate.
+; WndFocusTo uses BC. Only the nine visible button rectangles activate.
 SetPress:
                 ld      a,(PtrX)
                 srl     a
@@ -483,117 +571,141 @@ SetPress:
                 cp      d
                 ret     nc
                 dec     a
-                cp      8
+                cp      SETROWS
                 ret     nc
-                ld      (SetRow),a
+                call    SetFocus                ; the focus moves to the row hit
                 ld      b,1
                 call    SetChange
                 or      a
                 ret     z
+                cp      2
+                ret     z                       ; printed and marked already
                 ld      a,(WndCur)
                 call    WndTouch
                 jp      RowsAddLive
 
+; The seven labels are one block in ROM, a row of SETLABELW cells
+; each, copied into the rows: seven WinPrints measured 2.2 ms of the
+; 5.1 ms SetDraw, and the SETTINGS open over a notepad (WndOpenLater
+; composes in the frame of the open) was 14.9 ms, one 60 Hz frame.
+SETLABELW       equ     14
 SetDraw:
                 xor     a
                 ld      (PrintInv),a
-                ld      hl,SetSpeedLabel
-                ld      bc,$0101
-                call    WinPrint
-                ld      hl,SetYLabel
-                ld      bc,$0201
-                call    WinPrint
-                ld      hl,SetBackendLabel
-                ld      bc,$0301
-                call    WinPrint
-                ld      hl,SetSoundLabel
-                ld      bc,$0401
-                call    WinPrint
-                ld      hl,SetKeyPtrLabel
-                ld      bc,$0501
-                call    WinPrint
-                ld      hl,SetLatticeLabel
-                ld      bc,$0601
-                call    WinPrint
+                ld      hl,SetLabels
+                ld      b,1
+SetDrawLabels:
+                push    bc
+                push    hl
+                ld      c,1
+                call    WinCell
+                ex      de,hl
+                pop     hl
+                ld      bc,SETLABELW
+                ldir
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      8
+                jr      c,SetDrawLabels
+                ld      b,1
+SetDrawLoop:
+                push    bc
+                call    SetDrawRow
+                pop     bc
+                inc     b
+                ld      a,b
+                cp      SETROWS+1
+                jr      c,SetDrawLoop
+                xor     a
+                ld      (PrintInv),a
+                ret
+
+; B = a button row, 1 to SETROWS: its label as the setting stands,
+; inverted when it has the focus; the bank's size after its label.
+SetDrawRow:
+                ld      a,b
+                dec     a
+                jr      z,SetDrawSpeed
+                dec     a
+                jr      z,SetDrawY
+                dec     a
+                jr      z,SetDrawBackend
+                dec     a
+                jr      z,SetDrawSound
+                dec     a
+                jr      z,SetDrawKeyPtr
+                dec     a
+                jr      z,SetDrawLattice
+                dec     a
+                jr      z,SetDrawWrap
+                dec     a
+                ld      hl,SetSaveLabel
+                jp      z,SetButton
+                ld      hl,SetDoneLabel
+                jp      SetButton
+SetDrawSpeed:
                 ld      a,(SetSpeed)
                 ld      hl,SetSlow
                 or      a
-                jr      z,SetDrawSpeed
+                jp      z,SetButton
                 ld      hl,SetMed
                 dec     a
-                jr      z,SetDrawSpeed
+                jp      z,SetButton
                 ld      hl,SetFast
-SetDrawSpeed:
-                ld      b,1
-                call    SetButton
+                jp      SetButton
+SetDrawY:
                 ld      a,(SetInvertY)
+                jr      SetDrawOnOff
+SetDrawSound:
+                ld      a,(SetSound)
+                jr      SetDrawOnOff
+SetDrawKeyPtr:
+                ld      a,(SetKeyPtr)
+                jr      SetDrawOnOff
+SetDrawWrap:
+                ld      a,(SetWrap)
+SetDrawOnOff:
                 ld      hl,SetOff
                 or      a
-                jr      z,SetDrawY
+                jp      z,SetButton
                 ld      hl,SetOn
-SetDrawY:
-                ld      b,2
-                call    SetButton
+                jp      SetButton
+SetDrawLattice:
+                ld      a,(SetLattice)
+                ld      hl,SetEmpty
+                or      a
+                jp      z,SetButton
+                ld      hl,SetDots
+                dec     a
+                jp      z,SetButton
+                ld      hl,SetDense
+                jp      SetButton
+SetDrawBackend:
                 ld      a,(SetBackend)
                 ld      hl,SetRamLabel
                 cp      ST_RAM
-                jr      z,SetDrawBackend
+                jr      z,SetDrawNoBank
                 ld      hl,SetTapeLabel
                 cp      ST_TAPE
-                jr      z,SetDrawBackend
+                jr      z,SetDrawNoBank
                 ld      hl,SetBankLabel
                 cp      ST_BANK
                 jr      z,SetDrawBank
                 ld      hl,SetDiskLabel
-SetDrawBackend:
-                ld      b,3
+SetDrawNoBank:
                 call    SetButton
-                jr      SetDrawRow4
+                ld      hl,SetNoKb              ; where the bank's size was
+                jr      SetDrawKb
 SetDrawBank:
-                ld      b,3
                 call    SetButton
-                xor     a                       ; the bank's size after the label
-                ld      (PrintInv),a
-                call    BkKbText
-                ld      bc,$0309
-                call    WinPrint
-SetDrawRow4:
-                ld      a,(SetSound)
-                ld      hl,SetOff
-                or      a
-                jr      z,SetDrawSound
-                ld      hl,SetOn
-SetDrawSound:
-                ld      b,4
-                call    SetButton
-                ld      a,(SetKeyPtr)
-                ld      hl,SetOff
-                or      a
-                jr      z,SetDrawKeyPtr
-                ld      hl,SetOn
-SetDrawKeyPtr:
-                ld      b,5
-                call    SetButton
-                ld      a,(SetLattice)
-                ld      hl,SetEmpty
-                or      a
-                jr      z,SetDrawLattice
-                ld      hl,SetDots
-                dec     a
-                jr      z,SetDrawLattice
-                ld      hl,SetDense
-SetDrawLattice:
-                ld      b,6
-                call    SetButton
-                ld      hl,SetSaveLabel
-                ld      b,7
-                call    SetButton
-                ld      hl,SetDoneLabel
-                ld      b,8
-                call    SetButton
+                call    BkKbText                ; the bank's size after the label
+SetDrawKb:
                 xor     a
                 ld      (PrintInv),a
-                ret
+                ld      bc,$0309
+                jp      WinPrint
+SetNoKb:        defb    "       ",0
 SetButton:
                 ld      a,(SetRow)
                 inc     a
@@ -606,9 +718,13 @@ SetButtonNormal:
                 ld      c,16
                 jp      WinPrint
 SetTitle:       defb    "SETTINGS",0
-SetSpeedLabel:  defb    "POINTER RAMP",0
-SetYLabel:      defb    "MOUSE Y INVERT",0
-SetBackendLabel: defb   "BACKEND",0
+SetLabels:      defb    "POINTER RAMP  "
+                defb    "MOUSE Y INVERT"
+                defb    "BACKEND       "
+                defb    "SOUND         "
+                defb    "KEY PTR       "
+                defb    "LATTICE       "
+                defb    "WRAP          "
 SetSlow:        defb    "[SLOW]",0
 SetMed:         defb    "[MED ]",0
 SetFast:        defb    "[FAST]",0
@@ -622,10 +738,7 @@ SetSaveLabel:   defb    "[SAVE]",0
 SetDoneLabel:   defb    "[DONE]",0
 SetSaveError:   defb    "COULD NOT SAVE",0
 
-SetSoundLabel:  defb    "SOUND",0
-SetKeyPtrLabel: defb    "KEY PTR",0
 
-SetLatticeLabel: defb   "LATTICE",0
 SetEmpty:       defb    "[NONE]",0
 SetDots:        defb    "[DOTS]",0
 SetDense:       defb    "[GRID]",0

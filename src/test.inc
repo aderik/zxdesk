@@ -172,6 +172,7 @@ TsetClear:
                 ld      (SetSound),a
                 ld      (SetKeyPtr),a
                 ld      (SetLattice),a
+                ld      (SetWrap),a
                 ld      hl,DskTab               ; and every icon byte: present
                 ld      b,DSKTABSZ              ; becomes 1, x and y are clamped
 TsetDesk:                                       ; to the desktop

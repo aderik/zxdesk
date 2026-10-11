@@ -11,7 +11,8 @@ TAPOUT          equ     $00ED
 TAPOOF          equ     $00F0
 
 TapeOpen:
-                xor     a
+                call    NwInvalidate            ; the notepad's wrap table lives
+                xor     a                       ; in TapeBuf (note.inc)
                 ld      (TapeMode),a
                 ld      a,b
                 cp      FA_READ

@@ -145,9 +145,10 @@ N NEW NOTE, O OPEN, S SAVE, W CLOSE, X NEXT WINDOW, C CASCADE, T TILE,
 K CLOCK, L CALENDAR, F COMMANDER, G SETTINGS, I ABOUT. V is SAVE AS, R is PRINT and D is DESKTOP, the
 window that says which icons are on the desktop. E, Y and P are CUT,
 COPY and PASTE (see "Clipboard and the EDIT menu").
-HELP > KEYS opens the list, with the calendar's keys, as a window of
-two columns, 27 by 16 at (2, 4): nineteen GRAPH letters no longer
-fit the desktop's 22 rows in one.
+HELP > KEYS opens the list, with the calendar's keys and the notepad's
+HOME (the start of the screen row with WRAP), as a window of two
+columns, 28 by 16 at (2, 4): nineteen GRAPH letters no longer fit the
+desktop's 22 rows in one.
 333 ROM bytes, no RAM.
 
 | subject | asserts |
@@ -238,7 +239,8 @@ of static RAM.
 
 **MSX DESK > SETTINGS** edits pointer ramp (SLOW/MED/FAST), mouse Y
 inversion (OFF/ON), application storage (RAM/DISK), SOUND (OFF/ON),
-KEY PTR (OFF/ON), and LATTICE (NONE/DOTS/GRID). LATTICE defaults to
+KEY PTR (OFF/ON), LATTICE (NONE/DOTS/GRID) and WRAP (OFF/ON, the
+notepad's word wrap, see "Word wrap"). LATTICE defaults to
 DOTS; it updates the desktop and menu rule patterns in all three screen
 banks without changing name-table cells. KEY PTR defaults to ON: cursor
 keys move the pointer
@@ -251,12 +253,12 @@ SAVE writes the SETTINGS file; DONE or ESC closes without writing. A failed
 SAVE opens the existing error dialogue. Each window keeps its own row focus.
 
 `SetSave` writes `SETTINGS` through the storage layer; boot calls
-`SetLoad` then `SetApply`. The record is 26 bytes, `4D 05 rr yy bb ss kk ll`
-followed by the six desktop icons at three bytes each: MSX
+`SetLoad` then `SetApply`. The record is 27 bytes, `4D 06 rr yy bb ss kk ll`
+followed by the six desktop icons at three bytes each and the WRAP byte: MSX
 magic, format version, ramp, Y inversion, storage id (1 RAM, 2 tape with
 `TAPE=1`, 5 disk), sound and key pointer (both 0 OFF, 1 ON), lattice (0 NONE, 1 DOTS,
 2 GRID), then for each icon present (0/1), cell column and cell row
-(see "Desktop shortcuts").
+(see "Desktop shortcuts"), then word wrap (0 OFF, 1 ON).
 The MSX magic is distinct from ZX settings. Defaults are ramp 1,
 inversion 0, sound 1, key pointer 1, lattice 1, the detected boot backend
 and the six icons down the left. Missing
@@ -266,8 +268,11 @@ records retain sound and migrate with key pointer ON; version 3 seven-byte
 records retain both fields and migrate with lattice
 DOTS. Versions 1 and 2 also default lattice to DOTS. Version 4 is the
 eight-byte record without the icons; versions 1 to 4 all load with the
-default icons. Version 5 requires 26 bytes; a present byte other than 0
+default icons. Version 5 is the 26-byte record without the WRAP byte
+and loads with WRAP on, its icons kept; a present byte other than 0
 becomes 1 and a position is clamped so the whole slot is on the desktop.
+Version 6 requires 27 bytes and clamps a WRAP byte other than 0 to 1;
+versions 1 to 5 all load with WRAP on.
 `SetApply` clamps invalid fields and rejects disk selection without BDOS.
 Preferences stay on the detected boot device even if the application
 backend is changed to RAM, so the next boot can still find them.
@@ -419,6 +424,114 @@ cleanup of failed new copies, no overwrite, delete/cancel,
 notepad device ownership and file bytes after save. 257-byte and 64KB
 copies are refused; full 8.3 names survive listing/copy/open/save. The
 TEST ROM also exercises valid and invalid FCB names without a disk ROM.
+
+## Word wrap
+
+SETTINGS > WRAP, on by default (lf-1529, finished in lf-1541). The notepad
+lays a logical line out as screen rows of at most W = WinW-2 cells, broken
+at the last space that fits (the space is not shown) or hard at W when a
+word is longer; a hard line end is still a new row. It is display only:
+the document stays sixteen chunks of fourteen characters with the
+continuation bytes, and a resize or TILE lays the same text out again.
+UP and DOWN move a screen row, keeping the column where the row is long
+enough; HOME goes to the start of the screen row (without WRAP, of the
+logical line). The scroll bar counts screen rows. Trailing spaces are not
+laid out, except that the caret's line is laid out as far as the caret, so
+a caret typed past a space has a row to be shown in. With WRAP off the
+display is the horizontal scroll of lf-1219, unchanged; the `--note-width`
+subjects run with WRAP off.
+
+The layout is a table of a byte a screen row (length, a bit for the space
+consumed after it, a bit for the end of the logical line), 128 entries at
+most: 224 characters at three a row plus sixteen line ends. The table and
+the job's scratch live in the tape buffer, which is only in use between
+`TapeOpen` and the close of the same synchronous transfer; `TapeOpen`
+invalidates the table. A job fills the table, resumable with a budget a
+frame (`NWBUDGET`, in units of about 45 cycles: a character scanned, 12 a
+row, 20 a line); an edit within a line lays out that line alone, the rows
+after it parked at the end of the table meanwhile, and the table does not
+depend on the caret, so a cursor key costs no layout. `NoteLayService`,
+first thing in `WinRedraw`, runs the job for one notepad a frame, composes
+that window when the job is done and lets the repaint go ahead only in a
+frame that did little else, the way `WndOpenLater` splits an open: a key
+in a full line is key and layout in one frame, composition in the next,
+desktop and blit in the third. The painter and the caret walk the table
+with the row's document address and chunk offset in registers.
+
+The first version laid out and painted a full document in four columns in
+34 ms a draw. Measured on C-BIOS EU with breakpoints on the loop (the
+figures are the whole loop iteration, the interrupt handler on top of
+them):
+
+| frame | ms |
+|---|---|
+| notepad open with WRAP (FILE > NEW): the job's first 300 units | 10.9 |
+| a key in a 224-character line: the insert and half a job step | 13.3 |
+| the composition after it, 17 rows, and its blit | 13.0 |
+| a cursor key in the full document at 6x4, 57 rows: compose and blit | 14.5 |
+| SETTINGS opened over the notepad | 13.7 |
+| WRAP toggled in SETTINGS over a notepad: the notepad's layout | 13.5 |
+
+`NoteDrawWrap` is 5.0 ms for 57 rows at 6x4 after a resize (the walk to
+the top row, 3.2 ms, is kept for the next draw of the same table) and
+3.0 ms for 17 rows of fourteen (seven in view). The 60 Hz machine drops
+a frame above about 15 ms. `./test.sh --wrap` asserts the document, the
+name table against the compositor fed by `wrap_layout`, an independent
+Python layout, the caret, the row counts, `NoteTop` and `Dropped = 0` in
+every subject, on both C-BIOS machines: wrap-basic (thirty characters in
+fourteen columns, crc32 f41353a5), wrap-long (a word of twenty, hard at
+fourteen, 409dd39c), wrap-resize (16x9 to 10x9, 0cbfd0ce, and back to the
+same f41353a5 with the 256 document bytes unchanged), up, down and HOME
+over the broken line, WRAP off (8d4e5216, the lf-1219 display) and the
+toggle both ways with the notepad open, the saved record, and the full
+document in four columns (57 rows, 64bf9e50).
+
+Two things the toggle brought out. Without WRAP, `NoteDraw` at the home
+size paints only the chunks that reach into the view, and a chunk wholly
+left of it, or the cells past the last chunk, kept whatever the buffer
+held (lf-1542): it blanks the interior first now. And a repaint of two
+windows selected every window for its blit, two state copies of 1.7 ms
+for a notepad behind SETTINGS, so a TAB in SETTINGS measured 18.9 ms;
+`WinRedraw` now blits a window that is not recomposed from its record
+(`WndBlitSlot`) and flips a title row that changes hands in place
+(`WndTouchCap`) instead of loading its state to compose the row again.
+SETTINGS itself recomposed its whole window for every TAB and every
+value (sixteen prints, 4.5 ms), which with a notepad behind it made a
+14.9 ms frame that the 60 Hz machine dropped: a focus move now flips the
+two buttons' cells in place and a value change prints its button again
+where it is (`SetDrawRow`), the application returning 2 to `HdlKey` for
+"rows to blit, nothing to recompose"; other SETTINGS windows are still
+marked. The WRAP toggle skips `SetApply`, which has nothing to apply.
+
+With the selection (lf-1526) merged in: a selection shows inverted in
+the wrapped rows too, both parts when it crosses a break point
+(`wrap-select`, SELECT at the end of the thirty characters and two rows
+up), the caret is not shown over one, and a mouse drag maps the pointer
+through the row table (`NoteMouseWrap`), the row below the view scrolling
+a screen row a frame. The subjects that select over a line scrolled
+sideways (`sel-chunks`, `sel-lines`) run with WRAP off. A notepad with a
+selection that loses or gains the front is recomposed (only the front
+instance shows it); one without is flipped like any other window. An
+edit key leaves the repaint to the next frame: ENTER into a full line is
+5 ms before any layout.
+
+With the clipboard (lf-1545) merged in: CUT and PASTE change the text
+outside NoteKey, so `NoteRefresh` invalidates the table with WRAP on and
+leaves the layout and the composition to the service, a frame at a
+time, instead of composing in the frame of the paste.
+
+The SETTINGS menu pick over a notepad, which composes the window in
+the frame of the open (`WndOpenLater`) after the 2 ms state save of the
+notepad that loses the live slot, measured 14.9 ms with the EDIT menu
+in: SetDraw's seven labels are one block in ROM copied into the rows
+(2.2 ms of prints to 0.6), and the hit test flushes the records alone
+(`WndFlushRec`), for 14.3 ms.
+
+Budget: the normal ROM is 23,347 bytes, static RAM 4,014 bytes (+8
+against main: the six wrap flags, SetWrap and RowsDesk), the heap 8,274
+bytes without a disk ROM and 2,889 with one. The TEST build leaves 157
+bytes behind the disk ROM, 21 of them after the heap subject's 48, 40
+and 32 byte blocks. The table takes no heap and no RAM of its own.
 
 ## Frame budget, measured
 

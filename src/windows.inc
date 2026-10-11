@@ -413,8 +413,8 @@ WndHitTest:
                 ld      (WhtCol),a
                 ld      a,c
                 ld      (WhtRow),a
-                call    WndFlush
-                ld      a,(WndCount)
+                call    WndFlushRec             ; the records alone: a select
+                ld      a,(WndCount)            ; saves the state itself
                 or      a
                 ret     z
                 ld      b,a
@@ -711,6 +711,45 @@ WpLoop:
                 djnz    WpLoop
                 ret
 
+; A = a slot: its buffer into the shadow as WinBlit does, from its
+; record alone. Any other slot's record stands in for the live one
+; for the length of the blit, the live record kept on the stack
+; (eight words: the byte after it goes back unchanged); no state
+; is loaded or saved and WndCur stays.
+WndBlitSlot:
+                ld      hl,WndCur
+                cp      (hl)
+                jp      z,WinBlit
+                push    af
+                ld      hl,WinRec
+                ld      b,(WNDRECSZ+1)/2
+WbsSave:
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                inc     hl
+                push    de
+                djnz    WbsSave
+                ld      hl,2*((WNDRECSZ+1)/2)+1
+                add     hl,sp
+                ld      a,(hl)                  ; the slot, under the words
+                call    WndRecAt
+                ld      de,WinRec
+                ld      bc,WNDRECSZ
+                ldir
+                call    WinBlit
+                ld      hl,WinRec+2*((WNDRECSZ+1)/2)
+                ld      b,(WNDRECSZ+1)/2
+WbsRestore:
+                pop     de
+                dec     hl
+                ld      (hl),d
+                dec     hl
+                ld      (hl),e
+                djnz    WbsRestore
+                pop     af
+                ret
+
 ; The live window's buffer into the shadow, the rows within
 ; RowLo..RowHi-1 only. HL walks the buffer and DE the shadow, a row
 ; at a time; a row outside the range is stepped over. Measured
@@ -786,8 +825,16 @@ WbNext:
 ;  every window open.
 ; ------------------------------------------------------------
 
-; B = first row, C = count: widen the pending range.
+; B = first row, C = count: widen the pending range. The desktop is
+; painted under it again, so this is for whatever moves, opens, closes
+; or changes the desktop; RowsAddText is for a window whose content
+; alone changed, which leaves the desktop under it as it was. A key
+; in the notepad measured 2.4 ms of desktop and icons for its nine
+; rows, a seventh of the 60 Hz frame.
 RowsAdd:
+                ld      a,1
+                ld      (RowsDesk),a
+RowsAddText:
                 ld      a,1
                 ld      (RepaintDue),a
                 ld      a,(RowLo)
@@ -814,6 +861,13 @@ RowsAddLive:
                 ld      a,(WinH)
                 ld      c,a
                 jr      RowsAdd
+; The live window's rows, its content alone.
+RowsLiveText:
+                ld      a,(WinY)
+                ld      b,a
+                ld      a,(WinH)
+                ld      c,a
+                jr      RowsAddText
 
 ; A = slot: its buffer is recomposed on the next repaint.
 WndTouch:
@@ -829,38 +883,122 @@ WtShift:
                 ld      (hl),a
                 ret
 
-; A = slot: only its title row is redrawn. A focus change flips two
-; title bars and nothing else, and the calendar's interior was
-; measured at six milliseconds to rebuild. Notepad also repaints its
-; content, because only the front instance displays selection inversion.
+; A = slot: its title row changes hands, between the front's inverted
+; bank and the plain one. The row is flipped in place, cells 1 to W-1
+; (the close box stays), which is what WinDrawCap would compose for
+; the new front, so no state is loaded for it: with a notepad behind
+; the window that opened, the select for its cap alone was 2.2 ms
+; of a frame measured at 15.3 ms. No buffer yet: nothing to flip, the
+; composition draws the row as it should be. A notepad with a
+; selection is recomposed instead (WndTouch): only the front instance
+; shows the selection inverted.
 WndTouchCap:
+                ld      hl,WndCur
+                cp      (hl)
+                jr      nz,WtcSlot
+                push    af
+                ld      a,(NoteAnchor+1)        ; the live record and state
+                ld      c,a
+                ld      hl,(WinApp)
+                call    WtcNoteSel
+                jr      z,WtcTouch
+                pop     af
+                ld      hl,(WinBufP)
+                ld      a,(WinW)
+                jr      WtcFlip
+WtcSlot:
                 push    af
                 call    WndRecAt
+                push    hl
+                ld      de,WR_STATEP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                ld      hl,NoteAnchor+1-NoteState
+                add     hl,de
+                ld      c,(hl)                  ; its NoteAnchor Y, if a notepad
+                pop     hl
+                push    hl
                 ld      de,WR_APP
                 add     hl,de
                 ld      e,(hl)
                 inc     hl
                 ld      d,(hl)
-                ld      hl,AppNote
-                or      a
-                sbc     hl,de
-                jr      nz,WtcOther
+                ex      de,hl
+                call    WtcNoteSel
+                pop     hl
+                jr      z,WtcTouch
+                pop     af
+                push    hl
+                ld      de,WR_BUFP
+                add     hl,de
+                ld      e,(hl)
+                inc     hl
+                ld      d,(hl)
+                pop     hl
+                inc     hl
+                inc     hl
+                ld      a,(hl)                  ; WR_W
+                ex      de,hl
+WtcFlip:
+                ld      b,a
+                dec     b
+                ld      a,h
+                or      l
+                ret     z
+                inc     hl                      ; past the close box
+WtcLoop:
+                ld      a,(hl)
+                xor     INVBANK
+                ld      (hl),a
+                inc     hl
+                djnz    WtcLoop
+                ret
+WtcTouch:
                 pop     af
                 jp      WndTouch
-WtcOther:
-                pop     af
-                ld      hl,WndCapDirty
-                jr      WtSet
+; HL = an application, C = the state's NoteAnchor Y: Z when it is a
+; notepad with a selection.
+WtcNoteSel:
+                ld      de,AppNote
+                or      a
+                sbc     hl,de
+                ret     nz
+                ld      a,c
+                inc     a                       ; $FF: none
+                jr      z,WtcNone
+                xor     a                       ; Z: a selection
+                ret
+WtcNone:
+                or      1
+                ret
 
-; Slot A's rows, from the table.
+; Slot A's rows, from the table; RowsAddSlotText for its content alone.
 RowsAddSlot:
+                call    RowsSlot
+                jp      RowsAdd
+RowsAddSlotText:
+                call    RowsSlot
+                jp      RowsAddText
+RowsSlot:
                 call    WndRecAt
                 inc     hl
                 ld      b,(hl)                  ; y
                 inc     hl
                 inc     hl
                 ld      c,(hl)                  ; h
-                jr      RowsAdd
+                ret
+
+; A = a slot. Returns A = its bit in WndDirty and WndCapDirty.
+WndSlotBit:
+                ld      b,a
+                inc     b
+                ld      a,$80
+WsbBit:
+                rlca
+                djnz    WsbBit
+                ret
 
 ; Everything, for a first paint or the test build.
 WndRepaintAll:
@@ -877,6 +1015,9 @@ WinRedraw:
                 ld      a,(DgOpenFlag)
                 or      a
                 ret     nz                      ; keep the save-under stable
+                call    NoteLayService          ; a wrapped notepad's layout,
+                or      a                       ; a budget a frame, before
+                ret     nz                      ; anything of it is painted
                 ld      a,(Resizing)
                 cp      2
                 jr      c,WrdReady              ; idle or held
@@ -903,7 +1044,9 @@ WrdPaint:
                 ld      (Recomposes),hl
                 call    WndFlushRec             ; the state goes with a select
                 call    MarkRows                ; once, for the whole range
-                call    DrawDesktopRows
+                ld      a,(RowsDesk)
+                or      a
+                call    nz,DrawDesktopRows
                 ld      a,(WndCount)
                 or      a
                 jr      z,WrdDone
@@ -917,29 +1060,23 @@ WraPaint:
                 ld      hl,WndZ
                 add     hl,de
                 ld      a,(hl)
-                call    WndSelect
-                ld      a,(WndCur)
+                ld      c,a                     ; the slot
+                call    WndSlotBit
                 ld      b,a
-                inc     b
-                ld      a,$80
-WraBit:
-                rlca
-                djnz    WraBit
                 ld      hl,WndDirty
                 and     (hl)
-                ld      c,a
-                ld      a,(WndCur)
-                ld      b,a
-                inc     b
-                ld      a,$80
-WraBit2:
-                rlca
-                djnz    WraBit2
+                ld      e,a                     ; its content is stale
+                ld      a,b
                 ld      hl,WndCapDirty
                 and     (hl)
-                or      c                       ; bit 7..4: content or cap
-                jr      z,WraBlit
+                or      e                       ; or its title row
+                jr      z,WraBlitOnly
+                ; composed: it has to be the live window, state and all
                 ld      a,c
+                push    de
+                call    WndSelect
+                pop     de
+                ld      a,e
                 or      a
                 jr      z,WraCap
                 call    WinDraw
@@ -950,9 +1087,22 @@ WraBlit:
                 call    WinBlit
                 pop     bc
                 djnz    WraPaint
+                jr      WraFront
+WraBlitOnly:
+                ; as it is: blitted from its record, nothing loaded or
+                ; saved. Measured with a notepad behind SETTINGS: the two
+                ; state copies of a select were 3.4 ms of a key's frame.
+                ld      a,c
+                call    WndBlitSlot
+                pop     bc
+                djnz    WraPaint
+WraFront:
+                ld      a,(WndZ)                ; the front is the live one
+                call    WndSelect
 WrdDone:
                 xor     a
                 ld      (RepaintDue),a
+                ld      (RowsDesk),a
                 ld      (WndDirty),a
                 ld      (WndCapDirty),a
                 ld      a,WINBOTTOM
@@ -1128,8 +1278,13 @@ WndInit:
                 ld      (WndForce),a
                 ld      (WinMoved),a
                 ld      (RepaintDue),a
+                ld      (RowsDesk),a
                 ld      (WndDirty),a
                 ld      (WndCapDirty),a
+                ld      (NoteFollow),a          ; the notepad's wrap: no table,
+                ld      (NoteLayOK),a           ; no job, nothing toggled
+                ld      (NwBusy),a
+                ld      (NwToggled),a
                 ld      a,WINBOTTOM
                 ld      (RowLo),a
                 ld      a,WINTOP
