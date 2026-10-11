@@ -135,15 +135,13 @@ AcNone:
 AppSave:
                 call    AppStateAt
                 ret     z
-                ldir                            ; live into the block
-                ret
+                jp      CopyFast                ; live into the block
 
 AppLoad:
                 call    AppStateAt
                 ret     z
                 ex      de,hl                   ; and the block into live
-                ldir
-                ret
+                jp      CopyFast
 
 ; out: HL = the live copy, DE = this window's block, BC = the size,
 ;      Z set if there is nothing to move either way

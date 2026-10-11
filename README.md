@@ -641,7 +641,7 @@ What changed, each measured on its own route:
 | fb-edit-menu | a 24x17 notepad, EDIT opened by the mouse (lf-1549): the drop with its four items grey over the notepad as composed, Dropped 0 |
 | fb-save | SAVE AS on RAM: the file LETTER is HI byte for byte, the name, unmodified, Dropped 0; with the disk Dropped is 0 up to the ENTER and after the write |
 | fb-join-bs, fb-join-del | the BS and DEL joins of two lines of 19 with WRAP on: the 256 bytes, the caret (5, 1), the screen against `wrap_win`, Dropped 0 |
-| fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; Dropped 0 before the OPEN and after the load (after the save on disk): the exception below is bounded |
+| fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; on RAM Dropped 0 over the whole route, the picker included (lf-1590); on the disk 0 before the OPEN and from the frame after the save |
 
 And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
 zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
@@ -656,19 +656,11 @@ subjects count the whole route too.
   `undo-open-save` drops **549**: the picker's open 55 ms, a move 52 ms,
   the load **1.25 s**, the save **10.0 s**. The BDOS call does not
   return within a frame and nothing here can split it.
-- **FILE > OPEN on RAM.** The picker is the commander's window at the
-  size of the screen, composed and blitted whole: its open measured
-  **32.3 ms** (the window and two pane reads 7 ms, the desktop and blit
-  of 17 rows 7 ms, the compose 8 ms), each SHIFT+DOWN in it **21.4 ms**
-  (a full recompose and blit), the load with ENTER **27.0 ms**:
-  `Dropped` 2 at 50 Hz and 3 at 60 Hz for the route. A commander that
-  repaints only the rows a move changes is a change of its own;
-  `fb-open` bounds the drops to these frames.
-- Not among this ticket's sources, measured along the way: the clock
-  opened from the VIEW menu over a 24x17 notepad is **17.4 ms** at 60
-  Hz and drops one (the flush of the closed menu's rows, 4.4 ms, then
-  the repaint of 17 rows with the desktop); with GRAPH+K it is 12.9 ms,
-  0 dropped. Left for a ticket of its own.
+- FILE > OPEN on RAM (the picker's open **32.3 ms**, each SHIFT+DOWN
+  in it **21.4 ms**, the load with ENTER **27.0 ms**: `Dropped` 2 at
+  50 Hz and 3 at 60 Hz for the route) and the clock opened from the
+  VIEW menu over a 24x17 notepad (**17.4 ms** at 60 Hz, one dropped)
+  were exceptions here; lf-1590 below put them in the budget.
 
 Budget against `7038703`: normal ROM **24,420 → 24,572 bytes (+152)**,
 TEST ROM **26,177 → 26,329 (+152)**; static RAM **4,019 → 4,018 (-1)**,
@@ -677,6 +669,94 @@ without a disk ROM and **2,884 → 2,885** with one (TEST 5,537 → 5,538
 and 152 → 153). No new allocation. Padded ROM crc32: normal
 **b7a86a4b**, TEST **fedafa4d**. `./test.sh`: C-BIOS_MSX1_EU 721 ok,
 C-BIOS_MSX1_JP 711 ok, all subjects pass.
+
+## FILE > OPEN in the budget (lf-1590)
+
+The two exceptions lf-1583 left, measured on main `3393724` and on
+this change the same way (breakpoints at `FrameWatch` and `MainLoop`,
+two files on RAM, a 16x9 notepad with HI typed). The iterations are
+the same length on C-BIOS EU and JP; the frame is 20 ms at 50 Hz and
+16.7 at 60, where 14.8 ms never dropped and 15.2 sometimes did.
+
+| step | main | now, frame by frame |
+|---|---|---|
+| FILE > OPEN pressed in the menu | **30.4 ms**: the menu's close, the open with two pane reads, the desktop under 12 rows, the compose and the blit in the frame of the press | 9.0 (the menu's close, the open, one pane read), 10.8 (the flush of the menu's six rows and the compose), 8.2 (the blits), 7.2 (the flush of the picker's 12 rows) |
+| SHIFT+DOWN in the picker | **21.1 ms**: both panes read again, a full recompose and blit | 8.2 (two rows painted and blitted), 3.1 (their flush) |
+| ENTER: BETA loaded | **27.0 ms**: the picker closed, the notepad's state loaded, the read, the undo snapshot, the LDIR and the compare loop, then the first step of the wrap layout | 13.7 (the load), 7.9 and 5.5 (the wrap layout), 6.4 (the compose), 7.7 (the desktop under the picker's rows and the blit), 7.2 (the flush) |
+| the route | Dropped 2 at 50 Hz, 3 at 60 Hz | Dropped 0 on both |
+| the clock from the VIEW menu over a 24x17 notepad | **17.4 ms** at 60 Hz, one dropped: the flush of the menu's rows, then the desktop under 17 rows and the notepad blitted whole | 8.2 (the menu's close, the open and the compose), 7.8 (the menu's flush, the clock's rows and the notepad's title row blitted), 3.4 (their flush); Dropped 0 |
+
+What changed:
+
+- **A move paints two rows** (`CmdMoved`). The rows the selection
+  left and took are blanked and painted into the window's buffer
+  (the name, and the size in the picker) and marked by row with
+  `RowsAddText`; `CmdKey` returns 2, so nothing is recomposed, and the
+  directory is not read: the page's cache still describes the page.
+  When the top moves (`CmdPaged`) the pane is read again from its new
+  top and its six rows painted the same way; the other pane's cache
+  is left as it was. Delete, copy, B, P and R still go through
+  `CmdRefresh` and a full recompose, and `CmdPicked` resolves the
+  name again as before. READY replaces another status on the status
+  row alone.
+- **The picker reads one pane.** `CmdInit` no longer reads the
+  directories: `CommanderOpen` and `CmdBrowseOpen` do once the mode
+  is set, and nothing is cleared first (`CmdReadPane` writes each
+  name's terminator and a zero first byte for the rows past the end;
+  the clear was 0.55 ms a pane, `CmdInit`'s 1.1 ms).
+- **The open is spread over three frames** (`RepaintDue` 4). The
+  frame of the press closes the menu and opens the window; the next
+  flushes the menu's rows and composes the front window alone
+  (`RepaintDue` 3, `WndComposeFront`, which `WndOpenLater` shares);
+  the third blits. The picker shows four frames after the press
+  instead of two, and no frame is dropped.
+- **A window open repaints no desktop** (`WndOpen`). Nothing moved,
+  so the new window's rows are blitted over the shadow as it is
+  (`RowsLiveText`); the old front contributes its title row alone
+  (`WndCapRows`), or all of its rows when the change of cap
+  recomposes it (a notepad with a selection). `WndClose` and
+  `WndFocusTo` do the same for the window that gains or loses the
+  cap. This put the clock from the VIEW menu in the budget: it had
+  the 24x17 notepad's 17 rows blitted over a fresh desktop.
+- **The load's four copies.** `NoteSanitise` moves the document from
+  `CmdBuf` into `NoteBuf` in one pass through a 256-byte table
+  (`NsanTab`; POP reads the source, interrupts off meanwhile): 2.65
+  ms for the 1.5 of the LDIR and the 7.4 of the compare loop.
+  `CopyFast` (sixteen LDIs a turn, 18 T a byte against LDIR's 23)
+  does the state load and save (`AppLoad`, `AppSave`), the RAM read
+  and write and the undo snapshot. The repaint of the loaded notepad
+  waits a frame (`RepaintLater`), as a save's does.
+- **The compose of a framed window** (`WinDraw`): the body is blanked
+  by PUSH, 6 T a cell, and the edges set after, 0.8 ms for 30x12
+  against 2.75; the picker's sizes are written straight into the
+  buffer (`CmdDrawSize`).
+- **`NtFlush`** walks the dirty bits by shifting each byte once:
+  rebuilding the byte and the bit from the row number was 1.5 ms of
+  every flush before any row went out. Every frame that flushes
+  anything gains that.
+
+Subjects: `fb-open` asserts Dropped 0 over the whole RAM route, the
+picker included (on the disk the bounded form stays); `fb-view-clock`
+the clock from the VIEW menu over the 24x17 notepad as composed,
+Dropped 0; `browse-move-rows` and `cmd-move-rows` one repaint pass per
+SHIFT+DOWN whose range is rows 5 to 6, no slot dirty and no compose
+(breakpoints on `MarkRows` and `WinDraw`, `Recomposes` before and
+after); `browse-reload` R after a file vanished behind the picker's
+back; `browse-scroll` and `browse-scroll-back` (the disk, where eight
+files fit) the page turned down and back, the first file of the page
+on the first row and the selection on its row; `cmd-scroll`,
+`browse-delete`, `cmd-delete`, `cmd-copy` and the bank's `B` subjects
+as they were. Disk I/O stays the exception above.
+
+Budget against `3393724`: normal ROM **24,671 → 25,344 bytes
+(+673)**, TEST ROM **26,428 → 27,136 (+708)**: `NsanTab` is 256 of
+it, the padding that puts it on a page 15 (TEST 53), code the other
+402 (TEST 399); static RAM **4,018 → 4,012 (-6)**, TEST **6,750 →
+6,744** (`CmdNumber` is gone); heap **8,270 → 8,276** without a disk
+ROM and **2,885 → 2,891** with one (TEST 5,538 → 5,544 and 153 →
+159). No new allocation. Padded ROM crc32: normal **eb7ff6cb**, TEST
+**bb02f548**. `./test.sh`: C-BIOS_MSX1_EU 741 ok, C-BIOS_MSX1_JP 731
+ok, all subjects pass.
 
 ## Real BIOS ROMs
 

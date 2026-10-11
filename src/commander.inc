@@ -7,27 +7,43 @@ CMDROWS         equ     6
 CMDENT          equ     15              ; name[13], size[2]
 CMDCACHE        equ     CMDROWS*CMDENT
 
+; The pages are read once the window is open and the mode known, so
+; the picker reads one pane. The window is composed next frame and
+; blitted the one after (RepaintDue 4): the frame of the press has
+; the menu's close and the open, the next the flush of the menu's
+; rows and the compose, the third the blits (lf-1590). Opened,
+; composed and blitted in one frame it measured 30.4 ms at 60 Hz.
 CommanderOpen:
                 ld      a,APP_CMD
-                jp      WndOpen
+                call    WndOpen
+                ret     c
+CmdOpened:
+                call    CmdRefresh
+                ld      a,4
+                ld      (RepaintDue),a
+                or      a
+                ret
 ; FILE > OPEN uses the active backend in one pane. VIEW retains transfers.
 CmdBrowseOpen:
-                call    CommanderOpen
+                ld      a,APP_CMD
+                call    WndOpen
                 ret     c
                 ld      a,1
                 ld      (CmdBrowse),a
-                ret
+                jr      CmdOpened
+; The caches are not cleared here: CmdRefresh writes every entry of
+; the panes it reads, and the picker never reads its second pane.
 CmdInit:
                 ld      hl,CmdState
                 ld      de,CmdState+1
-                ld      bc,CMDSTSZ-1
+                ld      bc,CmdCache0-CmdState-1
                 ld      (hl),0
                 ldir
                 call    StIdent
                 ld      (CmdBk0),a
                 ld      a,ST_RAM
                 ld      (CmdBk1),a
-                jp      CmdRefresh
+                ret
 
 ; CmdPane selects the live side. Global storage is restored at public exits.
 CmdUse:
@@ -70,16 +86,14 @@ CmdRefresh:
 CrfDone:
                 pop     af
                 jp      StSelect
+; The live pane's page from its top into its cache: each name with
+; its terminator and its size, and a zero first byte for the rows
+; past the directory's end. Nothing is cleared first: that LDIR was
+; 0.55 ms of every read.
 CmdReadPane:
                 call    CmdUse
                 call    CmdCacheAt
                 ld      (CmdCacheP),hl
-                ld      d,h
-                ld      e,l
-                inc     de
-                ld      (hl),0
-                ld      bc,CMDCACHE-1
-                ldir
                 call    CmdTopAt
                 ld      a,(hl)
                 ld      (CmdIndex),a
@@ -88,19 +102,21 @@ CmdReadPane:
 CrpLoop:
                 ld      a,(CmdIndex)
                 call    StDir
-                ret     c
+                jr      c,CrpBlank
                 push    de                      ; size
                 ld      de,(CmdCacheP)
                 ld      b,12
 CrpName:
                 ld      a,(hl)
                 or      a
-                jr      z,CrpSize
+                jr      z,CrpEnd
                 ld      (de),a
                 inc     hl
                 inc     de
                 djnz    CrpName
-CrpSize:
+CrpEnd:
+                xor     a
+                ld      (de),a                  ; the terminator, cell 12 at most
                 pop     de
                 ld      hl,(CmdCacheP)
                 ld      bc,13
@@ -110,12 +126,21 @@ CrpSize:
                 ld      (hl),d
                 inc     hl
                 ld      (CmdCacheP),hl
-                ld      hl,CmdIndex
-                inc     (hl)
-                ret     z                       ; 8-bit directory index limit
                 ld      hl,CmdLeft
                 dec     (hl)
-                jr      nz,CrpLoop
+                ret     z
+                ld      hl,CmdIndex
+                inc     (hl)
+                jr      nz,CrpLoop              ; 8-bit directory index limit
+CrpBlank:
+                ld      hl,(CmdCacheP)          ; the rows left: empty
+                ld      de,CMDENT
+                ld      a,(CmdLeft)
+                ld      b,a
+CrbLoop:
+                ld      (hl),0
+                add     hl,de
+                djnz    CrbLoop
                 ret
 
 ; Drawing only reads the cached page; WinDraw has cleared the interior.
@@ -191,30 +216,7 @@ CdpHeader:
                 ld      a,2
                 ld      (CmdRow),a
 CdpRow:
-                xor     a
-                ld      (PrintInv),a
-                call    CmdSelAt
-                ld      a,(CmdIndex)
-                cp      (hl)
-                call    z,CmdInverse
-                ld      hl,(CmdCacheP)
-                ld      a,(hl)
-                or      a
-                jr      nz,CdpText
-                ld      hl,TxtCmdEmpty
-                ld      a,(CmdRow)
-                cp      2
-                jr      z,CdpText
-                ld      hl,TxtCmdBlank
-CdpText:
-                ld      a,(CmdCol)
-                ld      c,a
-                ld      a,(CmdRow)
-                ld      b,a
-                call    WinPrint
-                ld      a,(CmdBrowse)
-                or      a
-                call    nz,CmdDrawSize
+                call    CmdPaintRow
                 ld      hl,(CmdCacheP)
                 ld      de,CMDENT
                 add     hl,de
@@ -227,7 +229,93 @@ CdpText:
                 cp      2+CMDROWS
                 jr      c,CdpRow
                 ret
-; Five decimal digits, including zero, from the StDir cached length.
+; A = a row of the page, 0 to CMDROWS-1: CmdRow, CmdIndex and
+; CmdCacheP on it, for the live pane.
+CmdRowAt:
+                ld      b,a
+                add     a,2
+                ld      (CmdRow),a
+                push    bc
+                call    CmdTopAt
+                pop     bc
+                ld      a,(hl)
+                add     a,b
+                ld      (CmdIndex),a
+                push    bc
+                call    CmdCacheAt
+                pop     bc
+                ld      de,CMDENT
+                inc     b
+CraOffset:
+                dec     b
+                jr      z,CraDone
+                add     hl,de
+                jr      CraOffset
+CraDone:
+                ld      (CmdCacheP),hl
+                ret
+; The row CmdRow from its cached entry: inverted when it is the
+; active pane's selection, (EMPTY) on the first row of a pane with
+; no files, nothing on a blank row (WinDraw left the interior blank),
+; in the picker the size too.
+CmdPaintRow:
+                xor     a
+                ld      (PrintInv),a
+                call    CmdSelAt
+                ld      a,(CmdIndex)
+                cp      (hl)
+                call    z,CmdInverse
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                jr      nz,CprText
+                ld      a,(CmdRow)
+                cp      2
+                ret     nz
+                ld      hl,TxtCmdEmpty
+CprText:
+                ld      a,(CmdCol)
+                ld      c,a
+                ld      a,(CmdRow)
+                ld      b,a
+                call    WinPrint
+                ld      a,(CmdBrowse)
+                or      a
+                ret     z
+                jp      CmdDrawSize
+; A = a row of the page, of the live pane: its cells blanked, painted
+; and marked for the blit, in the live window's buffer.
+CmdPaintPageRow:
+                push    af
+                call    CmdUseCol
+                pop     af
+                call    CmdRowAt
+                call    CmdBlankRow
+                call    CmdPaintRow
+                ld      a,(CmdRow)
+; A = a row of the window: for the blit, its content alone.
+CmdMarkRow:
+                ld      hl,WinY
+                add     a,(hl)
+                ld      b,a
+                ld      c,1
+                jp      RowsAddText
+; The pane's cells of CmdRow: thirteen in a pane of two, the interior
+; in the picker, whose size stands at column 22.
+CmdBlankRow:
+                ld      a,(CmdRow)
+                ld      b,a
+                ld      a,(CmdCol)
+                ld      c,a
+                ld      a,(CmdBrowse)
+                or      a
+                ld      a,13
+                jr      z,CbrGo
+                ld      a,CMDW-2
+CbrGo:
+                jp      WinBlank
+; Five decimal digits, including zero, from the StDir cached length,
+; straight into the buffer at column 22 of CmdRow, on the name's bank.
 CmdDrawSize:
                 ld      hl,(CmdCacheP)
                 ld      a,(hl)
@@ -238,34 +326,47 @@ CmdDrawSize:
                 ld      e,(hl)
                 inc     hl
                 ld      d,(hl)
-                ex      de,hl
-                ld      ix,CmdNumber
-                ld      de,10000
-                call    CdsDigit
-                ld      de,1000
-                call    CdsDigit
-                ld      de,100
-                call    CdsDigit
-                ld      de,10
-                call    CdsDigit
-                ld      de,1
-                call    CdsDigit
-                ld      (ix+0),0
-                ld      hl,CmdNumber
+                push    de
                 ld      a,(CmdRow)
                 ld      b,a
                 ld      c,22
-                jp      WinPrint
+                call    WinCell
+                pop     de
+                ex      de,hl                   ; HL = the size, DE = the cell
+                ld      bc,10000
+                call    CdsDigit
+                ld      bc,1000
+                call    CdsDigit
+                ld      bc,100
+                call    CdsDigit
+                ld      bc,10
+                call    CdsDigit
+                ld      bc,1
+                call    CdsDigit
+                ld      a,(PrintInv)
+                or      a
+                ret     z
+                ld      b,5
+CdsInvert:
+                dec     de
+                ld      a,(de)
+                or      INVBANK
+                ld      (de),a
+                djnz    CdsInvert
+                ret
+; HL = a number, BC = a power of ten, DE = a cell: the digit written
+; there, DE on to the next, HL the remainder. The TEST build names its
+; bank files with it.
 CdsDigit:
                 ld      a,'0'-1
 CdsSub:
                 inc     a
                 or      a
-                sbc     hl,de
+                sbc     hl,bc
                 jr      nc,CdsSub
-                add     hl,de
-                ld      (ix+0),a
-                inc     ix
+                add     hl,bc
+                ld      (de),a
+                inc     de
                 ret
 
 CmdUseCol:
@@ -447,20 +548,27 @@ CmdPaneSet:
                 ld      (CmdActive),a
                 xor     a
                 jp      CmdResult
+; A move of the selection paints the rows it changes into the window's
+; buffer and marks them, and returns 2: nothing is recomposed. A move
+; was CmdRefresh (both panes read again) and a recompose and blit of
+; the whole window, 21 ms at 60 Hz in the picker (lf-1590).
 CmdUp:
                 call    CmdSelAt
                 ld      a,(hl)
                 or      a
                 jp      z,CmdDone
-                dec     (hl)
+                ld      b,a                     ; the selection it leaves
                 dec     a
-                push    af
-                call    CmdTopAt
-                pop     af
-                cp      (hl)
-                jr      nc,CmdNavDone
                 ld      (hl),a
-                jr      CmdNavDone
+                ld      c,a                     ; and the one it is on
+                push    bc
+                call    CmdTopAt
+                pop     bc
+                ld      a,c
+                cp      (hl)
+                jr      nc,CmdMoved             ; still on the page
+                ld      (hl),a                  ; the page scrolls up a row
+                jr      CmdPaged
 CmdDown:
                 call    CmdUse
                 call    CmdSelAt
@@ -472,19 +580,71 @@ CmdDown:
                 pop     bc                      ; B = proposed selection
                 jp      c,CmdDone
                 call    CmdSelAt
+                ld      a,(hl)
                 ld      (hl),b
+                ld      c,b
+                ld      b,a                     ; B = left, C = on
                 push    bc
                 call    CmdTopAt
                 pop     bc
-                ld      a,b
+                ld      a,c
                 sub     (hl)
                 cp      CMDROWS
-                jr      c,CmdNavDone
-                inc     (hl)
-CmdNavDone:
-                call    CmdRefresh
+                jr      c,CmdMoved
+                inc     (hl)                    ; the page scrolls down a row
+; The top moved: the cache described the page before it, so the pane
+; is read again from its new top and all of its rows painted.
+CmdPaged:
+                call    CmdReadPane
                 xor     a
-                jp      CmdResult
+CpgRow:
+                push    af
+                call    CmdPaintPageRow
+                pop     af
+                inc     a
+                cp      CMDROWS
+                jr      c,CpgRow
+                jr      CmdPainted
+; B = the selection left, C = the one it is on, both on the page: the
+; cache still describes it, so the directory is not read and those
+; two rows alone are painted.
+CmdMoved:
+                push    bc
+                call    CmdTopAt
+                ld      a,(hl)
+                pop     bc
+                ld      d,a
+                ld      a,b
+                sub     d
+                push    bc
+                push    de
+                call    CmdPaintPageRow
+                pop     de
+                pop     bc
+                ld      a,c
+                sub     d
+                call    CmdPaintPageRow
+; Painted and marked: READY on the status row if it said something
+; else, the backend given back, and 2 for the dispatcher.
+CmdPainted:
+                ld      a,(CmdStatus)
+                or      a
+                call    nz,CmdPaintReady
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,2
+                ret
+CmdPaintReady:
+                xor     a
+                ld      (CmdStatus),a
+                ld      (PrintInv),a
+                ld      b,8
+                ld      c,1
+                ld      a,CMDW-2
+                call    WinBlank
+                call    CdStatus
+                ld      a,8
+                jp      CmdMarkRow
 CmdReload:
                 xor     a
                 ld      (CmdSel0),a
@@ -795,7 +955,11 @@ CopOk:
                 call    NoteUndoBackend         ; UNDO gives that device back
                 ld      a,(CmdWasK)
                 call    StSelect
-                ld      a,1                     ; repaint the new notepad
+                ld      a,(WndCur)              ; the notepad, recomposed and
+                call    WndTouch                ; blitted from the next frame
+                call    RowsLiveText            ; on: the load is this frame's
+                call    RepaintLater            ; budget (lf-1590)
+                ld      a,2
                 ret
 CmdBadNote:
                 ld      a,10
@@ -831,7 +995,6 @@ TxtCmdBank:     defb    "BANK",0
 TxtCmdRam:      defb    "RAM",0
 TxtCmdDisk:     defb    "DISK",0
 TxtCmdEmpty:    defb    "(EMPTY)",0
-TxtCmdBlank:    defb    0
 TxtCmdHelp1:    defb    "TAB PANE P PRN B BANK R LIST",0
 TxtCmdHelp2:    defb    "ENTER OPEN C COPY D DELETE",0
 TxtCmdReady:    defb    "READY",0
