@@ -2913,6 +2913,27 @@ def wrap_checks(syms, fails):
     regrow = drag(138, 114, 96, 0)
     view("wrap-resize", new + text(words.decode()) + shrink, [words], 2, 2, 0, w=10,
          rows_want=[b"THE", b"QUICK", b"BROWN", b"FOX", b"JUMPS", b"OVER"], caret_want=(5, 4))
+    # the grip to 6x4 without a key after it (lf-1555): the view follows the
+    # caret down to its own empty row after OVER, which the scroll bar
+    # counts at once (23 rows); LEFT takes that row away, RIGHT brings it
+    # back, and typed at 6x4 the line has it too
+    left, right = shifted(8, 16), shifted(8, 128)
+    shrunk = new + text(words.decode()) + s.to_minimum
+    view("wrap-shrink-follow", shrunk, [words], 2, 2, 8, w=6, h=4,
+         rows_want=[b"THE", b"QUIC", b"K", b"BROW", b"N", b"FOX", b"JUMP", b"S", b"OVER", b""], caret_want=(9, 0))
+    view("wrap-shrink-left", shrunk + left, [words], 1, 2, 8, w=6, h=4, caret_want=(8, 3))
+    view("wrap-shrink-left-right", shrunk + left + right, [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
+    view("wrap-narrow-typed", new + s.to_minimum + text(words.decode()), [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
+    # WRAP off: eight lines, the grip to 6x4, and the caret on line 8 is in
+    # view (NoteTop 7, the line before it above)
+    off_lines = [(5, f"debug write memory {syms['SetWrap']} 0")] + new + (text("A") + enter) * 8
+    r = Run(syms, off_lines + s.to_minimum + [(10, "")], "wrap-off-shrink-follow", files={})
+    nt = r.nt()
+    check(fails, "wrap-off-shrink-follow", r.peek("NoteTop") == 7 and r.peek("NoteCursorY") == 8
+          and (r.peek("WinW"), r.peek("WinH")) == (6, 4) and nt[7 * 32 + 9] == ord("A")
+          and nt[8 * 32 + 9] == ord(" ") | 128 and r.peek("SetWrap") == 0,
+          f"top {r.peek('NoteTop')}/7, caret line {r.peek('NoteCursorY')}/8, size {r.peek('WinW')}x{r.peek('WinH')}, "
+          f"cells {nt[7 * 32 + 9]:02x} {nt[8 * 32 + 9]:02x}, expected 41 a0")
     r = view("wrap-resize-back", new + text(words.decode()) + shrink + regrow, [words], 2, 2, 0)
     check(fails, "wrap-resize-same", r.nt() == basic.nt() and r.bytes("NoteBuf", 256) == basic.bytes("NoteBuf", 256),
           f"after 16x9 -> 10x9 -> 16x9 the screen is {zlib.crc32(r.nt()):08x}, before {zlib.crc32(basic.nt()):08x}")
@@ -3038,24 +3059,25 @@ def resize_scroll_checks(syms, fails):
 
     # The caret at the right edge is the unwrapped display's horizontal
     # scroll (lf-1219): WRAP off for it, as the note-width subjects have it.
-    for name, cx, cy, top in [("resize-caret-right", 13, 0, 0),
-                               ("resize-caret-below", 0, 15, 9)]:
+    # Below: the caret on the last line, in view at 16x9 (top 9) and at
+    # 18x10 (clamped to 8), is followed into the two rows of 6x4 (lf-1555).
+    for name, cx, cy, top, shown in [("resize-caret-right", 13, 0, 0, 0),
+                                      ("resize-caret-below", 0, 15, 9, 14)]:
         caret = [(5, f"debug write memory {syms['NoteCX']} {cx}; "
                      f"debug write memory {syms['NoteCY']} {cy}; "
                      f"debug write memory {syms['NoteTop']} {top}"
                      + (f"; debug write memory {syms['SetWrap']} 0" if cx else ""))]
         r = Run(syms, new + caret + drag + minimum + heapstat, name)
-        # The intermediate 18x10 window clamps the origin to at most eight.
-        lines = [(-1, min(top, 8), b"", False)]
-        if cy == 0:
-            lines.append((1, 4, b" ", True))
+        lines = [(-1, shown, b"", False)]
+        lines.append((1, 4, b" ", True) if cy == 0 else (cy - shown + 1, 1, b" ", True))
         want = compose(expected_nt(), [(8, 6, 6, 4, b"NOTEPAD", lines)])
         check(fails, name, r.nt() == want and r.peek('NoteCX') == cx and r.peek('NoteCY') == cy
-              and r.peek('NoteTop') == min(top, 8)
+              and r.peek('NoteTop') == shown
               and r.bytes('NoteBuf', 256) == (b" " * 14 + b"\0\0") * 16
               and r.peek('HpTotal', 2) == r.peek('HeapEnd', 2) - syms['HeapBase'] - 24 - syms['NOTESTSZ'] - 16
                  - syms['UNDOSZ'] - 4,
-              f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), crc32 {zlib.crc32(r.nt()):08x}")
+              f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), top {r.peek('NoteTop')}/{shown}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
     clock = press(180, 3) + press(188, 11)
     move = point(19 * 8 + 2, 3 * 8 + 2) + [(5, "key_down 6 0x02")]
