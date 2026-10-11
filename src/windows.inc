@@ -396,7 +396,12 @@ WcShifted:
                 call    WndTouchCap
                 jp      RowsAddLive
 
-; A = slot: raise, focus and repaint.
+; A = slot: raise, focus and repaint. Nothing moves, so the desktop
+; under the two windows stays as it is: their rows are blitted again
+; back to front, and that in the next frame, as WndOpenLater does.
+; The select is two state copies; with the desktop, its icons and the
+; blits of two notepads of 24x17 in the same frame the switch measured
+; 22.4 ms, and 16.4 ms between such a notepad and the clock (lf-1583).
 WndFocusTo:
                 ld      hl,WndZ
                 cp      (hl)
@@ -405,14 +410,20 @@ WndFocusTo:
                 ld      a,(WndZ)                ; the old front loses its cap
                 call    WndTouchCap
                 ld      a,(WndZ)
-                call    RowsAddSlot
+                call    RowsAddSlotText
                 pop     af
                 call    WndRaise
                 ld      a,(WndZ)
                 call    WndSelect
                 ld      a,(WndZ)
                 call    WndTouchCap
-                jp      RowsAddLive
+                call    RowsLiveText
+; The repaint waits for the next frame: WinRedraw counts RepaintDue 2
+; down to 1 and returns.
+RepaintLater:
+                ld      a,2
+                ld      (RepaintDue),a
+                ret
 
 ; in:  B = cell column, C = cell row
 ; out: A = CTL_CLOSEBOX, CTL_TITLEBAR, CTL_RESIZE, CTL_SCROLL,
@@ -1025,6 +1036,9 @@ WinRedraw:
                 ld      a,(DgOpenFlag)
                 or      a
                 ret     nz                      ; keep the save-under stable
+                ld      a,(RepaintDue)
+                cp      2
+                jr      z,WrdLater              ; a heavy frame: paint the next
                 ld      a,(Resizing)            ; the resized window is the live
                 cp      2                       ; one for its layout and compose,
                 ld      a,(RszSlot)             ; even after GRAPH+X in the frame
@@ -1042,15 +1056,17 @@ WinRedraw:
 WrdCompose:
                 xor     a                       ; composed here, blitted next
                 ld      (Resizing),a            ; frame by the pending repaint
-                jp      WinDraw
+                call    WinDraw
+                ld      a,(WndZ)                ; and the front live again if a
+                jp      WndSelect               ; focus change made it another:
+                                                ; that select was 2.2 ms of the
+                                                ; repaint's 15.1 ms frame
+WrdLater:
+                dec     a                       ; an open, SETTINGS, a focus
+                ld      (RepaintDue),a          ; change, a save
+                ret
 WrdReady:
                 ld      a,(RepaintDue)
-                cp      2
-                jr      nz,WrdPaint
-                dec     a
-                ld      (RepaintDue),a
-                ret                             ; SETTINGS open: paint next frame
-WrdPaint:
                 or      a
                 ret     z
                 ld      hl,(Recomposes)
