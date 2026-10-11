@@ -2923,6 +2923,10 @@ def wrap_checks(syms, fails):
          rows_want=[b"THE", b"QUIC", b"K", b"BROW", b"N", b"FOX", b"JUMP", b"S", b"OVER", b""], caret_want=(9, 0))
     view("wrap-shrink-left", shrunk + left, [words], 1, 2, 8, w=6, h=4, caret_want=(8, 3))
     view("wrap-shrink-left-right", shrunk + left + right, [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
+    # and back to 16x9 (lf-1565): the three rows and the caret in view
+    # again (top 0), as wrap-basic, not the top of 6x4 over empty rows
+    view("wrap-shrink-regrow", shrunk + drag(106, 74, 160, 80), [words], 2, 2, 0,
+         rows_want=[b"THE QUICK", b"BROWN FOX", b"JUMPS OVER"], caret_want=(2, 10))
     view("wrap-narrow-typed", new + s.to_minimum + text(words.decode()), [words], 2, 2, 8, w=6, h=4, caret_want=(9, 0))
     # ENTER after a line that fills its row (lf-1564): the caret's empty
     # row goes with the caret, no blank row stays between the lines, and
