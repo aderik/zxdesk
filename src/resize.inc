@@ -101,6 +101,8 @@ RszGrown:
 RszShrunk:
                 call    NoteScroll
 RszCompose:
+                ld      a,(WndCur)              ; a key in this frame may select
+                ld      (RszSlot),a             ; another before the compose
                 ld      a,3
                 ld      (Resizing),a
                 jp      RowsAddLive

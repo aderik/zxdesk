@@ -3243,6 +3243,38 @@ def resize_scroll_checks(syms, fails):
               f"top {r.peek('NoteTop')}, caret {r.peek('NoteCY')}, "
               f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
+    # GRAPH+X or GRAPH+W read in the frame of the grip's release (lf-1535):
+    # WinRedraw composed whichever window was live by then, so the clock
+    # was recomposed and the grown notepad's fresh buffer blitted as it
+    # came from the heap. The notepad is composed at 24x17 behind the
+    # clock now, or, closed, leaves the clock alone and the heap with its
+    # buffer only, and the closed slot is never composed. The clock opens
+    # clear of the notepad's grip.
+    clock = press(180, 3) + press(188, 11)
+    grip = point(23 * 8 + 2, 14 * 8 + 2) + [(5, "key_down 6 0x02")] + point(255, 183)
+    zero = [(1, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0; "
+                f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}")]
+    lines = [(i + 1, 1, b" " * 22, False) for i in range(15)] + [(-1, 0, b"", False), (1, 1, b" ", True)]
+    grown = (8, 6, 24, 17, b"NOTEPAD", lines)
+    for name, bit, want_z in [("resize-key-next", 0x20, (1, 0)), ("resize-key-close", 0x10, (1,))]:
+        release = [(5, f"note released; key_up 6 0x02; key_down 6 0x04; key_down 5 {bit:#04x}"),
+                   (3, f"key_up 5 {bit:#04x}; key_up 6 0x04"), (10, "")]
+        r = Run(syms, new + clock + zero + grip + release + heapstat, name)
+        z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + r.peek('WndCount')])
+        rec = syms["WndTab"] + 15 - WORK
+        clk = clock_win(r.ram[rec], r.ram[rec + 1], r.peek('ClkH'), r.peek('ClkM'))
+        want = compose(expected_nt(), [grown, clk] if len(want_z) > 1 else [clk])
+        blocks = heap_walk(r, syms['HeapBase'], r.peek('HeapEnd', 2))
+        sizes = sorted(b[1] for b in blocks if b[2])
+        import re
+        composed = sorted(set(map(int, re.findall(r"compose (\d+)", r.log.split("released")[-1]))))
+        want_composed = [0] if len(want_z) > 1 else []
+        want_sizes = sorted([CLK_W * CLK_H] + ([24 * 17, syms['NOTESTSZ'], syms['UNDOSZ']] if len(want_z) > 1 else []))
+        check(fails, name, z == want_z and r.peek('WndCur') in want_z and r.peek('Resizing') == 0
+              and r.nt() == want and sizes == want_sizes and composed == want_composed and r.peek('Dropped', 2) == 0,
+              f"z {z}/{want_z}, composed {composed}/{want_composed}, live {r.peek('WndCur')}, Resizing {r.peek('Resizing')}, heap {sizes}/{want_sizes}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}")
+
     # The same grow to 24x17 with WRAP off (lf-1574): NoteFitEnd runs in
     # that frame, the heaviest of the grow, and dropped one at 50 and 60 Hz
     # (18.9 ms against 14.8 ms before it). Two lines from top 9 scan the
