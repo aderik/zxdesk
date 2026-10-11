@@ -4064,6 +4064,75 @@ def undo_checks(syms, fails):
           and kept == note_width_document([b"HI"]),
           f"dialogue {r.peek('DgOpenFlag')}, name {r.bytes('NoteName', 5)!r}, "
           f"file FOO crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(note_width_document([b'HI'])):08x}")
+    # X typed over that OLDNOTE and saved: NOTE is XOLDNOTE. UNDO is
+    # OLDNOTE under the name NOTE, not the file's text: modified, and
+    # closing asks (lf-1570). No file changes without a SAVE; the
+    # dialogue's SAVE writes OLDNOTE to NOTE.
+    xold = note_width_document([b"XOLDNOTE"])
+    def file_note(r):
+        return stored(r, b"NOTE")
+    differs = swapped + typed("X") + save + undo
+    r = Run(syms, differs + [(10, "")], "undo-differs", files=notes if EXT else None)
+    check(fails, "undo-differs", doc(r) == old and r.bytes("NoteName", 5) == b"NOTE\0"
+          and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 1
+          and file_note(r) == xold and file_foo(r) == note_width_document([b"HI"]),
+          f"name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}, modified {r.peek('NoteModified')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(xold):08x}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}")
+    r = Run(syms, differs + close + [(10, "")], "undo-differs-close", files=notes if EXT else None)
+    check(fails, "undo-differs-close", r.peek("WndCount") == 1 and r.peek("DgOpenFlag") == 1
+          and doc(r) == old and file_note(r) == xold and file_foo(r) == note_width_document([b"HI"]),
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(xold):08x}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}")
+    r = Run(syms, differs + close + click(60, 106) + [(10, "")], "undo-differs-save",
+            files=notes if EXT else None)
+    check(fails, "undo-differs-save", r.peek("WndCount") == 0 and r.peek("DgOpenFlag") == 0
+          and file_note(r) == old and file_foo(r) == note_width_document([b"HI"]),
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(old):08x}")
+    r = Run(syms, differs + save + [(10, "")], "undo-differs-saved", files=notes if EXT else None)
+    check(fails, "undo-differs-saved", r.peek("DgOpenFlag") == 0 and r.peek("NoteModified") == 0
+          and r.peek("NoteSaved") == 1 and file_note(r) == old,
+          f"dialogue {r.peek('DgOpenFlag')}, modified {r.peek('NoteModified')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(old):08x}")
+    # OPEN of NOTE over HI, UNDO, SAVE AS NOTE with OVERWRITE: NOTE is
+    # HI. The snapshot the load took is OLDNOTE as the file NOTE, which
+    # is no longer its text: UNDO is OLDNOTE modified, closing asks, and
+    # its SAVE writes OLDNOTE back (lf-1570).
+    hi = note_width_document([b"HI"])
+    overwrite = arrows(64, 1) + enter
+    over = seed + base + typed("HI") + menu(19) + [(15, "")] + enter + undo + save + typed("NOTE") + enter \
+        + [(20, "")] + overwrite + undo
+    r = Run(syms, over + [(10, "")], "undo-overwrite", files=notes if EXT else None)
+    check(fails, "undo-overwrite", doc(r) == old and r.bytes("NoteName", 5) == b"NOTE\0"
+          and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 1 and file_note(r) == hi,
+          f"name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}, modified {r.peek('NoteModified')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(hi):08x}")
+    r = Run(syms, over + close + [(10, "")], "undo-overwrite-close", files=notes if EXT else None)
+    check(fails, "undo-overwrite-close", r.peek("WndCount") == 1 and r.peek("DgOpenFlag") == 1
+          and doc(r) == old and file_note(r) == hi,
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(hi):08x}")
+    r = Run(syms, over + close + click(60, 106) + [(10, "")], "undo-overwrite-save",
+            files=notes if EXT else None)
+    check(fails, "undo-overwrite-save", r.peek("WndCount") == 0 and r.peek("DgOpenFlag") == 0
+          and file_note(r) == old,
+          f"windows {r.peek('WndCount')}, dialogue {r.peek('DgOpenFlag')}, "
+          f"file NOTE crc32 {zlib.crc32(file_note(r) or b''):08x}/{zlib.crc32(old):08x}")
+    # The same over FOO after the swap: FOO is OLDNOTE, the snapshot HI
+    # as FOO is modified. HI written there again is the file: unmodified.
+    foo_over = swapped + menu(35) + typed("FOO") + enter + [(20, "")] + overwrite + undo
+    r = Run(syms, foo_over + [(10, "")], "undo-overwrite-foo", files=notes if EXT else None)
+    check(fails, "undo-overwrite-foo", doc(r) == hi and r.bytes("NoteName", 4) == b"FOO\0"
+          and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 1 and file_foo(r) == old and file_note(r) == old,
+          f"name {r.bytes('NoteName', 4)!r}, saved {r.peek('NoteSaved')}, modified {r.peek('NoteModified')}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}/{zlib.crc32(old):08x}")
+    r = Run(syms, foo_over + save + [(10, "")], "undo-overwrite-foo-saved", files=notes if EXT else None)
+    check(fails, "undo-overwrite-foo-saved", r.peek("DgOpenFlag") == 0 and r.peek("NoteModified") == 0
+          and file_foo(r) == hi and file_note(r) == old,
+          f"dialogue {r.peek('DgOpenFlag')}, modified {r.peek('NoteModified')}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}/{zlib.crc32(hi):08x}")
 
     # Two notepads, a snapshot each: UNDO in the second leaves the first.
     r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})
