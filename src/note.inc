@@ -297,6 +297,18 @@ NoteInit:
                 ld      (NoteBackend),a
                 ld      hl,TxtNoteName
                 call    NoteSetName
+                ; The undo snapshot, a block of this window's: closing
+                ; frees it with the rest. No room is no UNDO, not no notepad.
+                ld      bc,UNDOSZ
+                ld      a,(WndCur)
+                add     a,HEAPOWN_WIN
+                call    HeapAlloc
+                jr      nc,NinUndo
+                ld      hl,0
+NinUndo:
+                ld      (NoteUndoP),hl
+                xor     a
+                ld      (NoteUndoSt),a
 NoteNew:
                 call    NoteClearSelection
                 ; Build one blank row, then spread it through the document.
@@ -846,6 +858,7 @@ NoteKey:
                 inc     a
                 ld      (NwKeyed),a             ; the job's budget this frame
                 call    NwLinksSave             ; for NkEdited, whatever the key
+                call    NoteUndoKey
                 ld      a,(NoteChar)
                 cp      KEY_SELECT
                 jp      z,NoteToggleSelection
@@ -955,10 +968,12 @@ NoteSaveAs:
                 call    NoteSaveNamed
                 pop     hl
                 call    nc,NoteSetName
+                call    nc,NoteUndoSaved
                 jp      NoteRestoreBackend
 NoteSave:
                 call    NoteSelectBackend
                 call    NoteSaveFile
+                call    nc,NoteUndoSaved
                 jp      NoteRestoreBackend
 NoteSaveFile:
                 ld      hl,NoteName
@@ -1028,6 +1043,7 @@ NoteLoadFile:
                 or      a
                 sbc     hl,de
                 jr      nz,NlFail
+                call    NoteUndoTake            ; the document it replaces
                 ld      hl,CmdBuf
                 ld      de,NoteBuf
                 ld      bc,NOTESIZE
@@ -1357,6 +1373,7 @@ NoteMenuCut:
                 ret     nz
                 call    NoteClipCopy
                 ret     c                       ; nothing copied, nothing cut
+                call    NoteUndoTake            ; a group of its own
                 call    NoteEraseSelection
                 jp      NoteRefresh
 
@@ -1385,7 +1402,7 @@ NpaLoop:
                 ld      a,(ClipIx)
                 ld      hl,ClipLen
                 cp      (hl)
-                jr      z,NoteRefresh
+                jr      z,NpaDone
                 ld      hl,ClipBuf
                 ld      c,a
                 ld      b,0
@@ -1413,6 +1430,13 @@ NpaFull:
                 ld      hl,TxtNoteFull
                 ld      de,0
                 jp      DlgAlert
+NpaDone:
+                ; It all went in: the copy taken for the rollback is the
+                ; snapshot, a group of its own.
+                ld      hl,CmdBuf
+                ld      de,CmdWork
+                call    NoteUndoFrom
+                jr      NoteRefresh
 TxtNoteFull:    defb    "DOCUMENT FULL",0
 
 ; The caret back in view, the buffer composed now and the desktop
@@ -1431,6 +1455,191 @@ NoteRefresh:
 NrPlain:
                 call    RowsAddLive
                 jp      NoteComposeLater
+
+;------------------------------------------------------------
+;  UNDO, one level a notepad (lf-1530). The snapshot is a heap block
+;  of the window's own, UNDOSZ bytes: the document, its name and the
+;  nine bytes from NoteCX to NoteBackend (cursor, scroll, the saved
+;  and modified flags, the backend), so FILE > OPEN undone is the
+;  previous document as it was, title and edited flag included. UNDO
+;  swaps the live bytes with the snapshot, which makes a second UNDO
+;  the redo. An edit group starts at the first change after a cursor
+;  key, a click, ENTER, a cut, a paste, an UNDO, a load or a save;
+;  typed characters and DELETE go on in the group. Cut, paste, the
+;  erase of a selection and a load are each a group of their own.
+;------------------------------------------------------------
+UNDOSZ          equ     NoteAnchor-NoteBuf      ; 278
+UNDOCURSZ       equ     NoteAnchor-NoteCX       ; 9, the head of NOTECURSZ
+UNDO_HAVE       equ     1                       ; the snapshot holds a state
+UNDO_OPENB      equ     1                       ; bit: a group is open
+
+; Before NoteKey acts: a character, DELETE or ENTER is an edit, which
+; takes the snapshot when no group is open; anything else ends the
+; group. Over a selection the edit always takes one, and a DELETE or
+; ENTER there ends it again: the erase was the whole group.
+NoteUndoKey:
+                ld      a,(NoteChar)
+                cp      KEY_DELETE
+                jr      z,NukEdit
+                cp      KEY_ENTER
+                jr      z,NukEdit
+                cp      ' '
+                jr      c,NukEnd
+                cp      128
+                jr      c,NukEdit
+NukEnd:
+                ld      hl,NoteUndoSt
+                res     UNDO_OPENB,(hl)
+                ret
+NukEdit:
+                call    NoteSelectionBounds
+                jr      nz,NukSelection
+                ld      a,(NoteUndoSt)
+                bit     UNDO_OPENB,a
+                call    z,NoteUndoTake
+                ld      hl,NoteUndoSt
+                set     UNDO_OPENB,(hl)
+                ld      a,(NoteChar)
+                cp      KEY_ENTER               ; the change after ENTER
+                ret     nz                      ; starts the next group
+                res     UNDO_OPENB,(hl)
+                ret
+NukSelection:
+                call    NoteUndoTake
+                ld      a,(NoteChar)
+                cp      ' '
+                ret     c                       ; DELETE, ENTER: closed
+                ld      hl,NoteUndoSt
+                set     UNDO_OPENB,(hl)         ; a character goes on typing
+                ret
+
+; The live state into the snapshot, or from HL = a document and DE =
+; its UNDOCURSZ bytes (a paste's rollback copy). The group is closed;
+; a caller that goes on typing opens it. No block, nothing happens.
+NoteUndoTake:
+                ld      hl,NoteBuf
+                ld      de,NoteCX
+NoteUndoFrom:
+                push    de
+                ld      de,(NoteUndoP)
+                ld      a,d
+                or      e
+                jr      z,NufNone
+                ld      bc,NOTESIZE
+                ldir
+                ld      hl,NoteName
+                ld      bc,NOTENAMEMAX+1
+                ldir
+                pop     hl
+                ld      bc,UNDOCURSZ
+                ldir
+                ld      a,UNDO_HAVE
+                ld      (NoteUndoSt),a
+                ret
+NufNone:
+                pop     de
+                ret
+
+; A save ends the group, and the snapshot becomes an earlier version
+; of the file just written: its name, saved, and unmodified only if
+; its text is the text written, so UNDO back to the saved text and
+; closing asks nothing. Returns carry clear, the save's success.
+NoteUndoSaved:
+                ld      hl,NoteUndoSt
+                res     UNDO_OPENB,(hl)
+                ld      hl,(NoteUndoP)
+                ld      a,h
+                or      l
+                ret     z
+                ld      de,NoteBuf
+                ld      bc,0                    ; B: 256 bytes, C: 0 the same
+NusCmp:
+                ld      a,(de)
+                cp      (hl)
+                jr      z,NusSame
+                ld      c,1
+NusSame:
+                inc     hl
+                inc     de
+                djnz    NusCmp
+                ex      de,hl                   ; DE = the snapshot's name
+                ld      hl,NoteName
+                push    bc
+                ld      bc,NOTENAMEMAX+1
+                ldir
+                pop     bc
+                ex      de,hl                   ; HL = its NoteCX
+                ld      de,NoteSaved-NoteCX
+                add     hl,de
+                ld      (hl),1                  ; NoteSaved, then
+                inc     hl                      ; NoteModified
+                ld      (hl),c
+                or      a
+                ret
+
+; A = the backend a document had before the commander loaded another
+; into its notepad, which set NoteBackend first: the snapshot's.
+NoteUndoBackend:
+                ld      hl,(NoteUndoP)
+                ld      e,a
+                ld      a,h
+                or      l
+                ret     z
+                ld      a,e
+                ld      de,NoteBackend-NoteBuf
+                add     hl,de
+                ld      (hl),a
+                ret
+
+; EDIT > UNDO and GRAPH+U: the document and the snapshot change places.
+NoteMenuUndo:
+                call    NoteIsFront
+                ret     nz
+                ld      a,(NoteUndoSt)
+                and     UNDO_HAVE
+                ret     z                       ; nothing to go back to
+                ld      (NoteUndoSt),a          ; the group ends here
+                ld      de,(NoteUndoP)
+                ld      hl,NoteBuf
+                ld      bc,UNDOSZ
+NmuSwap:
+                ld      a,(de)
+                ldi
+                dec     hl
+                ld      (hl),a
+                inc     hl
+                jp      pe,NmuSwap
+                call    NoteClearSelection
+                call    NwInvalidate            ; another text: no table
+                jp      NoteRefresh
+
+; MenuPaint's last word: EDIT open over a notepad that got no snapshot
+; block has UNDO in grey (T_DIM), as it would do nothing.
+NoteUndoDim:
+                ld      a,(MenuOpen)
+                cp      3
+                ret     nz
+                call    NoteIsFront
+                ret     nz
+                ld      hl,(NoteUndoP)
+                ld      a,h
+                or      l
+                ret     nz
+                ld      a,(MnY)
+                add     a,3
+                ld      b,a
+                ld      a,(MnX)
+                inc     a
+                ld      c,a
+                call    CellAddr
+                ld      a,T_DIM
+                ld      b,4
+NudLoop:
+                ld      (hl),a
+                inc     hl
+                inc     a
+                djnz    NudLoop
+                ret
 
 ; A = a packed endpoint (NotePack). Returns A = its chunk row.
 NoteUnpackRow:
@@ -3392,6 +3601,8 @@ NesDone:
                 ret
 
 NoteMouseStart:
+                ld      hl,NoteUndoSt           ; a click ends the edit group
+                res     UNDO_OPENB,(hl)
                 call    NoteClearSelection
                 call    NoteMousePosition
                 ld      hl,(NoteCX)

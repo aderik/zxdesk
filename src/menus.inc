@@ -40,7 +40,7 @@ MnItems2:       defb    "NEW",0
 MnItems3:       defb    "CUT",0
                 defb    "COPY",0
                 defb    "PASTE",0
-                defb    "UNDO",0                ; no action yet: the undo ticket
+MnUndo:         defb    "UNDO",0                ; also LoadDim's grey letters
 MnItems4:       defb    "CLOCK",0
                 defb    "CALENDAR",0
                 defb    "CASCADE",0
@@ -286,7 +286,7 @@ MpSkip:
                 add     a,MENUROW+1
                 cp      b
                 jr      nz,MpItem
-                ret
+                jp      NoteUndoDim
 
 ; A = the item picked from MnLastMenu. The actions arrive with the
 ; things they open; until then a pick is recorded and nothing more.
@@ -344,7 +344,9 @@ MnActions:
                 defb    3,1
                 defw    NoteMenuCopy            ; EDIT, COPY
                 defb    3,2
-                defw    NoteMenuPaste           ; EDIT, PASTE; UNDO has no action
+                defw    NoteMenuPaste           ; EDIT, PASTE
+                defb    3,3
+                defw    NoteMenuUndo            ; EDIT, UNDO
                 defb    4,0
                 defw    ClockOpen               ; VIEW, CLOCK
                 defb    4,1

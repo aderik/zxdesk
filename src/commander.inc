@@ -790,6 +790,7 @@ CopLoad:
                 ret
 CopOk:
                 pop     af
+                call    NoteUndoBackend         ; UNDO gives that device back
                 ld      a,(CmdWasK)
                 call    StSelect
                 ld      a,1                     ; repaint the new notepad

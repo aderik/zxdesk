@@ -59,6 +59,7 @@ MOUSEWAIT       equ     10              ; settle loops between strobe and sample
 ; ---- Tiles. Codes 32-127 are the BIOS font; these are ours.
 T_LATTICE       equ     $80             ; the desktop halftone
 T_RULE          equ     $81             ; lattice with the menu bar's rule on top
+T_DIM           equ     $01             ; U N D O in grey, $01-$04 (LoadDim)
 
 ; ---- Colours, ink in the high nibble
 C_TEXT          equ     $1F             ; black on white: the glyphs, every third
@@ -294,8 +295,10 @@ _ram            defl    _ram+size
                 var     NoteBackend, 1
                 var     NoteAnchor, 2          ; X (bit 7 = marking), chunk Y ($FF = none)
                 var     NoteEnd, 2             ; X, chunk Y; exclusive endpoint
-NOTESTSZ        equ     _ram-NoteState
 NOTECURSZ       equ     _ram-NoteCX     ; the cursor, flags and selection: a paste's rollback
+                var     NoteUndoP, 2           ; the snapshot's heap block, 0 = none
+                var     NoteUndoSt, 1          ; UNDO_HAVE, UNDO_OPEN
+NOTESTSZ        equ     _ram-NoteState
                 ; the clipboard, one for every notepad: the document's 224
                 ; text cells, a hard line break as CLIP_CR between them
                 var     ClipBuf, NOTEROWS*NOTECOLS
@@ -543,6 +546,7 @@ Start:
                 call    LoadFont
                 call    LoadTiles
                 call    LoadColours
+                call    LoadDim
                 call    LoadSprite
                 ; The desktop is painted after SetLoad: the icons on it
                 ; come out of the SETTINGS record. The display is still off.
@@ -1372,6 +1376,50 @@ LcThird:
                 call    Fill768
                 pop     bc
                 djnz    LcThird
+                ret
+
+; UNDO's four letters again at T_DIM, in all three thirds, coloured as
+; the lattice: the EDIT menu paints them when the front notepad has no
+; snapshot block (NoteUndoDim). Codes below $20 are no glyph otherwise.
+LoadDim:
+                ld      hl,PGT+T_DIM*8
+                ld      b,3
+LdThird:
+                push    bc
+                push    hl
+                call    SetWrt
+                ld      de,MnUndo
+                ld      b,4
+LdGlyph:
+                push    bc
+                push    de
+                ld      a,(de)
+                ld      l,a
+                ld      h,0
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                ld      de,(CGTABL)
+                add     hl,de
+                ld      bc,8
+                call    CopyVram
+                pop     de
+                inc     de
+                pop     bc
+                djnz    LdGlyph
+                pop     hl
+                push    hl
+                ld      bc,CT-PGT
+                add     hl,bc
+                call    SetWrt
+                ld      a,C_LATTICE
+                ld      b,4*8
+                call    FillVram
+                pop     hl
+                ld      bc,$0800
+                add     hl,bc
+                pop     bc
+                djnz    LdThird
                 ret
 
 Fill1K:
