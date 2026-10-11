@@ -3886,6 +3886,23 @@ def undo_checks(syms, fails):
     check(fails, "undo-open-save-ask", r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 0
           and doc(r) == note_width_document([b"HI"]),
           f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, document crc32 {zlib.crc32(doc(r)):08x}")
+    # The same with a file named NOTE, the name HI has untitled: the
+    # name alone does not make HI that file (lf-1561), and the second
+    # SAVE leaves the file as it was.
+    old = note_width_document([b"OLDNOTE"])
+    notes = {"NOTE": old}
+    seed = [] if EXT else seed_ram_steps(syms, notes)
+    on_note = seed + base + typed("HI") + menu(19) + [(15, "")] + enter + save
+    r = Run(syms, on_note + undo + [(10, "")], "undo-open-note", files=notes if EXT else None)
+    expect("undo-open-note", r, [b"HI"], 2, 0, 1,
+           r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("NoteSaved") == 0,
+           f", name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}")
+    r = Run(syms, on_note + undo + save + [(10, "")], "undo-open-note-ask", files=notes if EXT else None)
+    kept = read_disk_image(DISK).get("NOTE") if EXT else r.bytes("RamHeap", 256)
+    check(fails, "undo-open-note-ask", r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 0
+          and doc(r) == note_width_document([b"HI"]) and kept == old,
+          f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, "
+          f"file NOTE crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(old):08x}")
 
     # Two notepads, a snapshot each: UNDO in the second leaves the first.
     r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})
