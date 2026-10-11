@@ -3852,6 +3852,18 @@ def undo_checks(syms, fails):
           and r.nt() == want,
           f"document crc32 {zlib.crc32(doc(r)):08x}, name {r.bytes('NoteName', 5)!r}, "
           f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+    # SAVE after the OPEN writes BETA; the snapshot is HI, not that file
+    # (lf-1558): UNDO is HI unsaved under its own name, and SAVE again
+    # asks for a name instead of writing HI over BETA.
+    r = Run(syms, opened + save + undo + [(10, "")], "undo-open-save", files=files if EXT else None)
+    expect("undo-open-save", r, [b"HI"], 2, 0, 1,
+           r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("NoteSaved") == 0,
+           f", name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}")
+    r = Run(syms, opened + save + undo + save + [(10, "")], "undo-open-save-ask",
+            files=files if EXT else None)
+    check(fails, "undo-open-save-ask", r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 0
+          and doc(r) == note_width_document([b"HI"]),
+          f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, document crc32 {zlib.crc32(doc(r)):08x}")
 
     # Two notepads, a snapshot each: UNDO in the second leaves the first.
     r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})

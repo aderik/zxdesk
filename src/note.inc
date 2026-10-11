@@ -974,12 +974,15 @@ NoteSaveAs:
                 push    hl
                 call    NoteSaveNamed
                 pop     hl
-                call    nc,NoteSetName
+                push    hl                      ; the snapshot sees the old name
                 call    nc,NoteUndoSaved
+                pop     hl
+                call    nc,NoteSetName
                 jp      NoteRestoreBackend
 NoteSave:
                 call    NoteSelectBackend
                 call    NoteSaveFile
+                ld      hl,NoteName
                 call    nc,NoteUndoSaved
                 jp      NoteRestoreBackend
 NoteSaveFile:
@@ -1089,6 +1092,7 @@ NoteRestoreBackend:
 ; HL = a name, into NoteName, truncated to NOTENAMEMAX.
 NoteSetName:
                 ld      de,NoteName
+NoteCopyName:                                   ; DE = where to
                 ld      b,NOTENAMEMAX
 NsnLoop:
                 ld      a,(hl)
@@ -1584,17 +1588,40 @@ NufNone:
                 pop     de
                 ret
 
-; A save ends the group, and the snapshot becomes an earlier version
-; of the file just written: its name, saved, and unmodified only if
-; its text is the text written, so UNDO back to the saved text and
-; closing asks nothing. Returns carry clear, the save's success.
+; A save ends the group. HL = the name written, NoteName still the
+; old one. A snapshot of this document (the old name, the same
+; backend) becomes an earlier version of the file just written: its
+; name, saved, and unmodified only if its text is the text written,
+; so UNDO back to the saved text and closing asks nothing. A snapshot
+; of another document, the one before FILE > OPEN, stays as it was:
+; it is not that file (lf-1558). Returns carry clear, the save's
+; success.
 NoteUndoSaved:
+                push    hl
                 ld      hl,NoteUndoSt
                 res     UNDO_OPENB,(hl)
                 ld      hl,(NoteUndoP)
                 ld      a,h
                 or      l
-                ret     z
+                jr      z,NusOther
+                ld      de,NoteBackend-NoteBuf
+                add     hl,de
+                ld      a,(NoteBackend)
+                cp      (hl)
+                jr      nz,NusOther
+                ld      hl,(NoteUndoP)
+                ld      de,NOTESIZE
+                add     hl,de                   ; the snapshot's name
+                ld      de,NoteName
+NusName:
+                ld      a,(de)
+                cp      (hl)
+                jr      nz,NusOther
+                inc     hl
+                inc     de
+                or      a
+                jr      nz,NusName
+                ld      hl,(NoteUndoP)
                 ld      de,NoteBuf
                 ld      bc,0                    ; B: 256 bytes, C: 0 the same
 NusCmp:
@@ -1606,18 +1633,17 @@ NusSame:
                 inc     hl
                 inc     de
                 djnz    NusCmp
-                ex      de,hl                   ; DE = the snapshot's name
-                ld      hl,NoteName
-                push    bc
-                ld      bc,NOTENAMEMAX+1
-                ldir
-                pop     bc
-                ex      de,hl                   ; HL = its NoteCX
-                ld      de,NoteSaved-NoteCX
+                push    hl                      ; the snapshot's name
+                ld      de,NoteSaved-NoteName
                 add     hl,de
                 ld      (hl),1                  ; NoteSaved, then
                 inc     hl                      ; NoteModified
                 ld      (hl),c
+                pop     de
+                pop     hl                      ; the name written
+                jp      NoteCopyName            ; carry clear
+NusOther:
+                pop     hl
                 or      a
                 ret
 
