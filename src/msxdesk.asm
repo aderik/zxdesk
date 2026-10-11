@@ -325,7 +325,7 @@ NOTESTSZ        equ     _ram-NoteState
                 ; word wrap: the table, the job that fills it and the
                 ; painter's scratch live in TapeBuf (note.inc); these say
                 ; whose the table is and what is under way
-                var     NoteFollow, 1   ; slot+1 whose draw follows the caret after a key; bit 7: after a grow, fits the text's end
+                var     NoteFollow, 1   ; slot+1 whose draw follows the caret after a key; bit 7: after a grow, fits the text's end (WRAP on or off)
                 var     NoteLayOK, 1    ; the table describes NoteLayWnd at NwCacheW
                 var     NoteLayWnd, 1
                 var     NwCacheW, 1

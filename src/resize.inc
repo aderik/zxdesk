@@ -68,10 +68,11 @@ RszDraw:
                 ; with the desktop restoration exceeded NTSC before that.
                 ; Smaller in either direction, a notepad's view follows
                 ; the caret at the new size, as after a key (lf-1555).
-                ; Larger, it stays where the scroll bar left it, but with
-                ; WRAP the empty lines below the text no longer hold it
-                ; out of view: after 6x4 and back the top had stayed at
-                ; the small size's 8, over empty rows (lf-1565).
+                ; Larger, it stays where the scroll bar left it, but the
+                ; empty lines below the text no longer hold it out of
+                ; view: after 6x4 and back the top had stayed at the
+                ; small size's, over empty rows (lf-1565 with WRAP,
+                ; lf-1571 without).
                 pop     bc
                 ld      hl,(WinApp)
                 ld      de,AppNote
@@ -85,9 +86,6 @@ RszDraw:
                 ld      a,h
                 cp      b
                 jr      c,RszShrunk
-                ld      a,(SetWrap)
-                or      a
-                jr      z,RszCompose
                 ld      a,l
                 cp      c
                 jr      nz,RszGrown
@@ -97,7 +95,7 @@ RszDraw:
 RszGrown:
                 ld      a,(WndCur)
                 inc     a
-                or      $80                     ; NoteDrawWrap: fit the end
+                or      $80                     ; NoteDraw: fit the end
                 ld      (NoteFollow),a
                 jr      RszCompose
 RszShrunk:
