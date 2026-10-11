@@ -205,6 +205,15 @@ NdNext:
 ; with it: the empty lines after the text and the caret no longer push
 ; them out of view. The top comes down until the last of them is the
 ; last row; a top the text below still fills stays.
+; This runs in the grow's frame, the heaviest there is: a NoteLineLen
+; and a NoteRowAddr call for each of the 16 chunks added ~3.9 ms and
+; dropped a frame at 24x17 (lf-1574). So: nothing to do at the top or
+; with the caret on the last row, and the scan goes up from the last
+; chunk, ORing its 14 characters (a space only when all are, as text
+; is never below one), and stops at the first with text, at the
+; caret's line or at the rows in view: text above them leaves top 0
+; all the same. The larger the window, the heavier its frame and the
+; shorter the scan.
 NoteFitEnd:
                 ld      b,a
                 ld      a,(WndCur)
@@ -214,48 +223,59 @@ NoteFitEnd:
                 ret     nz                      ; not this window's grow
                 xor     a
                 ld      (NoteFollow),a
-                ld      c,a                     ; c: the chunk
-                ld      h,a                     ; h: its line
-                ld      l,a                     ; l: lines up to the text's end
-NfeChunk:
-                push    hl
-                ld      a,c
-                call    NoteLineLen
-                pop     hl
+                ld      a,(NoteTop)
                 or      a
-                jr      z,NfeLink
-                ld      l,h
-                inc     l
-NfeLink:
-                push    hl
-                ld      a,c
-                call    NoteRowAddr
-                ld      de,15
-                add     hl,de
-                ld      a,(hl)                  ; continuation flag
-                pop     hl
-                or      a
-                jr      nz,NfeNext
-                inc     h
-NfeNext:
-                inc     c
-                ld      a,c
-                cp      NOTEROWS
-                jr      c,NfeChunk
-                ld      a,(NoteCursorY)
-                cp      l
-                jr      c,NfeMax
-                ld      l,a
-                inc     l
-NfeMax:
+                ret     z                       ; nothing above the view
+                ld      c,a
                 ld      a,(WinH)
                 sub     2
-                ld      e,a
-                ld      a,l
-                sub     e
-                jr      nc,NfeTop
-                xor     a
+                ld      b,a                     ; b: the rows in view
+                add     a,c
+                ld      c,a                     ; c: top + the rows in view
+                ld      a,(NoteCursorY)
+                inc     a
+                cp      c
+                ret     nc                      ; the caret holds the last row
+                cp      b
+                jr      nc,NfeCaret
+                ld      a,b                     ; text above the rows in view: top 0
+NfeCaret:
+                ld      e,a                     ; e: lines up to the caret's
+                ld      hl,NoteBuf+NOTESIZE-1   ; the last chunk's link
+                ld      a,(NoteRows)
+                dec     a
+                add     a,(hl)
+                ld      d,a                     ; d: the last chunk's line
+                dec     hl
+                dec     hl                      ; its last character
+NfeChunk:
+                ld      a,d
+                cp      e
+                jr      c,NfeTop                ; up to the caret's line or the rows in view
+                ld      a,(hl)
+                rept    NOTECOLS-1
+                dec     hl
+                or      (hl)
+                endm
+                cp      ' '
+                jr      nz,NfeText
+                dec     hl                      ; the chunk above: its link
+                ld      a,d
+                dec     a
+                add     a,(hl)
+                ld      d,a
+                dec     hl
+                dec     hl
+                jr      NfeChunk
+NfeText:
+                ld      e,d
+                inc     e                       ; lines up to the text's end
 NfeTop:
+                ld      a,e
+                sub     b
+                jr      nc,NfeLower
+                xor     a
+NfeLower:
                 ld      hl,NoteTop
                 cp      (hl)
                 ret     nc

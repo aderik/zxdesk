@@ -3185,6 +3185,42 @@ def resize_scroll_checks(syms, fails):
               f"top {r.peek('NoteTop')}, caret {r.peek('NoteCY')}, "
               f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
 
+    # The same grow to 24x17 with WRAP off (lf-1574): NoteFitEnd runs in
+    # that frame, the heaviest of the grow, and dropped one at 50 and 60 Hz
+    # (18.9 ms against 14.8 ms before it). Two lines from top 9 scan the
+    # blank chunks below the rows in view: one at 24x17, three at 22x15,
+    # where 60 Hz dropped one as well. Dropped counts the grip only.
+    timing = [(1, f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
+               f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")]
+    off = [(5, f"debug write memory {syms['SetWrap']} 0")]
+    zero = [(1, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0; "
+                "note \"grip starts\"")]
+    two = rows[:2]
+    seed_two = [(5, "; ".join(f"debug write memory {syms['NoteBuf'] + i * 16 + j} {v}"
+                             for i, row in enumerate(two) for j, v in enumerate(row)))]
+    grow_22 = point(23 * 8 + 2, 14 * 8 + 2) + [(5, "key_down 6 0x02")]
+    grow_22 += point(29 * 8 + 2, 20 * 8 + 2) + [(5, "key_up 6 0x02"), (10, "")]
+    for name, steps, to, w, h, doc, top in [
+            ("grow-off-empty", [], grow, 24, 17, [], 0),
+            ("grow-off-two", seed_two, grow, 24, 17, two, 0),
+            ("grow-off-two-scrolled", seed_two + down * 9, grow, 24, 17, two, 0),
+            ("grow-off-22-scrolled", seed_two + down * 9, grow_22, 22, 15, two, 0),
+            ("grow-off-scrolled", seed + down * 9, grow, 24, 17, rows, 1)]:
+        r = Run(syms, timing + off + new + steps + zero + to + [(10, "")], name)
+        import re
+        grip_us = max(map(int, re.findall(r"frame us (\d+)", r.log.split("grip starts")[-1])))
+        lines = [(i + 1, 1, row.ljust(14), False) for i, row in enumerate(doc[top:])]
+        lines += [(-1, top, b"", False)]
+        if top == 0:
+            lines += [(1, 1, (doc[0] if doc else b" ")[:1], True)]
+        want = compose(expected_nt(), [(8, 6, w, h, b"NOTEPAD", lines)])
+        check(fails, name, r.peek('NoteTop') == top and r.peek('NoteCY') == 0 and r.peek('SetWrap') == 0
+              and (r.peek('WinW'), r.peek('WinH')) == (w, h) and r.nt() == want
+              and r.peek('Dropped', 2) == 0,
+              f"top {r.peek('NoteTop')}/{top}, caret {r.peek('NoteCY')}, size {r.peek('WinW')}x{r.peek('WinH')}, "
+              f"crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}, "
+              f"max frame {grip_us} us")
+
     key = [(3, "key_down 6 0x01; key_down 8 0x40"),
            (3, "key_up 8 0x40; key_up 6 0x01")]
     for name, steps, top, cy in [("scroll-down", down, 1, 0),
