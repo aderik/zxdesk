@@ -2607,6 +2607,26 @@ def tape_checks(syms, fails):
           and loaded[:14] == payload[:14] and rr.peek("TapeMode") == 0,
           f"name {rr.bytes('NoteName', 6)}, 256 bytes crc32 {zlib.crc32(loaded):08x}")
 
+    # A header name SAVE AS would refuse opens as NOTE, so the FILE > SAVE
+    # that follows writes, without a dialog, under a name SAVE AS accepts
+    # (lf-1551).
+    for name, bad in (("empty", b""), ("star", b"A*B"), ("space", b"MY FILE"),
+                      ("lower", b"lower"), ("dot", b"END.")):
+        path = os.path.join(BUILD, "tape-name-" + name + ".cas")
+        with open(path, "wb") as f:
+            f.write(marker + header[:4] + bad.ljust(13, b"\0") + header[17:]
+                    + bytes(5) + marker + payload)
+        rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")] + reopen
+                 + record + save + [(10, "cassetteplayer eject")], "tape-name-" + name, rom=rom)
+        blocks = read_tape_wav(os.path.join(OUT, "tape-name-" + name, "note.wav"))
+        check(fails, "tape-name-" + name, rr.peek("NoteResult") == 0
+              and rr.bytes("NoteName", 5) == b"NOTE\0" and rr.peek("DgOpenFlag") == 0
+              and rr.bytes("NoteBuf", 14) == payload[:14]
+              and len(blocks) == 2 and blocks[0][4:17] == b"NOTE".ljust(13, b"\0")
+              and blocks[1] == rr.bytes("NoteBuf", 256),
+              f"name {rr.bytes('NoteName', 13)}, saved header {blocks[:1]}, "
+              f"256 bytes crc32 {zlib.crc32(rr.bytes('NoteBuf', 256)):08x}")
+
 
 def note_width_document(lines):
     """Independent on-disk oracle: legacy chunks plus continuation byte 1."""
