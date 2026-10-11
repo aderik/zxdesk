@@ -1766,6 +1766,28 @@ Normal ROM 20,467 -> 20,481 bytes (+14, crc32 `a3cf85e2` -> `edbcf735`);
 TEST ROM 22,221 -> 22,235 (+14); RAM 4,006 -> 4,007 bytes (+1,
 `BkSegOff`), heap 8,282 -> 8,281 without disk, 2,897 -> 2,896 with it.
 
+## Page 3 or 1/2 on segment 255 (lf-1554)
+
+The same `$FF` stood in detection. `BkMapperUsed` starts `BkProbe` at
+`$FF` and read a `$FF` there as "the marker never reached page 3", and
+`BkSkipAdd` and the count stopped at `BkSkip`'s `$FF` terminator, so a
+page on segment 255 of a 256 segment mapper was never kept out. Now
+page 3 is on the mapper when the segment its marker names changes
+through the window as `BkProbe` is written (inverted, then put back),
+and `BkSkip` is four bytes counted by `BkSkipN`, with no terminator.
+
+`harness/machines/C-BIOS_MSX1_Mapper4MRAM` has the 4096K mapper as the
+only RAM, in slot 3; a breakpoint at `BkInit` copies page 3's segment to
+255 and writes 255 to port `$FF` (`bank-4m-p3`) or writes 255 to port
+`$FE` (`bank-4m-p2`). Asserted on C-BIOS_MSX1_EU: kept out `[0, 1, 2,
+255]`, 16,128 blocks and `[0, 2, 255]`, 16,192 blocks, the last block
+at `$3FBF00` (segment 254); `bank-4m-p3-note` saves through the UI into
+the last entry (15,119) and finds the document (crc32 `9fbabb8f`) there.
+On main the three FAIL: nothing kept out with page 3 on 255 and the
+document lands in the work RAM at `$FF00`; `[0, 2]` with page 2 on 255.
+Normal ROM 24,356 -> 24,383 bytes (+27); RAM unchanged (`BkSkip` 5 bytes
+is now `BkSkipN` 1 + `BkSkip` 4), heap unchanged.
+
 ## Undo (lf-1530)
 
 One level a notepad: **EDIT > UNDO** and **GRAPH+U** put the document

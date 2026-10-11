@@ -1168,12 +1168,15 @@ def bank_offset(r, block):
         page = r.bytes("BkPageTab", 3)[block >> 6]
         return page * 0x4000 + (block & 63) * 256
     seg = block >> 6
-    for kept in r.bytes("BkSkip", 4):
-        if kept == 255:
-            break
+    for kept in bank_kept(r):
         if seg >= kept:
             seg += 1
     return seg * 0x4000 + (block & 63) * 256
+
+
+def bank_kept(r):
+    """BkSkip: the mapper segments the system keeps, BkSkipN of them."""
+    return list(r.bytes("BkSkip", r.peek("BkSkipN")))
 
 
 def bank_files(r, name):
@@ -1230,13 +1233,13 @@ def bank_checks(syms, fails):
         page3 = [s for s in range(size // 16) if bank[s * 0x4000:s * 0x4000 + 8] == r.ram[:8]]
         kept = [0, 1, 2, 3] if MACHINE == "Roms_MSX2" else [0]
         want = (size // 16 - len(kept)) * 64
-        ok = (source == 2 and blocks == want and r.bytes("BkSkip", 4) == bytes(kept + [255] * (4 - len(kept)))
+        ok = (source == 2 and blocks == want and bank_kept(r) == kept
               and page3 == [kept[0] if MAPPER else 0] and r.peek("BkMapSlot") == (1 if MAPPER else 0x8B)
               and r.peek("BkSegHome") == (0 if MAPPER else 1)
               and (regs == bytes((3, 2, 1, 0)) if MACHINE == "Roms_MSX2" else True)
               and blocks // 4 == (496 if MAPPER else 64))
         detail = (f"source {source}, {blocks // 4} KB of a {size}K mapper in slot {r.peek('BkMapSlot'):#04x}, "
-                  f"page 3 in segment {page3}, kept out {list(r.bytes('BkSkip', 4))}, home segment {r.peek('BkSegHome')}, "
+                  f"page 3 in segment {page3}, kept out {bank_kept(r)}, home segment {r.peek('BkSegHome')}, "
                   f"MapperIO {regs.hex()}")
     else:
         # source A: pages 0-2 of slot 3's 64K, behind the BIOS and this cartridge
@@ -1393,7 +1396,7 @@ def bank_checks(syms, fails):
     if MACHINE == "C-BIOS_MSX1_EU" and not EXTS:
         big = "C-BIOS_MSX1_Mapper4M"
         r = Run(syms, [(10, "")], "bank-4m", machine=big)
-        kept = [k for k in r.bytes("BkSkip", 4) if k != 255]
+        kept = bank_kept(r)
         blocks, _, _, files = bank_geometry(r)
         check(fails, "bank-4m", r.peek("BkSource") == 2 and r.peek("BkMapSlot") == 0x87 and kept == []
               and blocks == (256 - len(kept)) * 64 and bank_offset(r, blocks - 1) == 255 * 0x4000 + 63 * 256,
@@ -1413,6 +1416,50 @@ def bank_checks(syms, fails):
               and bank[255 * 0x4000 + 63 * 256:] == document
               and bank_files(r, "bank-4m-note") == {"NOTE": (last, document)},
               f"entry {last}, segment 255's last block crc32 {zlib.crc32(bank[-256:]):08x}, "
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
+              f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+        # The 4 MB mapper as the only RAM (C-BIOS_MSX1_Mapper4MRAM), a
+        # register moved to segment 255 when BkInit starts (lf-1554): 255
+        # was both what BkProbe starts as, read as "page 3 is not on the
+        # mapper", and the $FF that ended BkSkip, so a page on segment 255
+        # was never kept out. The work RAM is copied along when page 3
+        # moves; MapperIO shows the registers at the end.
+        ram = "C-BIOS_MSX1_Mapper4MRAM"
+        def move(port):
+            copy = ("debug write_block Mapper4M [expr {255 * 0x4000}] "
+                    "[debug read_block Mapper4M [expr {[debug read MapperIO 3] * 0x4000}] 0x4000]; " if port == 3 else "")
+            return [f"set ::mv [debug set_bp {syms['BkInit']} {{}} {{{copy}debug write ioports {0xFC + port} 255; "
+                    f"debug remove_bp $::mv}}]"]
+        for port, kept, name in ((3, [0, 1, 2, 255], "bank-4m-p3"), (2, [0, 2, 255], "bank-4m-p2")):
+            r = Run(syms, [(10, regs_note)] + bank_dump_step(device="Mapper4M"), name, setup=move(port), machine=ram)
+            regs = re.search(r"mapperio (\w+)", r.log)
+            regs = bytes.fromhex(regs.group(1)) if regs else b""
+            bank = open(os.path.join(OUT, name, "bank.bin"), "rb").read()
+            blocks = r.peek("BkBlocks", 2)
+            last = bank_offset(r, blocks - 1)
+            files = bank_geometry(r)[3] if port == 3 else files
+            check(fails, name, r.peek("BkSource") == 2 and r.peek("BkMapSlot") == 3 and bank_kept(r) == kept
+                  and len(regs) == 4 and regs[port] == 255 and blocks == (256 - len(kept)) * 64
+                  and last == 254 * 0x4000 + 63 * 256
+                  and (bank[255 * 0x4000:255 * 0x4000 + 8] == r.ram[:8] if port == 3 else True),
+                  f"MapperIO {regs.hex()}, kept out {bank_kept(r)}, {blocks} blocks, last block at {last:#x}")
+        # With page 3 on segment 255 the bank's last entry is written and
+        # read back through the UI: its block is segment 254's last, not
+        # the work RAM's $FF00 (where a missed segment 255 would put it).
+        last = files - 1
+        hint = [(5, f"debug write memory {syms['BkTop']} {last & 255}; debug write memory {syms['BkTop'] + 1} {last >> 8}; "
+                    f"debug write memory {syms['BkFreeHint']} {last & 255}; "
+                    f"debug write memory {syms['BkFreeHint'] + 1} {last >> 8}")]
+        steps = (to_bank + hint + typed + file_save + input_note_name() + tap(5, 0x20) + press(66, 50) + press(60, 98)
+                 + file_open + enter + [(15, "")] + bank_dump_step(device="Mapper4M"))
+        r = Run(syms, steps, "bank-4m-p3-note", files={}, setup=move(3), machine=ram)
+        want = compose(expected_nt(), [note_win(8, 6, [b"HI"] + [b""] * 15, 0, 0, title=b"NOTE")])
+        bank = open(os.path.join(OUT, "bank-4m-p3-note", "bank.bin"), "rb").read()
+        check(fails, "bank-4m-p3-note", r.peek("NoteBackend") == 4 and r.bytes("NoteBuf", 256) == document
+              and r.peek("NoteSaved") == 1 and r.peek("WndCount") == 1 and r.nt() == want
+              and bank_kept(r) == [0, 1, 2, 255] and bank[254 * 0x4000 + 63 * 256:255 * 0x4000] == document
+              and bank_files(r, "bank-4m-p3-note") == {"NOTE": (last, document)},
+              f"entry {last}, segment 254's last block crc32 {zlib.crc32(bank[254 * 0x4000 + 63 * 256:255 * 0x4000]):08x}, "
               f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, "
               f"screen crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
 
