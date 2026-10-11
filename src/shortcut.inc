@@ -18,12 +18,13 @@
 ;  opens one notepad rather than filling the window table.
 ; ============================================================
 SC_BASE         equ     $80
-SCCOUNT         equ     18
+SCCOUNT         equ     19
 
 ; The letters, in code order: the Nth letter is SC_BASE+N. E, Y and P
 ; are the EDIT menu: the free letters once X C T W N O S K L F G I V R
-; D were taken (CUT, COPY and PASTE start with letters in use).
-ScLetters:      defb    "XCTWNOSKLFGIVRDEYP"
+; D were taken (CUT, COPY and PASTE start with letters in use); U is
+; its UNDO.
+ScLetters:      defb    "XCTWNOSKLFGIVRDEYPU"
 
 ; ------------------------------------------------------------
 ;  ScDispatch
@@ -71,6 +72,7 @@ ScTable:
                 defw    NoteMenuCut             ; E
                 defw    NoteMenuCopy            ; Y
                 defw    NoteMenuPaste           ; P
+                defw    NoteMenuUndo            ; U
 
 ; The window at the back comes to the front, so pressing it again and
 ; again walks the whole z order rather than swapping two for ever.
@@ -89,10 +91,10 @@ WndNext:
 ; ------------------------------------------------------------
 ;  HELP, KEYS: the list, as a window. No state and no key vector:
 ;  there is nothing to type at a list. Two columns: the GRAPH
-;  letters alone are nineteen rows, more than the desktop's 22
+;  letters alone are twenty rows, more than the desktop's 22
 ;  rows hold with a title and a bottom, so the second column takes
-;  the window keys and the first the files, the EDIT keys, SELECT
-;  and the calendar.
+;  the window keys, HOME and the calendar and the first the files,
+;  the EDIT keys and SELECT.
 ; ------------------------------------------------------------
 KEYSW           equ     28              ; HOME ROW START reaches column 26
 KEYSH           equ     16
@@ -141,10 +143,8 @@ KeysText:
                 defb    "E CUT",0
                 defb    "Y COPY",0
                 defb    "P PASTE",0
+                defb    "U UNDO",0
                 defb    "SELECT MARK",0
-                defb    "CALENDAR:",0
-                defb    ", . MONTH",0
-                defb    "< > YEAR",0
                 defb    0
 KeysText2:
                 defb    "X NEXT WINDOW",0
@@ -157,4 +157,7 @@ KeysText2:
                 defb    "I ABOUT",0
                 defb    "D DESKTOP",0
                 defb    "HOME ROW START",0      ; the notepad, with WRAP the screen row
+                defb    "CALENDAR:",0
+                defb    ", . MONTH",0
+                defb    "< > YEAR",0
                 defb    0
