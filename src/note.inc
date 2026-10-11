@@ -349,6 +349,7 @@ NexCapacity:
                 or      a
                 scf
                 ret     nz
+                call    NoteUndoDue             ; room: the document changes
                 ld      a,(NoteExtendRow)
                 inc     a
                 call    NoteOpenRow
@@ -402,6 +403,7 @@ NiExtend:
                 call    NoteExtend
                 ret     c
 NiReady:
+                call    NoteUndoDue
                 ld      a,(NoteCX)
                 cp      NOTECOLS
                 jr      nz,NiStart
@@ -575,11 +577,14 @@ NdaBlank:
 
 NoteBack:
                 ld      a,(NoteCX)
+                ld      hl,NoteCY
+                or      (hl)
+                ret     z                       ; at 0,0: nothing to delete
+                call    NoteUndoDue
+                ld      a,(NoteCX)
                 or      a
                 jr      nz,NbDelete
                 ld      a,(NoteCY)
-                or      a
-                ret     z
                 dec     a
                 call    NoteLinkAddr
                 ld      a,(hl)
@@ -928,6 +933,8 @@ NkNotEnt:
                 jr      nc,NkNone
                 call    NoteInsert
 NkEdited:
+                ld      hl,NoteUndoSt           ; no change came: no snapshot
+                res     UNDO_DUEB,(hl)
                 ld      a,2
                 ld      (NwKeyed),a             ; an edit: the repaint waits a frame
                 ; The same links as before: the edit stayed within the
@@ -1490,11 +1497,15 @@ UNDOSZ          equ     NoteAnchor-NoteBuf      ; 278
 UNDOCURSZ       equ     NoteAnchor-NoteCX       ; 9, the head of NOTECURSZ
 UNDO_HAVE       equ     1                       ; the snapshot holds a state
 UNDO_OPENB      equ     1                       ; bit: a group is open
+UNDO_DUEB       equ     2                       ; bit: the next change takes it
 
 ; Before NoteKey acts: a character, DELETE or ENTER is an edit, which
-; takes the snapshot when no group is open; anything else ends the
-; group. Over a selection the edit always takes one, and a DELETE or
-; ENTER there ends it again: the erase was the whole group.
+; starts a group when none is open; anything else ends the group. The
+; snapshot waits for the edit's first change (NoteUndoDue): a DELETE
+; at 0,0 or a key into a full document changes nothing and keeps the
+; snapshot there was (lf-1557). Over a selection the edit always takes
+; one, and a DELETE or ENTER there ends it again: the erase was the
+; whole group.
 NoteUndoKey:
                 ld      a,(NoteChar)
                 cp      KEY_DELETE
@@ -1512,15 +1523,30 @@ NukEnd:
 NukEdit:
                 call    NoteSelectionBounds
                 jr      nz,NukSelection
-                ld      a,(NoteUndoSt)
-                bit     UNDO_OPENB,a
-                call    z,NoteUndoTake
                 ld      hl,NoteUndoSt
-                set     UNDO_OPENB,(hl)
+                bit     UNDO_OPENB,(hl)
+                jr      nz,NukGoesOn
+                set     UNDO_DUEB,(hl)          ; NkEdited drops it unused
+                ret
+NukGoesOn:
                 ld      a,(NoteChar)
                 cp      KEY_ENTER               ; the change after ENTER
                 ret     nz                      ; starts the next group
                 res     UNDO_OPENB,(hl)
+                ret
+
+; Called by NoteInsert, NoteEnter and NoteBack where the document is
+; about to change: a key's group starts with the state before it.
+NoteUndoDue:
+                ld      a,(NoteUndoSt)
+                bit     UNDO_DUEB,a
+                ret     z
+                call    NoteUndoTake            ; closed, and no longer due
+                ld      a,(NoteChar)
+                cp      KEY_ENTER
+                ret     z                       ; ENTER is a group of its own
+                ld      hl,NoteUndoSt
+                set     UNDO_OPENB,(hl)
                 ret
 NukSelection:
                 call    NoteUndoTake
