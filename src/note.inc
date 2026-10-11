@@ -2207,6 +2207,18 @@ NwEditLine:
                 ret     nz                      ; another window's table serves it still
                 ld      a,(NoteCY)
                 call    NwLineOf                ; A = the line, C = its chunk
+                ld      b,a
+                ; another line laid out as far as the caret was: ENTER
+                ; after a line that fills its last row took the caret off
+                ; it with the links unchanged, and the line keeps the
+                ; caret's empty row (lf-1564). Everything again.
+                ld      a,(NwExtLine)
+                cp      NWNONE
+                jr      z,NelOwn
+                cp      c
+                jp      nz,NwInvalidate
+NelOwn:
+                ld      a,b
                 push    af
                 ld      a,c
                 ld      (NwLine),a
