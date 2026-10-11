@@ -1699,3 +1699,29 @@ under DI, work area and ROM identical; `bank-rw-mirror` 28 files to
 parsed from the device. Normal ROM unchanged (20,467 bytes, crc32
 `a3cf85e2`); TEST ROM 22,204 -> 22,221 bytes (+17); RAM and heap
 unchanged.
+
+## Segment 255 of a 4 MB mapper (lf-1545)
+
+The lf-1525 review suspected that on a 256 segment mapper with nothing
+kept out the bank's last 16K wrapped to segment 0. Measured, and worse:
+three faults. `BkXferSkip` stepped over the `$FF` that ends `BkSkip` as
+if it were segment 255 (index 255 became 0); with that fixed, `BkSeg`
+used `$FF` for "no segment", so `BkRaw` skipped the OUT for segment 255
+and the block went into whatever page 2 showed; and `BkCand` returned a
+secondary of page 3's slot above page 3's own id with carry set, which
+the callers read as "no more slots", so a mapper in 3-1 next to RAM in
+3-0 was never probed. `BkXferSkip` now stops at the terminator, "no
+segment" is a flag of its own (`BkSegOff`, set through `BkSegSel` and
+`BkSegNone`) and `BkCand` clears carry.
+
+`harness/machines/C-BIOS_MSX1_Mapper4M` is that machine: plain 64K in
+3-0 under page 3, a 4096K mapper in 3-1. On C-BIOS_MSX1_EU `bank-4m`
+asserts source 2, 16,384 blocks in slot `$87`, nothing kept out and the
+last block at device offset `$3FFF00`; `bank-4m-note` saves a document
+through the UI into the last entry (15,359) and finds it in the dumped
+mapper at `$3FFF00` (crc32 `9fbabb8f`). Without the terminator check it
+lands at `$3F00`, segment 0, inside the bank's own summary blocks; with
+that check but `$FF` still the sentinel, at `$7F00`, segment 1.
+Normal ROM 20,467 -> 20,481 bytes (+14, crc32 `a3cf85e2` -> `edbcf735`);
+TEST ROM 22,221 -> 22,235 (+14); RAM 4,006 -> 4,007 bytes (+1,
+`BkSegOff`), heap 8,282 -> 8,281 without disk, 2,897 -> 2,896 with it.
