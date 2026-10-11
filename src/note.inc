@@ -1681,7 +1681,10 @@ NufNone:
 ; document (lf-1561). Nor when a load took the snapshot (UNDO_OTHER),
 ; even if FILE > DELETE left this document without a file since
 ; (lf-1566), nor when UNDO swapped that load back and the snapshot is
-; now the saved file: it is still the other document (lf-1569).
+; now the saved file: it is still the other document (lf-1569). But
+; when SAVE AS writes over the very file such a saved snapshot names,
+; that file is now this text, and the snapshot is unmodified only if
+; it is the same text (lf-1570).
 ; Otherwise a saved snapshot is the file its name says. D = NoteSaved
 ; before the write. Returns carry clear, the save's success.
 NoteUndoSaved:
@@ -1692,28 +1695,33 @@ NoteUndoSaved:
                 ld      a,h
                 or      l
                 jr      z,NusOther
-                ld      a,(NoteUndoSt)
-                bit     UNDO_OTHERB,a
-                jr      nz,NusOther             ; loaded over, saved or not
                 push    hl
                 ld      bc,NoteSaved-NoteBuf
                 add     hl,bc
                 ld      a,(hl)
                 pop     hl
+                ld      e,a                     ; E: the snapshot is saved
+                ld      a,(NoteUndoSt)
+                bit     UNDO_OTHERB,a
+                jr      nz,NusLoaded            ; loaded over, saved or not
+                ld      a,e
                 or      a
                 jr      nz,NusFile              ; a file's version: by its name
                 or      d
                 jr      nz,NusOther             ; never saved, and this had a file
 NusFile:
+                ld      de,NoteName             ; the name it shares
+NusBy:
+                push    de
                 ld      de,NoteBackend-NoteBuf
                 add     hl,de
                 ld      a,(NoteBackend)
                 cp      (hl)
+                pop     de
                 jr      nz,NusOther
                 ld      hl,(NoteUndoP)
-                ld      de,NOTESIZE
-                add     hl,de                   ; the snapshot's name
-                ld      de,NoteName
+                ld      bc,NOTESIZE
+                add     hl,bc                   ; the snapshot's name
 NusName:
                 ld      a,(de)
                 cp      (hl)
@@ -1743,6 +1751,13 @@ NusSame:
                 pop     de
                 pop     hl                      ; the name written
                 jp      NoteCopyName            ; carry clear
+NusLoaded:
+                ld      a,e
+                or      a
+                jr      z,NusOther              ; no file of its own
+                pop     de                      ; its file, written over by
+                push    de                      ; SAVE AS: by the name written
+                jr      NusBy
 NusOther:
                 pop     hl
                 or      a
