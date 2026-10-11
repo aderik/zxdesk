@@ -2607,9 +2607,29 @@ def tape_checks(syms, fails):
           and loaded[:14] == payload[:14] and rr.peek("TapeMode") == 0,
           f"name {rr.bytes('NoteName', 6)}, 256 bytes crc32 {zlib.crc32(loaded):08x}")
 
+    # That payload has no chunk structure: it opens as sixteen full hard
+    # lines. Nothing precedes the caret at 0,0 (BS and DEL both delete
+    # backwards) and no line has room, so the keys there change nothing;
+    # one step right (SHIFT+RIGHT: plain arrows move the pointer), BS
+    # deletes and the line it freed takes a character (lf-1560).
+    full = b"".join(payload[i:i + 14] + b"\0\0" for i in range(0, 256, 16))
+    refused = [(5, f'set f [open $::out/refused.bin wb]; puts -nonewline $f '
+                f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
+    rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")] + reopen + [(10, "")]
+             + tap(2, 0x40) + tap(7, 0x20) + tap(8, 0x08) + refused
+             + [(3, "key_down 6 1")] + tap(8, 0x80) + [(3, "key_up 6 1")]
+             + tap(7, 0x20) + tap(2, 0x40) + [(10, "")], "tape-full", rom=rom)
+    before = open(os.path.join(OUT, "tape-full", "refused.bin"), "rb").read()
+    after = rr.bytes("NoteBuf", 256)
+    check(fails, "tape-full", rr.peek("NoteResult") == 0 and before == full
+          and after == b"A" + full[1:14] + full[14:] and rr.peek("NoteModified") == 1
+          and rr.peek("NoteCX") == 1 and rr.peek("NoteCY") == 0,
+          f"opened crc32 {zlib.crc32(before):08x}, expected {zlib.crc32(full):08x}; "
+          f"edited crc32 {zlib.crc32(after):08x}, row 0 {after[:14]}")
+
     # A header name SAVE AS would refuse opens as NOTE, so the FILE > SAVE
     # that follows writes, without a dialog, under a name SAVE AS accepts
-    # (lf-1551).
+    # (lf-1551). No byte of the refused name stays behind the NOTE (lf-1560).
     for name, bad in (("empty", b""), ("star", b"A*B"), ("space", b"MY FILE"),
                       ("lower", b"lower"), ("dot", b"END.")):
         path = os.path.join(BUILD, "tape-name-" + name + ".cas")
@@ -2620,7 +2640,7 @@ def tape_checks(syms, fails):
                  + record + save + [(10, "cassetteplayer eject")], "tape-name-" + name, rom=rom)
         blocks = read_tape_wav(os.path.join(OUT, "tape-name-" + name, "note.wav"))
         check(fails, "tape-name-" + name, rr.peek("NoteResult") == 0
-              and rr.bytes("NoteName", 5) == b"NOTE\0" and rr.peek("DgOpenFlag") == 0
+              and rr.bytes("NoteName", 13) == b"NOTE".ljust(13, b"\0") and rr.peek("DgOpenFlag") == 0
               and rr.bytes("NoteBuf", 14) == payload[:14]
               and len(blocks) == 2 and blocks[0][4:17] == b"NOTE".ljust(13, b"\0")
               and blocks[1] == rr.bytes("NoteBuf", 256),
