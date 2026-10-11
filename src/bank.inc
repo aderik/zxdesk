@@ -248,9 +248,9 @@ BkXferMap:
                 ld      a,(BkMapSlot)
                 ld      (BkSlot),a
                 ; the 16K index, moved up past every segment the system
-                ; keeps (BkSkip is ascending); the $FF that ends it is no
-                ; segment, else index 255 of a 256 segment mapper would
-                ; pass it and wrap to 0
+                ; keeps (BkSkip is ascending, BkSkipN long: on a 256
+                ; segment mapper every byte is a segment, so no value
+                ; can end it)
                 ld      a,e
                 rlca
                 rlca
@@ -261,15 +261,15 @@ BkXferMap:
                 add     a,a
                 or      c
                 push    hl
-                ld      hl,BkSkip
-                ld      b,4
+                ld      hl,BkSkipN
+                ld      b,(hl)
+                inc     b
+                jr      BkXferNext
 BkXferSkip:
-                ld      c,(hl)
-                inc     c
-                jr      z,BkXferSeg
                 cp      (hl)
                 jr      c,BkXferSeg
                 inc     a
+BkXferNext:
                 inc     hl
                 djnz    BkXferSkip
 BkXferSeg:
@@ -328,14 +328,13 @@ BkInit:
                 ld      (BkMode),a
                 ld      (BkSegHome),a
                 ld      (BkFound),a
+                ld      (BkSkipN),a
                 ld      hl,0
                 ld      (BkBlocks),hl
                 ld      (BkTop),hl
                 ld      (BkFreeHint),hl
                 dec     hl
                 ld      (BkCache),hl
-                ld      a,$FF
-                ld      (BkSkip),a
                 call    BkSegNone
                 ; page 3's slot id: primary from the register, secondary
                 ; from SLTTBL when that primary slot is expanded
@@ -823,29 +822,41 @@ BkMuBack:
                 ld      a,3
                 ld      (BkS0),a
 BkMuGuessed:
-                ld      a,(BkS0)
-                out     (BKPORT),a
-                ld      a,(BkS2)
-                ld      (BkSegHome),a           ; the window page's own segment
-                ld      a,$FF
-                call    BkSegNone
-                ld      (BkSkip),a
+                xor     a
+                ld      (BkSkipN),a
                 pop     hl                      ; the size
-                ; page 3 on this mapper: its segment and the others the
-                ; system maps are kept out
+                push    hl
+                ; page 3 on this mapper: the segment its marker names, if
+                ; that segment changes through the window when BkProbe
+                ; does. Not "BkProbe still $FF": a 256 segment mapper has
+                ; a segment 255 (lf-1554)
                 ld      a,(BkS3)
-                inc     a
-                ret     z                       ; $FF: the marker never reached page 3
-                dec     a
                 ld      e,a
                 ld      a,h
                 or      a
-                jr      nz,BkMuOn               ; 256 segments: every number is one
+                jr      nz,BkMuSee              ; 256 segments: every number is one
                 ld      a,e
                 cp      l
-                ret     nc
-BkMuOn:
-                push    hl
+                jr      nc,BkMuHome
+BkMuSee:
+                ld      a,e
+                call    BkSegSel
+                call    BkProbeGet
+                ld      (BkSave0),a
+                ld      hl,BkProbe
+                ld      a,(hl)
+                cpl
+                ld      (hl),a
+                call    BkProbeGet
+                ld      c,a
+                ld      hl,BkProbe
+                ld      a,(hl)
+                cpl
+                ld      (hl),a                  ; back as it was
+                ld      a,(BkSave0)
+                cp      c
+                jr      z,BkMuHome              ; it held: page 3 is elsewhere
+                ; its segment and the others the system maps are kept out
                 ld      a,(BkS3)
                 call    BkSkipAdd
                 ld      a,(BkS2)
@@ -854,16 +865,18 @@ BkMuOn:
                 call    BkSkipSeg
                 ld      a,(BkS0)
                 call    BkSkipAdd
+BkMuHome:
+                call    BkSegNone
+                ld      a,(BkS0)
+                out     (BKPORT),a
+                ld      a,(BkS2)
+                ld      (BkSegHome),a           ; the window page's own segment
                 pop     hl
-                ld      de,BkSkip
-                ld      b,4
-BkMuCount:
-                ld      a,(de)
-                inc     a
-                ret     z
-                dec     hl
-                inc     de
-                djnz    BkMuCount
+                ld      a,(BkSkipN)
+                ld      e,a
+                ld      d,0
+                or      a
+                sbc     hl,de
                 ret
 
 ; A = what a page's window showed: a segment number, into BkSkip, when
@@ -879,23 +892,29 @@ BkSkipSeg:
                 jr      nz,BkSkipAdd            ; 256: every number is one
                 cp      (hl)
                 ret     nc
-; A = a segment into BkSkip, kept ascending without repeats.
+; A = a segment into BkSkip, kept ascending without repeats; BkSkipN
+; counts them, since every value, 255 too, can be one (lf-1554).
 BkSkipAdd:
-                ld      hl,BkSkip
+                ld      hl,BkSkipN
+                ld      b,(hl)
+                inc     b
 BkSaLoop:
+                inc     hl
+                dec     b
+                jr      z,BkSaEnd               ; past the last: it goes at the end
                 cp      (hl)
                 ret     z
-                jr      c,BkSaInsert
-                inc     hl
-                jr      BkSaLoop
-BkSaInsert:
+                jr      nc,BkSaLoop
+BkSaInsert:                                     ; bubble the rest down
                 ld      c,(hl)
                 ld      (hl),a
-                inc     hl
                 ld      a,c
-                inc     a
-                jr      nz,BkSaInsert           ; bubble the rest down
-                ld      (hl),$FF
+                inc     hl
+                djnz    BkSaInsert
+BkSaEnd:
+                ld      (hl),a
+                ld      hl,BkSkipN
+                inc     (hl)
                 ret
 
 ; ------------------------------------------------------------

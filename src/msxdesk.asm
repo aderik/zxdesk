@@ -172,7 +172,8 @@ _ram            defl    _ram+size
                 var     BkPageTab, 3    ; source 1: the page behind each 16K
                 var     BkSlotTab, 3    ; and its slot id
                 var     BkMapSlot, 1    ; source 2: the mapper's slot id
-                var     BkSkip, 5       ; its segments the system uses, ascending, $FF end
+                var     BkSkipN, 1      ; how many segments the system uses
+                var     BkSkip, 4       ; which, ascending
                 var     BkSegHome, 1    ; the segment the window page had
                 var     BkProbe, 1      ; the byte every probe aims at
                 var     BkTop, 2        ; entries ever used
