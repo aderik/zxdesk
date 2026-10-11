@@ -2974,6 +2974,28 @@ def wrap_checks(syms, fails):
           and nt[8 * 32 + 9] == ord(" ") | 128 and r.peek("SetWrap") == 0,
           f"top {r.peek('NoteTop')}/7, caret line {r.peek('NoteCursorY')}/8, size {r.peek('WinW')}x{r.peek('WinH')}, "
           f"cells {nt[7 * 32 + 9]:02x} {nt[8 * 32 + 9]:02x}, expected 41 a0")
+    # and back to 16x9 (lf-1571): the top comes down until the last line
+    # with text or the caret's line is the last row, not the top of 6x4
+    # over empty lines. With the caret on the empty line 8 that is top 2
+    # (lines 2-8); without the last ENTER the caret is on line 7 and the
+    # top 1 = 8 lines - 7 rows. The typing drops frames at 60 Hz already
+    # on ed738fa (Dropped 11-12 from boot), so Dropped counts the grip.
+    regrow_off = s.to_minimum + [(1, f"debug write memory {syms['Dropped']} 0; "
+                                    f"debug write memory {syms['Dropped'] + 1} 0")] + drag(106, 74, 160, 80)
+    for name, steps, cx, cy, top in [
+            ("wrap-off-shrink-regrow", off_lines, 0, 8, 2),
+            ("wrap-off-shrink-regrow-text", off_lines[:-len(text("A") + enter)] + text("A"), 1, 7, 1)]:
+        r = Run(syms, steps + regrow_off + [(10, "")], name, files={})
+        lines = [b"A"] * 8 + [b""] * 8
+        want = compose(expected_nt(), [note_win(8, 6, lines, cx, cy, top)])
+        check(fails, name, r.nt() == want and r.peek("NoteTop") == top
+              and (r.peek("NoteCX"), r.peek("NoteCY")) == (cx, cy)
+              and r.bytes("NoteBuf", 256) == note_width_document(lines[:8])
+              and (r.peek("WinW"), r.peek("WinH")) == (NOTE_W, NOTE_H) and r.peek("SetWrap") == 0
+              and r.peek("Dropped", 2) == 0,
+              f"top {r.peek('NoteTop')}/{top}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}) expected ({cx}, {cy}), "
+              f"size {r.peek('WinW')}x{r.peek('WinH')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"Dropped={r.peek('Dropped', 2)}")
     r = view("wrap-resize-back", new + text(words.decode()) + shrink + regrow, [words], 2, 2, 0)
     check(fails, "wrap-resize-same", r.nt() == basic.nt() and r.bytes("NoteBuf", 256) == basic.bytes("NoteBuf", 256),
           f"after 16x9 -> 10x9 -> 16x9 the screen is {zlib.crc32(r.nt()):08x}, before {zlib.crc32(basic.nt()):08x}")

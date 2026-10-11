@@ -156,6 +156,9 @@ NoteDraw:
                 ld      a,(NoteTop)
                 call    NoteScrollTo            ; also measures rows and caret
                 call    NoteHScroll
+                ld      a,(NoteFollow)
+                or      a
+                call    nz,NoteFitEnd
                 xor     a
                 ld      (NoteDrawX),a
                 ld      (NoteDrawY),a
@@ -195,6 +198,67 @@ NdNext:
                 ret     c
                 ld      a,(hl)
                 or      INVBANK
+                ld      (hl),a
+                ret
+
+; A = NoteFollow. A larger window with WRAP off (lf-1571), as NdwGrown
+; with it: the empty lines after the text and the caret no longer push
+; them out of view. The top comes down until the last of them is the
+; last row; a top the text below still fills stays.
+NoteFitEnd:
+                ld      b,a
+                ld      a,(WndCur)
+                inc     a
+                or      $80
+                cp      b
+                ret     nz                      ; not this window's grow
+                xor     a
+                ld      (NoteFollow),a
+                ld      c,a                     ; c: the chunk
+                ld      h,a                     ; h: its line
+                ld      l,a                     ; l: lines up to the text's end
+NfeChunk:
+                push    hl
+                ld      a,c
+                call    NoteLineLen
+                pop     hl
+                or      a
+                jr      z,NfeLink
+                ld      l,h
+                inc     l
+NfeLink:
+                push    hl
+                ld      a,c
+                call    NoteRowAddr
+                ld      de,15
+                add     hl,de
+                ld      a,(hl)                  ; continuation flag
+                pop     hl
+                or      a
+                jr      nz,NfeNext
+                inc     h
+NfeNext:
+                inc     c
+                ld      a,c
+                cp      NOTEROWS
+                jr      c,NfeChunk
+                ld      a,(NoteCursorY)
+                cp      l
+                jr      c,NfeMax
+                ld      l,a
+                inc     l
+NfeMax:
+                ld      a,(WinH)
+                sub     2
+                ld      e,a
+                ld      a,l
+                sub     e
+                jr      nc,NfeTop
+                xor     a
+NfeTop:
+                ld      hl,NoteTop
+                cp      (hl)
+                ret     nc
                 ld      (hl),a
                 ret
 
