@@ -232,6 +232,7 @@ _ram            defl    _ram+size
                 var     WndCur, 1
                 var     Resizing, 1     ; 0 idle, 1 held, 3 allocated: compose next
                                         ; frame, 2 composed: blit next frame
+                var     RszSlot, 1      ; the slot RszEnd resized (Resizing 2, 3)
                 var     ScrFirst, 1
                 var     ScrShow, 1
                 var     ScrThumb, 1

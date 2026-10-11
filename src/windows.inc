@@ -356,6 +356,16 @@ WndClose:
 WcGo:
                 xor     a
                 ld      (WndForce),a
+                ld      a,(Resizing)            ; the resized window goes before
+                cp      2                       ; its compose: nothing to compose
+                jr      c,WcRszKept
+                ld      a,(RszSlot)
+                ld      hl,WndCur
+                cp      (hl)
+                jr      nz,WcRszKept
+                xor     a
+                ld      (Resizing),a
+WcRszKept:
                 ld      hl,WndZ
                 ld      de,WndZ+1
                 ld      a,(WndCount)
@@ -1015,6 +1025,10 @@ WinRedraw:
                 ld      a,(DgOpenFlag)
                 or      a
                 ret     nz                      ; keep the save-under stable
+                ld      a,(Resizing)            ; the resized window is the live
+                cp      2                       ; one for its layout and compose,
+                ld      a,(RszSlot)             ; even after GRAPH+X in the frame
+                call    nc,WndSelect            ; of the release (lf-1535)
                 call    NoteLayService          ; a wrapped notepad's layout,
                 or      a                       ; a budget a frame, before
                 ret     nz                      ; anything of it is painted
