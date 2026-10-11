@@ -414,7 +414,8 @@ CptSet:
                 ld      (hl),a
                 jp      CmdReload
 ; B takes the opposite pane round RAM, BANK and DISK, those that are
-; there; from PRN it goes to RAM.
+; there; from PRN it goes back to the device the pane had before P, as
+; P itself would.
 CmdBankTarget:
                 ld      a,(CmdActive)
                 xor     1
@@ -423,7 +424,7 @@ CmdBankTarget:
                 call    CmdField
                 ld      a,(hl)
                 cp      ST_PRINT
-                ld      a,ST_RAM
+                ld      a,(CmdPrnWas)
                 jr      z,CptSet
                 ld      a,(hl)
                 ld      b,1

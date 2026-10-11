@@ -3307,12 +3307,15 @@ def print_checks(syms, fails):
     # P gives back what the pane showed before, also a device B chose; and
     # P from a PRN pane leaves the other pane alone: one PRN pane at most,
     # its header the active, inverted one beside the help row's plain PRN.
-    bb = Run(syms, commander + text("BB") + [(10, "")], "print-cmd-bb")
-    chosen = bb.peek("CmdBk1")
-    r = Run(syms, commander + text("BBPP") + [(10, "")], "print-cmd-bb-back")
-    check(fails, "print-cmd-bb-back", (r.peek("CmdBk0"), r.peek("CmdBk1")) == (home, chosen)
-          and r.peek("StBackend") == home and r.nt().count(b"PRN") == 1,
-          f"B B gives {(bb.peek('CmdBk0'), chosen)}, B B P P {(r.peek('CmdBk0'), r.peek('CmdBk1'))}")
+    # One B puts the right pane on BANK, there on every machine, so the
+    # device given back is never the RAM a wrong restore would also give.
+    chosen = ring_step(syms["ST_RAM"])
+    for name, steps in [("print-cmd-b-back", text("BPP")), ("print-cmd-b-prn-b", text("BPB"))]:
+        r = Run(syms, commander + steps + [(10, "")], name)
+        check(fails, name, chosen != syms["ST_RAM"]
+              and (r.peek("CmdBk0"), r.peek("CmdBk1")) == (home, chosen)
+              and r.peek("StBackend") == home and r.nt().count(b"PRN") == 1,
+              f"panes {(r.peek('CmdBk0'), r.peek('CmdBk1'))}, expected {(home, chosen)}")
     r = Run(syms, commander + tab + text("P") + tab + text("P") + [(10, "")], "print-cmd-one-prn")
     check(fails, "print-cmd-one-prn", (r.peek("CmdBk0"), r.peek("CmdBk1")) == (8, 1)
           and r.peek("CmdActive") == 0 and r.nt().count(b"PRN") == 1

@@ -1370,7 +1370,7 @@ a 16 KB bank of 63 blocks and 58 files, `BACKEND 16 KB   [BANK]`
 (measured in the lf-1525 test on a Roms_MSX1 with 32K: source 1, 63
 blocks, Commander B and the save/close/reopen route byte-identical;
 `bank-mirror` measures the same size here). In the Commander **B** takes the other pane round
-the same ring (from PRN to RAM), so RAM, DISK and BANK copy both ways;
+the same ring (from PRN back to the device the pane had before P), so RAM, DISK and BANK copy both ways;
 the help row reads `TAB PANE P PRN B BANK R LIST`. A document saved on
 the bank keeps it as its backend, as with RAM.
 
@@ -1661,7 +1661,7 @@ Three remarks from the test of lf-1536.
 pane, so a right pane that B had put on DISK came back as RAM. P now keeps
 the device the pane showed in `CmdPrnWas` and returns to it: on
 Roms_MSX1 + Roms_Disk, B B gives panes (5, 5) and B B P P (5, 5) again
-(`print-cmd-bb-back`).
+(`print-cmd-b-back` since lf-1552).
 
 **One PRN pane.** P from a pane that is already PRN does nothing, so TAB P
 TAB P leaves (8, 1) rather than two write-only panes
@@ -1682,6 +1682,27 @@ Measured against base `ca6f74d`: normal ROM **20,432 → 20,467 bytes
 state, so each open commander's heap copy grows by the same byte; heap
 **8,283 → 8,282** without disk, **2,898 → 2,897** with it. Padded ROM
 CRC32: normal `a3cf85e2`, TEST `cbf4d59e`.
+
+## Commander B and P on every machine (lf-1552)
+
+Two remarks from the test of lf-1546.
+
+**The subject proves the restore everywhere.** `print-cmd-bb-back` used
+B B, which without a disk goes RAM → BANK → RAM, so the wrong restore to
+RAM passed as well. `print-cmd-b-back` uses one B, which puts the right
+pane on BANK on every machine in the matrix, and asserts B P P gives
+BANK back: (1, 4) on C-BIOS EU and JP, (5, 4) on Roms_MSX1 + Roms_Disk.
+With the lf-1546 restore swapped back to RAM it reads (1, 1) and fails.
+
+**B from PRN goes back, like P.** B on a PRN pane went to RAM; it now
+takes the device saved in `CmdPrnWas`, the one P would give back.
+`print-cmd-b-prn-b` (B P B) expects (1, 4), (5, 4) with a disk; the old
+B gives (1, 1) and fails it.
+
+Measured against base `e68b6e5`: normal ROM **23,361 → 23,362 bytes
+(+1)**, TEST ROM **25,118 → 25,119 (+1)**. Static RAM 4,015 and TEST
+6,747 unchanged, heap 8,273 / 2,888 unchanged. Padded ROM CRC32: normal
+`982a4b54`, TEST `f04a0839`.
 
 ## Small banks in the TEST subjects (lf-1540)
 
