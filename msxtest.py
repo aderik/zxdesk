@@ -3132,7 +3132,7 @@ def saveas_checks(syms, fails):
         ("saveas-name", saveas + text("LE") + tap(1, 1, 1) + text("TTER") + enter, document),
         ("saveas-edit", saveas + text("LETER") + tap(8,16)*2 + text("T") + tap(8,128)*2 + text("X") + tap(7,32) + enter, document),
         ("saveas-exists-cancel", named + text("X") + named + enter, document),
-        ("saveas-exists-overwrite", named + text("X") + named + tap(8,64) + enter,
+        ("saveas-exists-overwrite", named + text("X") + named + tap(8,64,1) + enter,
          b"HIX".ljust(14)+document[14:]),
         ("saveas-reopen", named + text("X") + opened + (tap(8,64,1)*2 if EXT else []) + enter, document),
     ]:
@@ -3165,6 +3165,20 @@ def saveas_checks(syms, fails):
     r = Run(syms, base + saveas + enter + [(10, "")], "saveas-empty")
     check(fails, "saveas-empty", r.peek("DgOpenFlag") == 1 and r.peek("DgLength") == 0
           and r.peek("NoteSaved") == 0, "empty field remains open without writing")
+    # The text field has no button row: DGY+3 is blank, not an inverted bar.
+    row = r.nt()[11*32+6:11*32+26]
+    check(fails, "saveas-field-row", row == b" "*20,
+          f"row 11 crc32 {zlib.crc32(row):08x}, expected {zlib.crc32(b' '*20):08x}")
+    # Plain arrows move the caret in the field; the key pointer rests.
+    r = Run(syms, base + saveas + text("AB") + tap(8,16) + [(10, "")], "saveas-field-pointer")
+    check(fails, "saveas-field-pointer", r.peek("DgCursor") == 1 and r.ptr() == (120, 90)
+          and r.peek("HeldX") == 0, f"caret {r.peek('DgCursor')}, pointer {r.ptr()}")
+    # Button dialogues keep the convention: plain arrows drive the key
+    # pointer, only SHIFT+arrows (saveas-exists-overwrite) move the focus.
+    r = Run(syms, base + named + text("X") + named + tap(8,64) + [(10, "")], "saveas-button-arrows")
+    check(fails, "saveas-button-arrows", r.peek("DgMode") == 5 and r.peek("DgFocus") == 0
+          and r.peek("DgOpenFlag") == 1 and r.ptr()[0] == 120 and r.ptr()[1] > 90,
+          f"focus {r.peek('DgFocus')}, pointer {r.ptr()}")
     # SAVE AS failure must not commit the new name or clear dirty state.
     scratch = syms["RamHeap"] + 768
     fault = [(5, f"debug write_block memory {scratch} [binary format H* 37c9]; "

@@ -739,9 +739,8 @@ ReadInput:
                 ld      a,$FF
                 ld      (Buttons),a
                 call    ReadMouse
-                ld      a,(DgOpenFlag)
-                or      a
-                jr      nz,RiNoPointer
+                call    DgFieldOpen
+                jr      z,RiNoPointer
                 ld      a,(SetKeyPtr)
                 or      a
                 jr      nz,RiKeys

@@ -113,9 +113,8 @@ KbdLook:
                 ld      a,(SetKeyPtr)
                 or      a
                 jr      z,KbdAppArrows
-                ld      a,(DgOpenFlag)
-                or      a
-                jr      z,KbdLookup
+                call    DgFieldOpen
+                jr      nz,KbdLookup
 KbdAppArrows:
                 ld      a,l
                 cp      68

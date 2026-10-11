@@ -1118,6 +1118,24 @@ The additional HELP > KEYS row increases that window's heap buffer by
 
 Padded ROM CRC32: normal `ebda8e84`, TEST `d964f796`.
 
+### Review follow-up (lf-1539)
+
+Only the text field takes plain arrows: LEFT/RIGHT move its caret and the
+key pointer rests while it is open. Button dialogues (UNSAVED WORK,
+OVERWRITE, DELETE, alerts) keep the convention above: with the key
+pointer ON, plain arrows move the pointer and SHIFT+arrows or TAB move
+the focus. `DgFieldOpen` in `src/dialog.inc` is the one test for both
+`KbdDecode` and `ReadInput`. The text field no longer paints an inverted
+focus bar on row 11, where it has no button.
+
+`--saveas` adds `saveas-field-row` (row 11 is 20 plain spaces, CRC32
+`349a0886`; base `d9a444aa`), `saveas-field-pointer` (caret 1, pointer
+(120, 90)) and `saveas-button-arrows` (OVERWRITE dialogue: plain DOWN
+leaves focus 0 and moves the pointer to (120, 93); base gave focus 1).
+`saveas-exists-overwrite` now chooses OVERWRITE with SHIFT+DOWN.
+ROM grows **18 bytes** (23,362 to 23,380 normal; 25,119 to 25,137 TEST);
+static RAM and heap are unchanged (4,015 bytes; heap 8,273 / 2,888).
+
 ## Printer (lf-1524)
 
 FILE > PRINT and GRAPH+R print the front notepad through the write-only
