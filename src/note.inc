@@ -971,9 +971,12 @@ NoteSaveAs:
                 push    hl
                 call    NoteSelectBackend
                 pop     hl
+                ld      a,(NoteSaved)
+                push    af                      ; NoteUndoSaved's D
                 push    hl
                 call    NoteSaveNamed
                 pop     hl
+                pop     de
                 push    hl                      ; the snapshot sees the old name
                 call    nc,NoteUndoSaved
                 pop     hl
@@ -981,7 +984,10 @@ NoteSaveAs:
                 jp      NoteRestoreBackend
 NoteSave:
                 call    NoteSelectBackend
+                ld      a,(NoteSaved)
+                push    af
                 call    NoteSaveFile
+                pop     de                      ; D: saved before the write
                 ld      hl,NoteName
                 call    nc,NoteUndoSaved
                 jp      NoteRestoreBackend
@@ -1594,8 +1600,11 @@ NufNone:
 ; name, saved, and unmodified only if its text is the text written,
 ; so UNDO back to the saved text and closing asks nothing. A snapshot
 ; of another document, the one before FILE > OPEN, stays as it was:
-; it is not that file (lf-1558). Returns carry clear, the save's
-; success.
+; it is not that file (lf-1558). Nor is an unsaved snapshot when the
+; document had a file before this write: an untitled notepad is named
+; NOTE as well, and OPEN of a file NOTE over it is still another
+; document (lf-1561). D = NoteSaved before the write. Returns carry
+; clear, the save's success.
 NoteUndoSaved:
                 push    hl
                 ld      hl,NoteUndoSt
@@ -1604,6 +1613,17 @@ NoteUndoSaved:
                 ld      a,h
                 or      l
                 jr      z,NusOther
+                ld      a,d
+                or      a
+                jr      z,NusFile               ; no file yet: this write is its first
+                push    hl
+                ld      de,NoteSaved-NoteBuf
+                add     hl,de
+                ld      a,(hl)
+                pop     hl
+                or      a
+                jr      z,NusOther              ; never saved: not this file
+NusFile:
                 ld      de,NoteBackend-NoteBuf
                 add     hl,de
                 ld      a,(NoteBackend)
