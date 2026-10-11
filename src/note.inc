@@ -1609,7 +1609,9 @@ NufNone:
 ; NOTE as well, and OPEN of a file NOTE over it is still another
 ; document (lf-1561). Nor when a load took the snapshot (UNDO_OTHER),
 ; even if FILE > DELETE left this document without a file since
-; (lf-1566). A saved snapshot is the file its name says. D = NoteSaved
+; (lf-1566), nor when UNDO swapped that load back and the snapshot is
+; now the saved file: it is still the other document (lf-1569).
+; Otherwise a saved snapshot is the file its name says. D = NoteSaved
 ; before the write. Returns carry clear, the save's success.
 NoteUndoSaved:
                 push    hl
@@ -1619,6 +1621,9 @@ NoteUndoSaved:
                 ld      a,h
                 or      l
                 jr      z,NusOther
+                ld      a,(NoteUndoSt)
+                bit     UNDO_OTHERB,a
+                jr      nz,NusOther             ; loaded over, saved or not
                 push    hl
                 ld      bc,NoteSaved-NoteBuf
                 add     hl,bc
@@ -1628,9 +1633,6 @@ NoteUndoSaved:
                 jr      nz,NusFile              ; a file's version: by its name
                 or      d
                 jr      nz,NusOther             ; never saved, and this had a file
-                ld      a,(NoteUndoSt)
-                bit     UNDO_OTHERB,a
-                jr      nz,NusOther             ; never saved, and loaded over
 NusFile:
                 ld      de,NoteBackend-NoteBuf
                 add     hl,de
