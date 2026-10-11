@@ -306,6 +306,12 @@ NbiCell:
                 djnz    NbiRow
                 ret
 
+; HL = a chunk. WinDraw left the interior blank (or NoteBlankInterior
+; did), so without a selection a blank chunk is not painted at all and
+; the others are copied by LDIR, not through WinPrint's 60 T a cell:
+; the WRAP-off compose of a 22x17 window, sixteen chunks at 0.45 ms
+; each, was 15.1 to 15.3 ms of a 60 Hz frame and dropped one
+; (lf-1583). A selection goes through WinPrint, inverted cells and all.
 NotePaintChunk:
                 ld      a,(NoteTop)
                 ld      c,a
@@ -319,28 +325,69 @@ NotePaintChunk:
                 ret     z
                 ret     c
                 inc     b
+                ld      a,(NoteAnchor+1)        ; $FF: nothing selected, the
+                inc     a                       ; usual case
+                jr      nz,NpcView
+                push    hl                      ; a space only when all
+                ld      a,(hl)                  ; fourteen are, as text is
+                rept    NOTECOLS-1              ; never below one
+                inc     hl
+                or      (hl)
+                endm
+                pop     hl
+                cp      ' '
+                ret     z
+NpcView:
+                ld      d,NOTECOLS
                 ld      a,(NoteLeftCol)
                 ld      c,a
                 ld      a,(NoteDrawX)
                 sub     c
                 jr      nc,NpcColumn
-                neg
+                neg                             ; the cells left of the view
                 cp      NOTECOLS
                 ret     nc
                 ld      e,a
-                ld      d,0
-                add     hl,de
+                ld      a,d
+                sub     e
+                ld      d,a
+                ld      a,l
+                add     a,e
+                ld      l,a
+                adc     a,h
+                sub     l
+                ld      h,a
                 xor     a
 NpcColumn:
                 ld      c,a
                 inc     c
                 xor     a
                 ld      (PrintInv),a
-                ld      a,(NoteAnchor+1)        ; $FF: nothing selected, the
-                inc     a                       ; usual case. 27 T a chunk
-                jp      z,WinPrint              ; against 240 for the call:
-                push    bc                      ; a full-screen compose at
-                call    NotePaintSelection      ; 60 Hz dropped a frame.
+                ld      a,(NoteAnchor+1)
+                inc     a
+                jr      nz,NpcSelection
+                ld      a,(WinW)                ; the cells up to the edge
+                dec     a
+                sub     c
+                ret     z
+                ret     c
+                cp      d
+                jr      c,NpcFit
+                ld      a,d
+NpcFit:
+                push    hl
+                push    af
+                call    WinCell
+                ex      de,hl
+                pop     af
+                pop     hl
+                ld      c,a
+                ld      b,0
+                ldir
+                ret
+NpcSelection:
+                push    bc
+                call    NotePaintSelection
                 pop     bc
                 jp      WinPrint
 
@@ -575,52 +622,125 @@ NllGot:
                 ret
 
 ; A = row: the rows from it down move down one, the last is lost.
+; One LDDR: a row at a time, with two NoteRowAddr calls each, ENTER
+; near the top paid 2 ms for it (lf-1583).
 NoteOpenRow:
                 ld      (NoteRowIx),a
-                ld      a,NOTELASTROW
-                ld      (NoteRowDst),a
-NorLoop:
-                ld      a,(NoteRowDst)
-                ld      hl,NoteRowIx
-                cp      (hl)
-                ret     z
-                dec     a
-                call    NoteRowAddr
-                push    hl
-                ld      a,(NoteRowDst)
-                call    NoteRowAddr
-                ex      de,hl
-                pop     hl
-                ld      bc,NOTESTRIDE
-                ldir
-                ld      a,(NoteRowDst)
-                dec     a
-                ld      (NoteRowDst),a
-                jr      NorLoop
+                cp      NOTELASTROW
+                ret     nc
+                neg
+                add     a,NOTELASTROW           ; the rows that move
+                call    NoteRowBytes
+                ld      hl,NoteBuf+NOTESIZE-NOTESTRIDE-1
+                ld      de,NoteBuf+NOTESIZE-1
+                lddr
+                ret
 
 ; A = row: removed, the rows below move up, the last is blanked.
 NoteCloseRow:
-                ld      (NoteRowDst),a
-NcrLoop:
-                ld      a,(NoteRowDst)
                 cp      NOTELASTROW
                 jr      nc,NcrBlank
-                inc     a
+                push    af
+                neg
+                add     a,NOTELASTROW
+                call    NoteRowBytes
+                pop     af
+                push    bc
                 call    NoteRowAddr
-                push    hl
-                ld      a,(NoteRowDst)
-                call    NoteRowAddr
-                ex      de,hl
-                pop     hl
+                ld      d,h
+                ld      e,l
                 ld      bc,NOTESTRIDE
+                add     hl,bc
+                pop     bc
                 ldir
-                ld      a,(NoteRowDst)
-                inc     a
-                ld      (NoteRowDst),a
-                jr      NcrLoop
 NcrBlank:
                 ld      a,NOTELASTROW
                 jp      NoteBlankRow
+
+; A = a count of rows. Returns BC = their bytes.
+NoteRowBytes:
+                ld      l,a
+                ld      h,0
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                ld      b,h
+                ld      c,l
+                ret
+
+; NoteDeleteCount characters at the chunk cursor, in one pass: the
+; rest of the logical line moves left by the count and its last cells
+; become spaces, what that many NoteDeleteAt calls leave. ENTER after
+; 13 characters and a join with BS or DEL called NoteDeleteAt once a
+; character, each a pass over the line: 8.4 and 10.0 ms of a 60 Hz
+; frame that dropped (lf-1583). HL and B walk the source, DE and C the
+; destination, each B and C the cells left in its chunk.
+NoteDeleteN:
+                call    NoteCurAddr
+                ld      a,(NoteCX)
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      a,NOTECOLS
+                sub     e
+                ld      b,a
+                ld      c,a
+                ld      d,h
+                ld      e,l
+                ld      a,(NoteDeleteCount)
+                or      a
+                ret     z
+NdnSkip:
+                inc     hl
+                dec     b
+                jr      nz,NdnSkipped
+                push    af
+                inc     hl                      ; the chunk's end: its link
+                ld      a,(hl)
+                inc     hl
+                ld      b,NOTECOLS
+                or      a
+                jr      z,NdnEnded              ; the line ends within the count
+                pop     af
+NdnSkipped:
+                dec     a
+                jr      nz,NdnSkip
+NdnCopy:
+                ld      a,(hl)
+                ld      (de),a
+                inc     de
+                dec     c
+                jr      nz,NdnSrc
+                inc     de                      ; the source is ahead: the
+                inc     de                      ; destination's chunk goes on
+                ld      c,NOTECOLS
+NdnSrc:
+                inc     hl
+                djnz    NdnCopy
+                inc     hl
+                ld      a,(hl)
+                inc     hl
+                ld      b,NOTECOLS
+                or      a
+                jr      nz,NdnCopy
+                jr      NdnBlank
+NdnEnded:
+                pop     af
+NdnBlank:
+                ld      a,' '
+NdnBlankCell:
+                ld      (de),a
+                inc     de
+                dec     c
+                jr      nz,NdnBlankCell
+                inc     de
+                ld      a,(de)
+                inc     de
+                ld      c,NOTECOLS
+                or      a
+                jr      nz,NdnBlank
+                ret
 
 ; Delete at the chunk cursor and pull the following chunks left.
 NoteDeleteAt:
@@ -706,14 +826,7 @@ NbHard:
                 ld      (hl),1
                 ld      a,(NoteJoinAt)
                 ld      (NoteCX),a
-NbJoinLoop:
-                ld      a,(NoteDeleteCount)
-                or      a
-                jp      z,NbJoined
-                dec     a
-                ld      (NoteDeleteCount),a
-                call    NoteDeleteAt
-                jr      NbJoinLoop
+                call    NoteDeleteN
 NbJoined:
                 call    NoteTrimTail
                 jp      NoteMarkEdited
@@ -841,14 +954,8 @@ NeTerm:
                 inc     (hl)
                 xor     a
                 ld      (NoteCX),a
-NeDelete:
-                ld      a,(NoteDeleteCount)
-                or      a
-                jp      z,NbJoined
-                dec     a
-                ld      (NoteDeleteCount),a
-                call    NoteDeleteAt
-                jr      NeDelete
+                call    NoteDeleteN
+                jp      NbJoined
 
 NoteLeft:
                 ld      a,(NoteCX)
@@ -1114,7 +1221,7 @@ NoteSaveAs:
                 call    nc,NoteUndoSaved
                 pop     hl
                 call    nc,NoteSetName
-                jp      NoteRestoreBackend
+                jr      NsRepaint
 NoteSave:
                 call    NoteSelectBackend
                 ld      a,(NoteSaved)
@@ -1123,6 +1230,12 @@ NoteSave:
                 pop     de                      ; D: saved before the write
                 ld      hl,NoteName
                 call    nc,NoteUndoSaved
+; The write and the snapshot's compare fill the frame of the save:
+; with the compose of the renamed window on top, the ENTER of SAVE
+; AS on RAM measured 19.3 ms at 60 Hz and dropped one (lf-1583). The
+; compose and the repaint are the next frame's.
+NsRepaint:
+                call    RepaintLater
                 jp      NoteRestoreBackend
 NoteSaveFile:
                 ld      hl,NoteName
@@ -1808,12 +1921,16 @@ NusName:
 NusCmp:
                 ld      a,(de)
                 cp      (hl)
-                jr      z,NusSame
-                ld      c,1
-NusSame:
-                inc     hl
-                inc     de
+                jr      nz,NusDiffer            ; one difference is enough: the
+                inc     hl                      ; whole compare was 3.6 ms of a
+                inc     de                      ; save's frame (lf-1583)
                 djnz    NusCmp
+                jr      NusSame
+NusDiffer:
+                ld      c,1
+                ld      hl,(NoteUndoP)
+                inc     h                       ; past the 256 bytes
+NusSame:
                 push    hl                      ; the snapshot's name
                 ld      de,NoteSaved-NoteName
                 add     hl,de
@@ -2184,6 +2301,7 @@ NoteOverwriteAnswer:
                 ld      a,(WndCur)
                 call    WndTouch
                 call    RowsAddLive
+                call    RepaintLater            ; as NoteSaveAs has it
                 xor     a
                 ld      (NoteResult),a
                 ld      a,(NoteClosePending)
@@ -3584,13 +3702,22 @@ NoteHomeWrap:
 ; the step cost no more than NWSMALL, the desktop under it is not
 ; repainted and no other notepad is waiting; otherwise it is the
 ; next frame's, the way WndOpenLater splits an open.
+; With WRAP off an edit's frame paints nothing and the next paints it
+; all: ENTER measured 16.7 to 19.2 ms on the 60 Hz machine with the
+; compose and the blit in its frame, and a typed key 15.3 to 15.9,
+; dropping one in two (lf-1583).
 NoteLayService:
                 ld      a,(SetWrap)
                 or      a
                 jr      nz,NlsOn
                 ld      a,(NwToggled)
                 or      a
-                ret     z
+                jr      nz,NlsOn
+                ld      a,(NwKeyed)
+                cp      2
+                jp      z,NlsOne
+                xor     a
+                ret
 NlsOn:
                 ld      a,(WndCount)
                 or      a

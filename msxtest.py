@@ -3009,17 +3009,18 @@ def wrap_checks(syms, fails):
     # ENTER after a line that fills its row (lf-1564): the caret's empty
     # row goes with the caret, no blank row stays between the lines, and
     # UP lands on the full line, not on that row. ENTER after a line of
-    # 13 or more drops a frame at 60 Hz already on cbfb61d (max frame
-    # 17199 us), so Dropped counts from the key after it.
+    # 13 or more dropped a frame at 60 Hz (17.2 ms); Dropped counts the
+    # whole route since lf-1583, and a line of 13 is asserted as well.
     full = b"ABCDEFGHIJKLMN"
-    enter_counted = enter + [(1, f"debug write memory {syms['Dropped']} 0; "
-                                 f"debug write memory {syms['Dropped'] + 1} 0")]
+    enter_counted = enter
     full_enter = new + text(full.decode()) + enter_counted + text("X")
     view("wrap-full-enter", full_enter, [full, b"X"], 1, 1, 0,
          rows_want=[full, b"X"], caret_want=(1, 1))
     view("wrap-full-enter-again", full_enter + enter_counted + text("Y"), [full, b"X", b"Y"], 1, 2, 0,
          rows_want=[full, b"X", b"Y"], caret_want=(2, 1))
     view("wrap-full-enter-up", full_enter + up, [full, b"X"], 1, 0, 0, caret_want=(0, 1))
+    view("wrap-13-enter", new + text(full[:13].decode()) + enter + text("X"), [full[:13], b"X"], 1, 1, 0,
+         rows_want=[full[:13], b"X"], caret_want=(1, 1))
     view("wrap-narrow-full-enter", new + s.to_minimum + text("ABCD") + enter_counted + text("X"), [b"ABCD", b"X"],
          1, 1, 0, w=6, h=4, rows_want=[b"ABCD", b"X"], caret_want=(1, 1))
     # WRAP off: eight lines, the grip to 6x4, and the caret on line 8 is in
@@ -3036,10 +3037,10 @@ def wrap_checks(syms, fails):
     # with text or the caret's line is the last row, not the top of 6x4
     # over empty lines. With the caret on the empty line 8 that is top 2
     # (lines 2-8); without the last ENTER the caret is on line 7 and the
-    # top 1 = 8 lines - 7 rows. The typing drops frames at 60 Hz already
-    # on ed738fa (Dropped 11-12 from boot), so Dropped counts the grip.
-    regrow_off = s.to_minimum + [(1, f"debug write memory {syms['Dropped']} 0; "
-                                    f"debug write memory {syms['Dropped'] + 1} 0")] + drag(106, 74, 160, 80)
+    # top 1 = 8 lines - 7 rows. The typing dropped 11 frames at 60 Hz
+    # (ENTER 16.7 to 19.2 ms, a key 15.3 to 15.9); Dropped counts the
+    # whole route since lf-1583.
+    regrow_off = s.to_minimum + drag(106, 74, 160, 80)
     for name, steps, cx, cy, top in [
             ("wrap-off-shrink-regrow", off_lines, 0, 8, 2),
             ("wrap-off-shrink-regrow-text", off_lines[:-len(text("A") + enter)] + text("A"), 1, 7, 1)]:
@@ -3054,6 +3055,18 @@ def wrap_checks(syms, fails):
               f"top {r.peek('NoteTop')}/{top}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}) expected ({cx}, {cy}), "
               f"size {r.peek('WinW')}x{r.peek('WinH')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
               f"Dropped={r.peek('Dropped', 2)}")
+    # The grip from 6x4 to the screen's edge with WRAP off (lf-1581): 22x17,
+    # the eight lines and the caret's in view from the top; the compose
+    # of that frame was 15.1 to 15.3 ms at 60 Hz and dropped one.
+    r = Run(syms, off_lines + s.to_minimum + drag(106, 74, 288, 208) + [(10, "")], "wrap-off-regrow-max", files={})
+    lines = [(i + 1, 1, b"A", False) for i in range(8)] + [(-1, 0, b"", False), (9, 1, b" ", True)]
+    want = compose(expected_nt(), [(8, 6, 22, 17, b"NOTEPAD", lines)])
+    check(fails, "wrap-off-regrow-max", r.nt() == want and r.peek("NoteTop") == 0
+          and (r.peek("WinW"), r.peek("WinH")) == (22, 17) and r.peek("SetWrap") == 0
+          and r.bytes("NoteBuf", 256) == note_width_document([b"A"] * 8 + [b""])
+          and r.peek("Dropped", 2) == 0,
+          f"top {r.peek('NoteTop')}, size {r.peek('WinW')}x{r.peek('WinH')}, "
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, Dropped={r.peek('Dropped', 2)}")
     r = view("wrap-resize-back", new + text(words.decode()) + shrink + regrow, [words], 2, 2, 0)
     check(fails, "wrap-resize-same", r.nt() == basic.nt() and r.bytes("NoteBuf", 256) == basic.bytes("NoteBuf", 256),
           f"after 16x9 -> 10x9 -> 16x9 the screen is {zlib.crc32(r.nt()):08x}, before {zlib.crc32(basic.nt()):08x}")
@@ -3252,8 +3265,7 @@ def resize_scroll_checks(syms, fails):
     # clear of the notepad's grip.
     clock = press(180, 3) + press(188, 11)
     grip = point(23 * 8 + 2, 14 * 8 + 2) + [(5, "key_down 6 0x02")] + point(255, 183)
-    zero = [(1, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0; "
-                f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}")]
+    zero = [(1, f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}")]
     lines = [(i + 1, 1, b" " * 22, False) for i in range(15)] + [(-1, 0, b"", False), (1, 1, b" ", True)]
     grown = (8, 6, 24, 17, b"NOTEPAD", lines)
     for name, bit, want_z in [("resize-key-next", 0x20, (1, 0)), ("resize-key-close", 0x10, (1,))]:
@@ -3279,12 +3291,11 @@ def resize_scroll_checks(syms, fails):
     # that frame, the heaviest of the grow, and dropped one at 50 and 60 Hz
     # (18.9 ms against 14.8 ms before it). Two lines from top 9 scan the
     # blank chunks below the rows in view: one at 24x17, three at 22x15,
-    # where 60 Hz dropped one as well. Dropped counts the grip only.
+    # where 60 Hz dropped one as well. Dropped counts the whole route.
     timing = [(1, f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
                f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")]
     off = [(5, f"debug write memory {syms['SetWrap']} 0")]
-    zero = [(1, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0; "
-                "note \"grip starts\"")]
+    zero = [(1, "note \"grip starts\"")]
     two = rows[:2]
     seed_two = [(5, "; ".join(f"debug write memory {syms['NoteBuf'] + i * 16 + j} {v}"
                              for i, row in enumerate(two) for j, v in enumerate(row)))]
@@ -4389,6 +4400,108 @@ def note_del_checks(syms, fails):
           f"dialogue {r.peek('DgOpenFlag')}, field {r.bytes('DgTextBuf', 3)!r}")
 
 
+
+def frame_checks(syms, fails):
+    """The frame budget at 60 Hz (lf-1583): the everyday routes the
+    sources of the ticket named, each from boot, assert Dropped = 0 next
+    to their result. The suite runs them at 50 and at 60 Hz. Typing and
+    ENTER (WRAP on and off), the join, the WRAP-off grip and the
+    preamble of sel-scroll are asserted in the wrap, resize and
+    selection groups, which no longer zero Dropped. FILE > OPEN and disk
+    I/O are the known exceptions (README, "Frame budget at 60 Hz"):
+    fb-open asserts that its drops stay within the picker and the load."""
+    print("frames:")
+    import re
+    s = wrap_steps(syms)
+    tap, text, point, drag = s.tap, s.text, s.point, s.drag
+    def shortcut(row, mask):
+        return [(5, "key_down 6 4")] + tap(row, mask) + [(5, "key_up 6 4")]
+    def mark(label):
+        d = syms["Dropped"]
+        return [(1, f"note \"mark {label} [expr {{[debug read memory {d}] + 256*[debug read memory {d + 1}]}}]\"")]
+    def marks(r):
+        return {k: int(v) for k, v in re.findall(r"mark (\S+) (\d+)", r.log)}
+    def frames(r):
+        return max(map(int, re.findall(r"frame us (\d+)", r.log)))
+    timing = [(1, f"debug set_bp {syms['FrameWatch']} {{}} {{set ::framestart [machine_info time]}}; "
+                  f"debug set_bp {syms['MainLoop']} {{}} {{if {{[info exists ::framestart]}} {{note \"frame us [expr {{round(([machine_info time] - $::framestart) * 1000000)}}]\"}}}}")]
+    nxt, clock, new = shortcut(5, 0x20), shortcut(4, 1), shortcut(4, 8)
+    grip = lambda x, y: (point(x, y) + [(5, "key_down 6 0x02")] + point(255, 183)
+                         + [(5, "key_up 6 0x02"), (10, "")])
+    # two notepads grown: the first to 24x17 at (8, 6), the second,
+    # cascaded to (10, 7), to 22x16 at the screen's corner
+    big = s.init + new + grip(23 * 8 + 2, 14 * 8 + 2)
+    two = big + new + [(10, "")] + grip(25 * 8 + 2, 15 * 8 + 2)
+    def blank(w, h):
+        return [(i + 1, 1, b" " * (w - 2), False) for i in range(h - 3)] + [(-1, 0, b"", False), (1, 1, b" ", True)]
+    first, second = (8, 6, 24, 17, b"NOTEPAD", blank(24, 17)), (10, 7, 22, 16, b"NOTEPAD", blank(22, 16))
+    for name, steps, z, windows in [
+            ("fb-focus-24", two + nxt, (0, 1), [second, first]),
+            ("fb-focus-24-back", two + nxt + [(10, "")] + nxt, (1, 0), [first, second])]:
+        r = Run(syms, timing + steps + [(10, "")], name, files={})
+        want = compose(expected_nt(), windows)
+        got_z = tuple(r.ram[syms["WndZ"] - WORK:syms["WndZ"] - WORK + r.peek("WndCount")])
+        check(fails, name, got_z == z and r.peek("WndCur") == z[0] and r.nt() == want
+              and r.peek("Dropped", 2) == 0,
+              f"z {got_z}/{z}, live {r.peek('WndCur')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # the 24x17 notepad behind the clock and in front of it again: the
+    # focus change repaints rows 4 to 22 (lf-1535, point 2)
+    r = Run(syms, timing + big + clock + [(10, "")] + nxt + [(10, "")], "fb-focus-clock", files={})
+    rec = syms["WndTab"] + syms["WNDRECSZ"] - WORK
+    clk = clock_win(r.ram[rec], r.ram[rec + 1], r.peek("ClkH"), r.peek("ClkM"))
+    want = compose(expected_nt(), [clk, first])
+    check(fails, "fb-focus-clock", r.peek("WndZ") == 0 and r.peek("WndCur") == 0 and r.nt() == want
+          and r.peek("Dropped", 2) == 0,
+          f"front {r.peek('WndZ')}, live {r.peek('WndCur')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+          f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # SAVE AS on RAM: GRAPH+S, the name, ENTER (lf-1556). The disk's
+    # write is the exception: there Dropped is 0 up to the ENTER and
+    # from the frame after the write.
+    hi = note_width_document([b"HI"])
+    steps = (s.init + new + text("HI") + shortcut(5, 1) + text("LETTER") + mark("enter") + s.enter
+             + mark("written") + [(10, "")] + mark("end"))
+    r = Run(syms, timing + steps, "fb-save", files={})
+    m = marks(r)
+    stored = read_disk_image(DISK).get("LETTER") if EXT else next(
+        (r.bytes("RamHeap", 1024)[i * 256:(i + 1) * 256] for i in range(4)
+         if r.bytes("RamDir", 64)[i * 16:i * 16 + 7] == b"LETTER\0"), None)
+    budget = m["end"] == 0 if not EXT else m["enter"] == 0 and m["end"] == m["written"]
+    check(fails, "fb-save", stored == hi and r.bytes("NoteName", 7) == b"LETTER\0" and r.peek("NoteModified") == 0
+          and budget,
+          f"file crc32 {zlib.crc32(stored or b''):08x}/{zlib.crc32(hi):08x}, name {r.bytes('NoteName', 7)!r}, "
+          f"Dropped {m}, max frame {frames(r)} us")
+    # A join with WRAP on, BS at the start of a line and DEL at the end
+    # of the one above (lf-1582): two lines of two chunks become one of
+    # three, the caret at (5, 1)
+    words = s.words[:19].decode()
+    joined = note_width_document([(words * 2).encode()])
+    left = [(5, "key_down 6 1")] + tap(8, 16) * 19 + [(5, "key_up 6 1")]
+    for name, keys in [("fb-join-bs", left + tap(7, 32)), ("fb-join-del", s.up + s.up + tap(8, 8))]:
+        r = Run(syms, timing + s.new + text(words) + s.enter + text(words) + keys + [(10, "")], name, files={})
+        want = compose(expected_nt(), [wrap_win(joined, 5, 1, 0)[0]])
+        check(fails, name, r.bytes("NoteBuf", 256) == joined and (r.peek("NoteCX"), r.peek("NoteCY")) == (5, 1)
+              and r.nt() == want and r.peek("Dropped", 2) == 0,
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(joined):08x}, "
+              f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+              f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # FILE > OPEN, SAVE and UNDO (lf-1562): the picker's frames and the
+    # load drop frames (the known exception); before them and from the
+    # frame after the load on, nothing is dropped, on RAM the save too.
+    beta = note_width_document([b"BETA"])
+    files = {"ALPHA": note_width_document([b"ALPHA"]), "BETA": beta}
+    seed = [] if EXT else seed_ram_steps(syms, files)
+    picker = s.click(88, 3) + s.click(96, 19) + [(15, "")] + s.down
+    steps = (seed + s.init + new + text("HI") + mark("open") + picker + s.enter + mark("loaded") + [(10, "")]
+             + mark("save") + shortcut(5, 1) + mark("saved") + [(10, "")] + mark("undo") + shortcut(5, 4)
+             + [(10, "")] + mark("end"))
+    r = Run(syms, timing + steps, "fb-open", files=files if EXT else None)
+    m = marks(r)
+    after = m["end"] - m["undo"] == 0 and (EXT or m["end"] - m["loaded"] == 0)
+    check(fails, "fb-open", m["open"] == 0 and after and r.bytes("NoteBuf", 256) == note_width_document([b"HI"])
+          and r.bytes("NoteName", 5) == b"NOTE\0",
+          f"Dropped at {m}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, name {r.bytes('NoteName', 5)!r}")
+
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)
     base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
@@ -4487,11 +4600,8 @@ def note_selection_checks(syms, fails):
     scroll = point + [(5, 'set ::throttle on'), (5, 'exec xdotool mousedown 1'),
                        (25, 'mouse_move 0 128'), (5, 'exec xdotool mouseup 1'),
                        (10, 'set ::throttle off')]
-    # Dropped counts the drag alone. A typed key frame with the icons under
-    # the window is 15.7 to 16.3 ms, measured on main as here, and at 60 Hz
-    # the preamble drops frames before the drag begins.
-    settle = [(5, f"debug write memory {syms['Dropped']} 0; debug write memory {syms['Dropped'] + 1} 0")]
-    r = Run(syms, hello + settle + scroll, 'sel-scroll', files={})
+    # Dropped counts the whole route, the typed preamble too (lf-1583).
+    r = Run(syms, hello + scroll, 'sel-scroll', files={})
     check(fails, 'sel-scroll', r.peek('NoteTop') > 0 and r.peek('NoteEnd', 2) >> 8 > 6
           and r.peek('Dropped', 2) == 0,
           f"top {r.peek('NoteTop')}, end {r.bytes('NoteEnd', 2).hex()}, Dropped {r.peek('Dropped', 2)}")
@@ -4533,6 +4643,9 @@ def main():
         return bool(fails)
     if sys.argv[1:] == ["--clipboard"]:
         clipboard_checks(syms, fails)
+        return bool(fails)
+    if sys.argv[1:] == ["--frames"]:
+        frame_checks(syms, fails)
         return bool(fails)
     if sys.argv[1:] == ["--del"]:
         note_del_checks(syms, fails)
@@ -4607,6 +4720,7 @@ def main():
     clipboard_checks(syms, fails)
     undo_checks(syms, fails)
     note_del_checks(syms, fails)
+    frame_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)

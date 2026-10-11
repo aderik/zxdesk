@@ -317,7 +317,6 @@ NOTESTSZ        equ     _ram-NoteState
                 var     NoteOldLink, 1
                 var     NoteDeleteCount, 1
                 var     NoteRowIx, 1
-                var     NoteRowDst, 1
                 var     NoteJoinAt, 1
                 var     NoteChar, 1
                 var     NoteHandle, 1

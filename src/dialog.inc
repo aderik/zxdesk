@@ -36,7 +36,13 @@ DgCountReady:
                 ld      (DgCount),a
                 ld      (DgLine1),hl
                 ld      (DgLine2),de
-                call    WinRedraw               ; settle any focus change first
+                ld      a,(RepaintDue)          ; settle any focus change first,
+                or      a                       ; now, even one that waits for
+                jr      z,DgSettle              ; the next frame
+                ld      a,1
+                ld      (RepaintDue),a
+DgSettle:
+                call    WinRedraw
                 xor     a
                 ld      (DgFocus),a
                 ld      de,DgSave

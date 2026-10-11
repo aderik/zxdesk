@@ -567,6 +567,116 @@ desktop repaint and blit happen in the next. Longest iterations now:
 the repaint after ABOUT opens over the calendar 13.4 ms, the raise
 13.1 ms, the calendar open 11.7 ms and its repaint 11.6 ms; 0 dropped.
 
+## Frame budget at 60 Hz (lf-1583)
+
+The frame observations of lf-1548, lf-1535 (point 2), lf-1556, lf-1562,
+lf-1567, lf-1581 and lf-1582, measured on main `7038703` and on this
+change. A loop iteration is timed with breakpoints at `FrameWatch` (the
+wake after HALT) and at the next `MainLoop` (`machine_info time`); the
+BIOS interrupt handler comes on top, so on C-BIOS JP an iteration of
+15.2 to 15.9 ms drops a frame or not depending on where it starts, and
+14.8 ms never did. Each route is booted fresh; "max" is the longest
+iteration from the scenario's first key or press on (the windows it
+starts from opened before that), `Dropped` counts from boot.
+
+| scenario (source) | main EU max / Dropped | main JP | now EU | now JP |
+|---|---|---|---|---|
+| HELLO WORLD typed over the icons and the drag, `sel-scroll` (lf-1548) | 13.2 ms / 0 | 13.2 / 0 | 13.2 / 0 | 13.2 / 0 |
+| HELLO WORLD typed with a second notepad open (lf-1548) | 11.2 / 0 | 11.2 / 0 | 11.2 / 0 | 11.2 / 0 |
+| GRAPH+X twice between notepads of 24x17 and 22x16 (lf-1548) | 22.4 / 2 | 20.6 / 2 | 11.0 / 0 | 11.0 / 0 |
+| GRAPH+X twice, a 24x17 notepad and the clock (GRAPH+K) (lf-1535) | 16.2 / 0 | 16.4 / 2 | 11.3 / 0 | 11.3 / 0 |
+| GRAPH+X in the release frame of a grow to 24x17, the clock in front (lf-1535) | 15.1 / 0 | 15.2 / 1 | 12.9 / 0 | 12.9 / 0 |
+| SAVE AS on RAM: GRAPH+S, LETTER, ENTER (lf-1556) | 17.3 / 0 | 19.3 / 1 | 10.7 / 0 | 10.7 / 0 |
+| `undo-open-save` on RAM: FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562) | 30.4 / 2 | 30.4 / 3 | 30.4 / 2 | 30.4 / 3 |
+| ENTER after a line of 13, WRAP on (lf-1567) | 17.1 / 0 | 17.3 / 1 | 11.9 / 0 | 11.9 / 0 |
+| ENTER after a line of 14, WRAP on (`wrap-full-enter`) | 14.8 / 0 | 14.8 / 0 | 11.4 / 0 | 11.4 / 0 |
+| AB, ENTER, CDE, ENTER with WRAP off | 18.0 / 0 | 18.2 / 2 | 9.9 / 0 | 9.9 / 0 |
+| eight lines of A + ENTER with WRAP off, the grip to 6x4 and to 22x17 (lf-1581) | 17.5 / 0 | 19.1 / 11 to 12 | 11.6 / 0 | 11.6 / 0 |
+| BS at the start of a line of 19 after one of 19, WRAP on (lf-1582) | 18.5 / 0 | 18.7 to 20.5 / 1 | 11.6 / 0 | 11.6 / 0 |
+| DEL at the end of the first of those lines (lf-1582) | 18.9 / 0 | 19.1 / 1 | 12.0 / 0 | 12.0 / 0 |
+
+The grip of lf-1581 itself was 15.1 to 15.3 ms at 60 Hz (dropped one in
+two runs); the eleven drops on main are its typed preamble. The join of
+lf-1582 had never been measured: `NbHard` took **10.3 ms** of that
+frame on main and takes **3.4 ms** now; `NoteEnter` after 13 characters
+**8.0 → 2.8 ms**; `NoteUndoSaved` in the save **4.6 → 0.6 ms**.
+
+What changed, each measured on its own route:
+
+- **One pass for a delete of N characters** (`NoteDeleteN`): ENTER
+  removed the characters before the caret from the new line and a join
+  removed the padding of the joined chunk with one `NoteDeleteAt` a
+  character, each a pass over the rest of the line.
+- **Row moves by one LDDR/LDIR** (`NoteOpenRow`, `NoteCloseRow`): a row
+  at a time with two `NoteRowAddr` calls was 2 ms of an ENTER near the
+  top.
+- **WRAP off: an edit's frame paints nothing, the next paints it all**,
+  as WRAP on already split it (`NoteLayService`, `NwKeyed` 2). A typed
+  key was 15.3 to 15.9 ms, ENTER 16.7 to 19.2.
+- **The chunk painter** (`NotePaintChunk`, both WRAP off): WinDraw
+  leaves the interior blank, so a blank chunk is not painted and the
+  others are copied by LDIR instead of `WinPrint`'s 60 T a cell, unless
+  a selection is shown.
+- **A focus change repaints no desktop and waits a frame**
+  (`WndFocusTo`): nothing moves, so the rows of the two windows are
+  blitted again back to front, without the desktop and its icons (4.2
+  ms at 24x17), in the frame after the select (two state copies, 4.1
+  ms). `RepaintDue` 2 is now checked at the top of `WinRedraw`, before
+  the resize compose and the wrap layout, so "paint next frame" holds
+  for all of them; `DgOpen` still settles a pending change at once.
+- **The resize compose puts the front back live** (`WrdCompose`): the
+  repaint's select of it was 2.2 ms of a 15.1 ms frame after GRAPH+X in
+  the release frame.
+- **The save**: the snapshot's compare stops at the first difference,
+  and the compose and repaint after the write are the next frame's
+  (`RepaintLater`).
+
+`./test.sh --frames` (in the default suite), each from boot with
+`Dropped` asserted next to the result:
+
+| subject | asserts |
+|---|---|
+| fb-focus-24, fb-focus-24-back | two notepads grown to 24x17 and 22x16, GRAPH+X once and twice: z order, the live window, the screen against the compositor, Dropped 0 |
+| fb-focus-clock | a 24x17 notepad, GRAPH+K, GRAPH+X: the notepad in front over the clock as composed, Dropped 0 |
+| fb-save | SAVE AS on RAM: the file LETTER is HI byte for byte, the name, unmodified, Dropped 0; with the disk Dropped is 0 up to the ENTER and after the write |
+| fb-join-bs, fb-join-del | the BS and DEL joins of two lines of 19 with WRAP on: the 256 bytes, the caret (5, 1), the screen against `wrap_win`, Dropped 0 |
+| fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; Dropped 0 before the OPEN and after the load (after the save on disk): the exception below is bounded |
+
+And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
+zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
+`wrap-off-regrow-max` (lf-1581: 22x17, the screen, Dropped 0) are new;
+`wrap-off-shrink-regrow`, `resize-key-next`/`-close` and the `grow-off`
+subjects count the whole route too.
+
+**Known exceptions**, measured and not in one frame:
+
+- **Disk I/O.** On Roms_MSX1 + Roms_Disk a save of a notepad is one loop
+  iteration of **6.43 s** (Dropped 302 to 304) and the route of
+  `undo-open-save` drops **549**: the picker's open 55 ms, a move 52 ms,
+  the load **1.25 s**, the save **10.0 s**. The BDOS call does not
+  return within a frame and nothing here can split it.
+- **FILE > OPEN on RAM.** The picker is the commander's window at the
+  size of the screen, composed and blitted whole: its open measured
+  **32.3 ms** (the window and two pane reads 7 ms, the desktop and blit
+  of 17 rows 7 ms, the compose 8 ms), each SHIFT+DOWN in it **21.4 ms**
+  (a full recompose and blit), the load with ENTER **27.0 ms**:
+  `Dropped` 2 at 50 Hz and 3 at 60 Hz for the route. A commander that
+  repaints only the rows a move changes is a change of its own;
+  `fb-open` bounds the drops to these frames.
+- Not among this ticket's sources, measured along the way: the clock
+  opened from the VIEW menu over a 24x17 notepad is **17.4 ms** at 60
+  Hz and drops one (the flush of the closed menu's rows, 4.4 ms, then
+  the repaint of 17 rows with the desktop); with GRAPH+K it is 12.9 ms,
+  0 dropped. Left for a ticket of its own.
+
+Budget against `7038703`: normal ROM **24,420 → 24,572 bytes (+152)**,
+TEST ROM **26,177 → 26,329 (+152)**; static RAM **4,019 → 4,018 (-1)**,
+TEST **6,751 → 6,750** (`NoteRowDst` is gone); heap **8,269 → 8,270**
+without a disk ROM and **2,884 → 2,885** with one (TEST 5,537 → 5,538
+and 152 → 153). No new allocation. Padded ROM crc32: normal
+**b7a86a4b**, TEST **fedafa4d**. `./test.sh`: C-BIOS_MSX1_EU 721 ok,
+C-BIOS_MSX1_JP 711 ok, all subjects pass.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
@@ -1515,7 +1625,8 @@ chunk gives **cb065de7**. Reverse chunk selection has screen CRC32
 has CRC32 **6f18e610**.
 
 The drag-scroll subject measures **Dropped = 0** on both frequencies for
-the drag alone: the counter is zeroed after the typed preamble. Measured
+the drag alone: the counter is zeroed after the typed preamble (since
+lf-1583 it counts the whole route, see "Frame budget at 60 Hz"). Measured
 with breakpoints at `FrameWatch` and `MainLoop` on the 60 Hz machine, a
 typed key frame with the icons under the window is 15.7 to 15.9 ms on
 `0ed9256` and 16.0 to 16.3 ms here (state write-back and row marking
