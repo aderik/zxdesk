@@ -356,6 +356,8 @@ CmdKey:
                 jp      z,CmdDown
                 cp      KEY_DELETE
                 jp      z,CmdAskDialog
+                cp      KEY_DEL
+                jp      z,CmdAskDialog
                 ld      b,a
                 ld      a,(CmdBrowse)
                 or      a

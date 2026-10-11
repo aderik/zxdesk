@@ -686,6 +686,11 @@ NbDelete:
 NbHard:
                 ; Join at a hard newline by linking its chunks. Keeping
                 ; padding here would add spaces, so delete the unused tail.
+                ; An empty line joined leaves the links as they were but
+                ; the lines below move up: NkEdited lays them all out again
+                ; (lf-1572).
+                ld      a,$FF
+                ld      (NwLinks),a
                 ld      a,(NoteCY)
                 dec     a
                 call    NoteLineLen
@@ -712,6 +717,43 @@ NbJoinLoop:
 NbJoined:
                 call    NoteTrimTail
                 jp      NoteMarkEdited
+
+; DEL: the character under the caret goes and the caret stays. At the
+; end of a line the next line joins this one, as BS at that line's
+; start would; where only blank lines follow, the document has ended
+; and nothing happens (lf-1572).
+NoteForward:
+                call    NoteCurLink
+                ld      a,(hl)
+                or      a
+                jr      nz,NfChar               ; the line goes on past this chunk
+                ld      a,(NoteCY)
+                call    NoteLineLen
+                ld      hl,NoteCX
+                cp      (hl)
+                jr      z,NfJoin
+                jr      nc,NfChar               ; text from the caret on
+NfJoin:
+                ld      a,(NoteCY)
+NfFind:
+                inc     a
+                cp      NOTEROWS
+                ret     nc                      ; nothing but blank lines follow
+                ld      (NoteRowIx),a
+                call    NoteLineLen
+                or      a
+                ld      a,(NoteRowIx)
+                jr      z,NfFind
+                call    NoteUndoDue             ; with the caret where it is
+                ld      hl,NoteCY
+                inc     (hl)
+                xor     a
+                ld      (NoteCX),a
+                jp      NoteBack
+NfChar:
+                call    NoteUndoDue
+                call    NoteRight               ; past it, then BS: the caret
+                jp      NoteBack                ; comes back where it was
 
 ; Reclaim empty continuation chunks after deleting/splitting. Hard
 ; blank lines remain intact. A caret on a reclaimed chunk becomes the
@@ -958,6 +1000,8 @@ NoteKey:
 NkSelectionEdit:
                 cp      KEY_DELETE
                 jr      z,NkEraseSelection
+                cp      KEY_DEL
+                jr      z,NkEraseSelection
                 cp      KEY_ENTER
                 jr      z,NkReplaceSelection
                 cp      ' '
@@ -972,7 +1016,7 @@ NkReplaceSelection:
 NkEraseSelection:
                 call    NoteEraseSelection
                 jp      nz,NkEdited             ; the table: lines may have gone
-                ld      a,KEY_DELETE
+                ld      a,(NoteChar)            ; no selection: BS or DEL
 NkNavigation:
                 cp      KEY_LEFT
                 jr      nz,NkNotL
@@ -1006,6 +1050,11 @@ NkNotD:
                 call    NoteBack
                 jr      NkEdited
 NkNotBs:
+                cp      KEY_DEL
+                jr      nz,NkNotDel
+                call    NoteForward
+                jr      NkEdited
+NkNotDel:
                 cp      KEY_ENTER
                 jr      nz,NkNotEnt
                 call    NoteEnter
@@ -1604,16 +1653,19 @@ UNDO_DUEB       equ     2                       ; bit: the next change takes it
 UNDO_OTHERB     equ     3                       ; bit: a load took it, another document
 UNDO_OTHER      equ     8
 
-; Before NoteKey acts: a character, DELETE or ENTER is an edit, which
+; Before NoteKey acts: a character, BS, DEL or ENTER is an edit, which
 ; starts a group when none is open; anything else ends the group. The
-; snapshot waits for the edit's first change (NoteUndoDue): a DELETE
-; at 0,0 or a key into a full document changes nothing and keeps the
+; snapshot waits for the edit's first change (NoteUndoDue): a BS at
+; 0,0, a DEL at the document's end or a key into a full document
+; changes nothing and keeps the
 ; snapshot there was (lf-1557). Over a selection the edit always takes
 ; one, and a DELETE or ENTER there ends it again: the erase was the
 ; whole group.
 NoteUndoKey:
                 ld      a,(NoteChar)
                 cp      KEY_DELETE
+                jr      z,NukEdit
+                cp      KEY_DEL
                 jr      z,NukEdit
                 cp      KEY_ENTER
                 jr      z,NukEdit

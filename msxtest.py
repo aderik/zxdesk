@@ -2608,15 +2608,15 @@ def tape_checks(syms, fails):
           f"name {rr.bytes('NoteName', 6)}, 256 bytes crc32 {zlib.crc32(loaded):08x}")
 
     # That payload has no chunk structure: it opens as sixteen full hard
-    # lines. Nothing precedes the caret at 0,0 (BS and DEL both delete
-    # backwards) and no line has room, so the keys there change nothing;
-    # one step right (SHIFT+RIGHT: plain arrows move the pointer), BS
-    # deletes and the line it freed takes a character (lf-1560).
+    # lines. Nothing precedes the caret at 0,0 and no line has room, so
+    # A and BS there change nothing; one step right (SHIFT+RIGHT: plain
+    # arrows move the pointer), BS deletes and the line it freed takes a
+    # character (lf-1560).
     full = b"".join(payload[i:i + 14] + b"\0\0" for i in range(0, 256, 16))
     refused = [(5, f'set f [open $::out/refused.bin wb]; puts -nonewline $f '
                 f'[debug read_block memory {ts["NoteBuf"]} 256]; close $f')]
     rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")] + reopen + [(10, "")]
-             + tap(2, 0x40) + tap(7, 0x20) + tap(8, 0x08) + refused
+             + tap(2, 0x40) + tap(7, 0x20) + refused
              + [(3, "key_down 6 1")] + tap(8, 0x80) + [(3, "key_up 6 1")]
              + tap(7, 0x20) + tap(2, 0x40) + [(10, "")], "tape-full", rom=rom)
     before = open(os.path.join(OUT, "tape-full", "refused.bin"), "rb").read()
@@ -2625,6 +2625,17 @@ def tape_checks(syms, fails):
           and after == b"A" + full[1:14] + full[14:] and rr.peek("NoteModified") == 1
           and rr.peek("NoteCX") == 1 and rr.peek("NoteCY") == 0,
           f"opened crc32 {zlib.crc32(before):08x}, expected {zlib.crc32(full):08x}; "
+          f"edited crc32 {zlib.crc32(after):08x}, row 0 {after[:14]}")
+    # DEL at 0,0 deletes forward (lf-1572): the first character goes, the
+    # caret stays, and A goes in where it was.
+    rr = Run(ts, new + [(5, f"cassetteplayer insert {path}")] + reopen + [(10, "")]
+             + tap(8, 0x08) + refused + tap(2, 0x40) + [(10, "")], "tape-full-del", rom=rom)
+    deleted = open(os.path.join(OUT, "tape-full-del", "refused.bin"), "rb").read()
+    after = rr.bytes("NoteBuf", 256)
+    check(fails, "tape-full-del", rr.peek("NoteResult") == 0
+          and deleted == full[1:14] + b" " + full[14:] and after == b"A" + full[1:14] + full[14:]
+          and rr.peek("NoteModified") == 1 and rr.peek("NoteCX") == 1 and rr.peek("NoteCY") == 0,
+          f"after DEL crc32 {zlib.crc32(deleted):08x}, row 0 {deleted[:14]}; "
           f"edited crc32 {zlib.crc32(after):08x}, row 0 {after[:14]}")
 
     # A header name SAVE AS would refuse opens as NOTE, so the FILE > SAVE
@@ -3936,10 +3947,10 @@ def undo_checks(syms, fails):
     # ENTER ends the group it is in: what follows is a group of its own.
     r = Run(syms, base + typed("AB") + enter + typed("CD") + undo + [(10, "")], "undo-enter", files={})
     expect("undo-enter", r, [b"AB", b""], 0, 1, 1)
-    # A key that changes nothing starts no group (lf-1557): DELETE at
-    # 0,0 keeps the snapshot of HELLO's group, so UNDO is the empty
-    # document and the redo HELLO.
-    noop = base + typed("HELLO") + arrows(16, 5) + tap(8, 8)
+    # A key that changes nothing starts no group (lf-1557): BS at 0,0
+    # keeps the snapshot of HELLO's group, so UNDO is the empty document
+    # and the redo HELLO. (DEL deletes forward since lf-1572.)
+    noop = base + typed("HELLO") + arrows(16, 5) + tap(7, 32)
     r = Run(syms, noop + undo + [(10, "")], "undo-noop", files={})
     expect("undo-noop", r, [], 0, 0, 0)
     r = Run(syms, noop + undo + undo + [(10, "")], "undo-noop-redo", files={})
@@ -4216,6 +4227,89 @@ def undo_checks(syms, fails):
     expect("undo-heap-after", r, [b"HIJ"], 3, 0, 1)
 
 
+def note_del_checks(syms, fails):
+    """DEL deletes forward (lf-1572): the character under the caret goes
+    and the caret stays; at a line's end the next line joins it, at the
+    document's end nothing changes. A selection goes as with BS, the key
+    is one undo group as BS is, and dialogs keep DEL as BS. Each with
+    WRAP on (the screen against wrap_win) and off; all 256 bytes, the
+    caret and NoteModified asserted."""
+    print("note del:")
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n):
+        return [(5, 'key_down 6 1')] + tap(8, mask) * n + [(5, 'key_up 6 1')]
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    left, up = 16, 32
+    dele, bs, enter, select = tap(8, 8), tap(7, 32), tap(7, 128), tap(7, 64)
+    undo, save = shortcut(5, 4), shortcut(5, 1)
+    def expect(name, steps, lines, cx, cy, modified=1, wrap=1):
+        off = [] if wrap else [(5, f"debug write memory {syms['SetWrap']} 0")]
+        r = Run(syms, off + base + steps + [(10, "")], name, files={})
+        want_doc = note_width_document(lines)
+        doc = r.bytes("NoteBuf", 256)
+        screen = True
+        if wrap:
+            want = compose(expected_nt(), [wrap_win(want_doc, cx, cy, 0)[0]])
+            screen = r.nt() == want
+        check(fails, name, doc == want_doc and (r.peek("NoteCX"), r.peek("NoteCY")) == (cx, cy)
+              and r.peek("NoteModified") == modified and r.peek("SetWrap") == wrap
+              and r.peek("NoteAnchor", 2) >> 8 == 255 and screen,
+              f"document crc32 {zlib.crc32(doc):08x}/{zlib.crc32(want_doc):08x}, row 0 {doc[:14]!r}, "
+              f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}) expected ({cx}, {cy}), "
+              f"modified {r.peek('NoteModified')}, screen {'ok' if screen else f'{zlib.crc32(r.nt()):08x}'}")
+        return r
+
+    long = "ABCDEFGHIJKLMNOPQR"                       # 18: two chunks, linked
+    for wrap, mode in ((1, "on"), (0, "off")):
+        # at the line's start, in its middle, across the chunk boundary
+        expect(f"del-first-{mode}", typed("HELLO") + arrows(left, 5) + dele, [b"ELLO"], 0, 0, wrap=wrap)
+        expect(f"del-mid-{mode}", typed("HELLO") + arrows(left, 3) + dele, [b"HELO"], 2, 0, wrap=wrap)
+        expect(f"del-twice-{mode}", typed("HELLO") + arrows(left, 3) + dele + dele, [b"HEO"], 2, 0, wrap=wrap)
+        expect(f"del-chunk-{mode}", typed(long) + arrows(left, 5) + dele,
+               [long.replace("N", "").encode()], 13, 0, wrap=wrap)
+        expect(f"del-chunk-next-{mode}", typed(long) + arrows(left, 4) + dele,
+               [long.replace("O", "").encode()], 0, 1, wrap=wrap)
+        # the line's end: the next line joins, past an empty line too
+        expect(f"del-join-{mode}", typed("AB") + enter + typed("CD") + arrows(up, 1) + dele,
+               [b"ABCD"], 2, 0, wrap=wrap)
+        expect(f"del-join-empty-{mode}", typed("AB") + enter + enter + typed("CD") + arrows(up, 2)
+               + arrows(128, 2) + dele, [b"AB", b"CD"], 2, 0, wrap=wrap)
+        # BS on that empty line joins it the same way: the screen too
+        expect(f"bs-join-empty-{mode}", typed("AB") + enter + enter + typed("CD") + arrows(up, 1)
+               + tap(8, 2) + bs, [b"AB", b"CD"], 2, 0, wrap=wrap)
+        # the document's end, after the text or on a blank line after it
+        expect(f"del-end-{mode}", typed("HELLO") + dele, [b"HELLO"], 5, 0, wrap=wrap)
+        expect(f"del-end-blank-{mode}", typed("AB") + enter + dele, [b"AB", b""], 0, 1, wrap=wrap)
+        # a selection goes, as with BS
+        expect(f"del-selection-{mode}", typed("HELLO WORLD") + arrows(left, 11) + select
+               + arrows(128, 5) + dele, [b" WORLD"], 0, 0, wrap=wrap)
+        # BS still deletes backwards
+        expect(f"del-bs-{mode}", typed("HELLO") + arrows(left, 3) + bs, [b"HLLO"], 1, 0, wrap=wrap)
+
+    # Undo: DEL after a cursor key is one group, as BS is, two of them
+    # too; the redo is the DEL again. DEL at the end changes nothing and
+    # starts no group: UNDO is the empty document.
+    dels = typed("HELLO") + arrows(left, 5) + dele + dele
+    expect("del-undo", dels + undo, [b"HELLO"], 0, 0)
+    expect("del-undo-redo", dels + undo + undo, [b"LLO"], 0, 0)
+    expect("del-undo-join", typed("AB") + enter + typed("CD") + arrows(up, 1) + dele + undo,
+           [b"AB", b"CD"], 2, 0)
+    expect("del-undo-noop", typed("HELLO") + dele + undo, [], 0, 0, modified=0)
+
+    # The SAVE dialog's name field keeps DEL as BS.
+    r = Run(syms, base + typed("HI") + save + typed("AB") + dele + [(10, "")], "del-dialog", files={})
+    check(fails, "del-dialog", r.peek("DgOpenFlag") == 1 and r.bytes("DgTextBuf", 2) == b"A\0",
+          f"dialogue {r.peek('DgOpenFlag')}, field {r.bytes('DgTextBuf', 3)!r}")
+
+
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)
     base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
@@ -4361,6 +4455,9 @@ def main():
     if sys.argv[1:] == ["--clipboard"]:
         clipboard_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--del"]:
+        note_del_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--undo"]:
         undo_checks(syms, fails)
         return bool(fails)
@@ -4430,6 +4527,7 @@ def main():
     note_selection_checks(syms, fails)
     clipboard_checks(syms, fails)
     undo_checks(syms, fails)
+    note_del_checks(syms, fails)
     note_load_checks(syms, fails)
     resize_scroll_checks(syms, fails)
     tape_checks(syms, fails)

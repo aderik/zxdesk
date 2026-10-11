@@ -308,6 +308,8 @@ DgInputKey:
                 jp      z,DiRight
                 cp      KEY_DELETE
                 jp      z,DiBack
+                cp      KEY_DEL                 ; as BS in a text field
+                jp      z,DiBack
                 cp      '!'
                 ret     c
                 cp      127
