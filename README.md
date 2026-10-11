@@ -1469,7 +1469,8 @@ and plain arrows extend it with KEY PTR OFF. Mouse press places the caret,
 drag selects whole cells, and dragging beyond the viewport scrolls it.
 SELECT again stops extending while retaining the selection. ESC or a
 click without dragging clears it. Typing replaces it; BS and DEL delete
-it. HELP > KEYS now includes SELECT MARK.
+it (without a selection BS deletes backwards and DEL forwards, since
+lf-1572). HELP > KEYS now includes SELECT MARK.
 
 Each Notepad owns four endpoint bytes: anchor X/Y and exclusive end X/Y
 in document chunks. Anchor X bit 7 enables marking; anchor Y of $FF means
@@ -1834,3 +1835,55 @@ in the notepad's state, `NOTESTSZ` 282 → 285. Heap at boot **8,273 →
 5,538 and 156 → 153). Each open notepad costs **285 heap bytes more**:
 the 278-byte snapshot, its 4-byte header and the 3 state bytes.
 
+## DEL deletes forward (lf-1572)
+
+DEL has a key code of its own, `KEY_DEL` (7), in both keyboard tables;
+BS stays `KEY_DELETE` (8). The dialogs' text field and the commander
+treat `KEY_DEL` as `KEY_DELETE`, so DEL works there as before (back
+over a character, delete the file).
+
+In Notepad DEL now follows the MSX convention (`NoteForward`): the
+character under the caret goes and the caret stays. At the end of a
+line the next line joins this one, as BS at that line's start would;
+from the padding after a line's text the caret lands at the text's end.
+Where only blank lines follow the caret, the document has ended and DEL
+changes nothing (no undo snapshot either). Over a selection DEL erases
+it, as BS does, and a DEL is an edit for undo as a BS is: a run of
+them after a cursor key is one group, the snapshot taken with the caret
+where it was. A full document (the `tape-full` payload) takes a DEL at
+0,0, and then a character typed there.
+
+Joining an empty line (BS on it, or DEL at the end of the line above)
+left the sixteen links as they were, so with WRAP on the window kept
+the old layout although the lines below had moved up; `NbHard` now
+spoils the saved links, and the whole document is laid out again.
+Already so on 9046a6d for BS.
+
+`./test.sh --del` (in the default suite), each `-on` and `-off` for
+WRAP; the 256 document bytes against `note_width_document`, the caret,
+NoteModified and, with WRAP on, the screen against `wrap_win`:
+
+| subject | asserts |
+|---|---|
+| del-first, -mid, -twice | HELLO, SHIFT+LEFT x5 / x3, DEL: `ELLO` (2834a4f6) at (0, 0), `HELO` (04aa7282) at (2, 0); DEL DEL: `HEO` |
+| del-chunk, -chunk-next | 18 letters, DEL at (13, 0) and (0, 1): N and O go across the chunk boundary, the caret stays |
+| del-join, -join-empty | AB / CD, DEL at the end of AB: `ABCD` (c301e9ec), caret (2, 0); AB / blank / CD: AB / CD (e1909815) |
+| bs-join-empty | BS on that blank line: AB / CD, the screen too |
+| del-end, -end-blank | DEL after HELLO, and on the blank line after AB: nothing changes |
+| del-selection, del-bs | DEL erases a selection; BS still deletes backwards (`HLLO`) |
+| del-undo, -redo, -undo-join, -undo-noop | two DELs are one group: UNDO is HELLO at (0, 0), the redo `LLO`; a join undone; a DEL at the end takes no snapshot (UNDO is the blank document, unmodified) |
+| del-dialog | the SAVE dialog's field: AB, DEL: `A` |
+| tape-full-del (`--tape`) | the full tape document, DEL at 0,0: the first character gone (a3b9579d), then A typed: crc32 80e60bd4, caret (1, 0) |
+
+`tape-full` no longer presses DEL among the refused keys. `undo-noop`
+presses BS at 0,0 instead of DEL, its intent since lf-1557.
+
+Control, these subjects on the sources of dafaf7d: every DEL subject
+fails except del-selection, del-undo-join, del-undo-noop and del-dialog
+(the old DEL as BS gives the same result there), and bs-join-empty-on
+fails; tape-full-del fails (crc32 6b4ca544, nothing deleted).
+
+Base 9046a6d → this change: normal ROM **24,231 → 24,327 bytes (+96)**,
+TEST ROM **25,988 → 26,084 (+96)**; static RAM 4,018 and heap 8,270 /
+2,885 unchanged (0 bytes). `./test.sh`: C-BIOS_MSX1_EU 701 ok, JP 694
+ok, all subjects pass; `MSX_MACHINE=Roms_MSX1 ./test.sh --tape` 22 ok.
