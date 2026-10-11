@@ -638,6 +638,7 @@ What changed, each measured on its own route:
 |---|---|
 | fb-focus-24, fb-focus-24-back | two notepads grown to 24x17 and 22x16, GRAPH+X once and twice: z order, the live window, the screen against the compositor, Dropped 0 |
 | fb-focus-clock | a 24x17 notepad, GRAPH+K, GRAPH+X: the notepad in front over the clock as composed, Dropped 0 |
+| fb-edit-menu | a 24x17 notepad, EDIT opened by the mouse (lf-1549): the drop with its four items grey over the notepad as composed, Dropped 0 |
 | fb-save | SAVE AS on RAM: the file LETTER is HI byte for byte, the name, unmodified, Dropped 0; with the disk Dropped is 0 up to the ENTER and after the write |
 | fb-join-bs, fb-join-del | the BS and DEL joins of two lines of 19 with WRAP on: the 256 bytes, the caret (5, 1), the screen against `wrap_win`, Dropped 0 |
 | fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; Dropped 0 before the OPEN and after the load (after the save on disk): the exception below is bounded |
@@ -1692,7 +1693,9 @@ if typed, over a selection if there is one; the document and the
 thirteen cursor, flag and selection bytes (`NOTECURSZ`) are saved in
 `CmdBuf` and `CmdWork` first, and a byte that does not fit puts all of
 it back and opens DOCUMENT FULL: no half pasted text. Nothing to act on
-(no selection, an empty clipboard, no notepad in front) does nothing.
+(no selection, an empty clipboard, no notepad in front) does nothing,
+and since lf-1549 the menu shows it: such an item is painted grey (see
+"EDIT items in grey").
 
 After a cut or a paste the buffer is composed in the same frame and
 the desktop repaint and blit happen in the next, the split mouse
@@ -1710,7 +1713,7 @@ what `clip-paste2` and `clip-full` report as Dropped).
 
 | subject | asserts |
 |---|---|
-| clip-bar, clip-menu | the boot name table with the five titles equals the compositor (crc32 bda22fd6 on C-BIOS), and EDIT open equals it painted from the ROM's MenuDefs (da32df12) |
+| clip-bar, clip-menu | the boot name table with the five titles equals the compositor (crc32 bda22fd6 on C-BIOS), and EDIT open equals it painted from the ROM's MenuDefs, its four items grey since lf-1549 (no window in front) |
 | clip-copy | HELLO selected, GRAPH+Y: ClipBuf HELLO, ClipLen 5, the 256 document bytes and the selection unchanged |
 | clip-cut, clip-cut-menu | GRAPH+E and EDIT > CUT: the document ` WORLD` (3bc1feef), clipboard HELLO, caret (0, 0), no selection, the screen as composed |
 | clip-paste2, clip-paste2-menu | copied in notepad 1, GRAPH+N, pasted in notepad 2 by key and by menu: notepad 2's 256 bytes are `HELLO` (3771117c), caret (5, 0), HELLO and the caret in its window, notepad 1's state block untouched |
@@ -1915,7 +1918,9 @@ text under the new file's name. When the allocation fails the notepad
 opens and works as before, `NoteUndoP` is 0, UNDO does nothing and the
 EDIT menu paints it grey: codes $01-$04 hold U, N, D and O from the
 BIOS font in the lattice's grey (`LoadDim`, `T_DIM`), in all three
-thirds.
+thirds. Since lf-1549 UNDO is grey as well while no snapshot has been
+taken yet (a new notepad before its first edit), and CUT, COPY and
+PASTE are grey on the same footing (see "EDIT items in grey").
 
 A group starts at the first change after a cursor key, a click in the
 text, ENTER, a cut, a paste, an UNDO, a load or a save, so a run of
@@ -2020,3 +2025,72 @@ Base 9046a6d → this change: normal ROM **24,231 → 24,327 bytes (+96)**,
 TEST ROM **25,988 → 26,084 (+96)**; static RAM 4,018 and heap 8,270 /
 2,885 unchanged (0 bytes). `./test.sh`: C-BIOS_MSX1_EU 701 ok, JP 694
 ok, all subjects pass; `MSX_MACHINE=Roms_MSX1 ./test.sh --tape` 22 ok.
+
+## EDIT items in grey (lf-1549)
+
+UNDO was painted grey when the notepad had no snapshot block
+(lf-1530); CUT, COPY and PASTE were always black, also when they had
+nothing to act on. Now `MenuPaint`'s last word, `NoteEditDim`, paints
+every EDIT item that would do nothing in grey:
+
+- **CUT and COPY** when the front notepad has no selection
+  (`NoteSelectionBounds` Z, the test `NoteClipCopy` makes itself);
+- **PASTE** when the clipboard is empty (`ClipLen` 0, as `NoteMenuPaste`
+  tests);
+- **UNDO** when there is nothing to swap in: no snapshot block
+  (`NoteUndoP` 0, as before) or none taken yet (`UNDO_HAVE` clear, a
+  new notepad before its first edit). The ticket's first criterion
+  wants UNDO grey on a new notepad and black after typing, which the
+  block test alone did not give: the state bit is the one addition to
+  UNDO's rule, its mechanism is untouched;
+- **all four** when the front window is not a notepad (the clock, the
+  commander) or there is no window: none of them has a notepad to act
+  on. UNDO was painted black there before; grey is what the other three
+  get and what "a grey item does nothing" promises, so UNDO follows.
+
+The actions check the same things themselves, so a grey item picked
+with the mouse, or its GRAPH key, does nothing and says nothing, as
+before. An open menu owns the keyboard (`HdlKey`), so ENTER on an item
+is not an input the menu has.
+
+The grey glyphs: `DimLetters` in menus.inc is the eleven distinct
+letters of the four items, `UNDOCTPYASE`, U N D O first so that they
+keep $01-$04 (undo-heap asserts those). `LoadDim` copies each from the
+BIOS font to `T_DIM` + its index, in all three thirds, with the
+lattice's grey as its colour: **seven new tile codes**, $05-$0B, C T P
+Y A S E. VRAM: 7 x 8 bytes x 3 thirds in the pattern table and the
+same in the colour table, **336 bytes**, all of them in the otherwise
+unused range below $20, so no glyph moved. `NoteDimItem` paints item B
+by walking its text and replacing each letter by `T_DIM` plus its place
+in `DimLetters`; a character not in there (none today) stays as it is.
+
+`./test.sh --edit-dim` (in the default suite); the screen is the
+compositor's notepad with `menu_open_nt` over it and the grey codes
+from the ROM's `DimLetters` (`menu_dim_nt`):
+
+| subject | asserts |
+|---|---|
+| dim-glyphs | `DimLetters` is `UNDOCTPYASE` at $01-$0B, the set of letters of the four items; each code's pattern is its letter's BIOS glyph and its colours $EF, in all three thirds |
+| dim-new, dim-new-block | a new notepad, EDIT: CUT, COPY, PASTE and UNDO grey (05 01 06 / 05 04 07 08 / 07 09 0a 06 0b / 01 02 03 04) though `NoteUndoP` is set and `NoteUndoSt` 0 |
+| dim-typed | HI typed: UNDO in the font, the rest grey |
+| dim-select, dim-copied, dim-escape | HELLO selected by SHIFT+RIGHT: CUT and COPY in the font, PASTE grey, the selection on the screen; after COPY nothing grey; after ESC CUT and COPY grey, PASTE in the font |
+| dim-drag | HELLO selected by a mouse drag: the same four rows, a selection in `NoteAnchor` |
+| dim-clock, dim-commander | EDIT over the clock (GRAPH+K) and over VIEW > COMMANDER: all four grey, the clock's screen against the compositor |
+| dim-saved | HELLO WORLD saved as LETTER, HELLO on the clipboard, no selection: CUT and COPY grey, PASTE and UNDO in the font |
+| dim-pick-cut, dim-pick-copy | the grey CUT and COPY picked by the mouse there: the 256 bytes, clipboard HELLO, caret (5, 0), NoteModified 0, NoteSaved 1, the menu closed, the screen as composed, MenuPick 0 and 1 |
+| dim-pick-paste, dim-pick-undo | the grey PASTE and UNDO picked on a new notepad: blank, ClipLen 0, NoteModified 0, no dialogue, the screen as composed |
+| clip-menu (`--clipboard`) | EDIT with no window: all four grey |
+| fb-edit-menu (`--frames`) | EDIT opened over a 24x17 notepad at 50 and 60 Hz: the four grey items over the notepad as composed, Dropped 0 |
+
+Measured in fb-edit-menu (`machine_info time` between `FrameWatch` and
+`MainLoop`, C-BIOS EU and JP the same): the press frame that opens
+EDIT over the 24x17 notepad, the paint and the four grey items in it,
+is **7.4 ms**, the blit frame after it 5.3 ms, against a budget of
+16.7 ms at 60 Hz; the route's longest frame is the grip's, 11.6 ms;
+**Dropped 0** on both machines.
+
+Base d5bf146 → this change: normal ROM **24,572 → 24,671 bytes (+99)**,
+TEST ROM **26,329 → 26,428 (+99)**; static RAM 4,018 and heap 8,270 /
+2,885 unchanged (0 bytes). `./test.sh --edit-dim` 15 ok, `--frames` 8
+ok, `--clipboard` 22 ok and `--undo` 44 ok on C-BIOS_MSX1_EU and JP.
+crc32 of the padded ROM: normal 655ed564, TEST 879ef520.
