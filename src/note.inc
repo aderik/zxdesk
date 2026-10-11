@@ -3228,10 +3228,12 @@ NoteDrawWrap:
                 ld      b,a
                 ld      a,(WndCur)
                 inc     a
-                cp      b
+                xor     b
+                and     $7F
                 jr      nz,NdwClamp             ; another window's key
-                xor     a
                 ld      (NoteFollow),a
+                bit     7,b
+                jr      nz,NdwGrown
                 ld      a,(NoteCursorY)
                 cp      c
                 jr      nc,NdwBelow
@@ -3250,6 +3252,43 @@ NdwBelow:
                 ld      a,b
                 sub     e
                 inc     a
+                ld      c,a
+                jr      NdwClamp
+NdwGrown:
+                ; A larger window (lf-1565): the empty lines after the
+                ; text and the caret no longer push them out of view. The
+                ; top comes down until the last of them is the last row.
+                ld      a,(NwTabN)
+                ld      b,a
+                ld      hl,NwTab-1
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                inc     b
+NdwEnd:
+                dec     b                       ; b: rows up to the text's end
+                jr      z,NdwEndSet
+                ld      a,(hl)
+                dec     hl
+                and     NW_LEN
+                jr      z,NdwEnd
+NdwEndSet:
+                ld      a,(NoteCursorY)
+                cp      b
+                jr      c,NdwEndMax
+                ld      b,a
+                inc     b
+NdwEndMax:
+                ld      a,(WinH)
+                sub     2
+                ld      e,a
+                ld      a,b
+                sub     e
+                jr      nc,NdwEndTop
+                xor     a
+NdwEndTop:
+                cp      c
+                jr      nc,NdwClamp
                 ld      c,a
 NdwClamp:
                 ld      a,(WinH)
