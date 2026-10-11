@@ -3840,6 +3840,45 @@ def clipboard_checks(syms, fails):
           and r.peek("NoteModified") == 1 and clip(r) == b"HELLO",
           f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x} after OK and a key")
 
+    # A selection bigger than the 224-byte clipboard (lf-1550): 16 hard
+    # lines of 14, opened from a file. 15 lines and 14 breaks are 224
+    # bytes and go in; one more break is 225 and, like all 239, gets the
+    # alert, after whose OK the clipboard, document, selection, modified
+    # flag and snapshot are as they were, for COPY and CUT, key and menu.
+    rows = [bytes((65 + i,)) * 14 for i in range(16)]
+    big_doc = note_width_document(rows)
+    files = {"BIG": big_doc}
+    seed = [] if EXT else seed_ram_steps(syms, files)
+    opened = seed + base + menu(19) + [(15, "")] + enter
+    small = select + arrows(128, 5) + copy + escape + arrows(16, 5)
+    def big(name, down, right, action, cx, cy):
+        r = Run(syms, opened + small + select + arrows(64, down) + arrows(128, right) + action + [(10, "")],
+                name, files=files if EXT else None)
+        alert = r.peek("DgOpenFlag"), r.nt()[9 * COLS + 7:9 * COLS + 24]
+        r2 = Run(syms, opened + small + select + arrows(64, down) + arrows(128, right) + action + enter
+                 + [(10, "")], name + "-ok", files=files if EXT else None)
+        same = (clip(r2) == b"AAAAA" and doc(r2) == big_doc and r2.peek("DgOpenFlag") == 0
+                and r2.bytes("NoteAnchor", 4) == bytes((128, 0, cx, cy)) and r2.peek("NoteModified") == 0
+                and r2.peek("NoteUndoSt") == 9)  # the load's snapshot (UNDO_OTHER), not a CUT's
+        check(fails, name, alert == (1, b"SELECTION TOO BIG") and same,
+              f"alert {alert[0]} {alert[1]!r}; after OK clipboard {clip(r2)[:8]!r} ({r2.peek('ClipLen')}), "
+              f"document crc32 {zlib.crc32(doc(r2)):08x}/{zlib.crc32(big_doc):08x}, anchor/end "
+              f"{r2.bytes('NoteAnchor', 4).hex()}, modified {r2.peek('NoteModified')}, "
+              f"undo {r2.peek('NoteUndoSt')}")
+    big("clip-big-copy", 15, 14, copy, 14, 15)
+    big("clip-big-cut", 15, 14, cut, 14, 15)
+    big("clip-big-copy-menu", 15, 14, edit(19), 14, 15)
+    big("clip-big-cut-menu", 15, 14, edit(11), 14, 15)
+    big("clip-225", 15, 0, cut, 0, 15)
+    r = Run(syms, opened + small + select + arrows(64, 14) + arrows(128, 14) + cut + [(10, "")],
+            "clip-224", files=files if EXT else None)
+    want_clip = b"\r".join(rows[:15])
+    want_doc = note_width_document([b"", rows[15]])
+    check(fails, "clip-224", r.peek("ClipLen") == 224 and clip(r) == want_clip and doc(r) == want_doc
+          and r.peek("DgOpenFlag") == 0 and r.peek("NoteModified") == 1,
+          f"ClipLen {r.peek('ClipLen')}, clipboard crc32 {zlib.crc32(clip(r)):08x}/{zlib.crc32(want_clip):08x}, "
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, alert {r.peek('DgOpenFlag')}")
+
     r = Run(syms, base[:2] + click(228, 3) + click(204, 11) + [(10, "")], "clip-keys")
     want = compose(nt0, [keys_win(KEYS_X, KEYS_Y)])
     check(fails, "clip-keys", r.nt() == want,
