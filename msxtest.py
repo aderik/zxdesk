@@ -3743,6 +3743,22 @@ def undo_checks(syms, fails):
     # ENTER ends the group it is in: what follows is a group of its own.
     r = Run(syms, base + typed("AB") + enter + typed("CD") + undo + [(10, "")], "undo-enter", files={})
     expect("undo-enter", r, [b"AB", b""], 0, 1, 1)
+    # A key that changes nothing starts no group (lf-1557): DELETE at
+    # 0,0 keeps the snapshot of HELLO's group, so UNDO is the empty
+    # document and the redo HELLO.
+    noop = base + typed("HELLO") + arrows(16, 5) + tap(8, 8)
+    r = Run(syms, noop + undo + [(10, "")], "undo-noop", files={})
+    expect("undo-noop", r, [], 0, 0, 0)
+    r = Run(syms, noop + undo + undo + [(10, "")], "undo-noop-redo", files={})
+    expect("undo-noop-redo", r, [b"HELLO"], 0, 0, 1)
+    # ENTER in a full document: sixteen lines of A, the last its own
+    # group; LEFT, then an ENTER with no room. UNDO is the last A gone.
+    full_doc = base + (typed("A") + enter) * 15 + typed("A") + arrows(16, 1) + enter
+    r = Run(syms, full_doc + undo + [(10, "")], "undo-noop-full", files={})
+    want_doc = note_width_document([b"A"] * 15 + [b""])
+    check(fails, "undo-noop-full", doc(r) == want_doc and caret(r) == (0, 15)
+          and r.peek("DgOpenFlag") == 0,
+          f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(want_doc):08x}, caret {caret(r)}")
 
     # CUT of a selection, UNDO: the 256 bytes from before the cut.
     selected = base + typed("HELLO WORLD") + arrows(16, 11) + select + arrows(128, 5)
