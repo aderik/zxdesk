@@ -3919,6 +3919,34 @@ def undo_checks(syms, fails):
           and doc(r) == note_width_document([b"HI"]) and kept == old,
           f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, "
           f"file NOTE crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(old):08x}")
+    # FILE > DELETE of that NOTE leaves OLDNOTE without a file, so the
+    # SAVE AS FOO after it is its first write: HI, the snapshot the
+    # OPEN took, is still not FOO (lf-1566). UNDO is HI unsaved, and
+    # SAVE asks for a name instead of writing HI over FOO.
+    def file_foo(r):
+        if EXT:
+            return read_disk_image(DISK).get("FOO")
+        ramdir = r.bytes("RamDir", 64)
+        for i in range(4):
+            if ramdir[16 * i + 15] and ramdir[16 * i:16 * i + 4] == b"FOO\0":
+                return r.bytes("RamHeap", 1024)[256 * i:256 * i + 256]
+    deleted = seed + base + typed("HI") + menu(19) + [(15, "")] + enter + menu(51) + tap(7, 8) + enter
+    foo = deleted + save + typed("FOO") + enter
+    r = Run(syms, foo + [(10, "")], "undo-delete-before", files=notes if EXT else None)
+    check(fails, "undo-delete-before", doc(r) == old and r.bytes("NoteName", 4) == b"FOO\0"
+          and r.peek("NoteSaved") == 1 and file_foo(r) == old,
+          f"name {r.bytes('NoteName', 4)!r}, saved {r.peek('NoteSaved')}, "
+          f"file FOO crc32 {zlib.crc32(file_foo(r) or b''):08x}/{zlib.crc32(old):08x}")
+    r = Run(syms, foo + undo + [(10, "")], "undo-delete-note", files=notes if EXT else None)
+    expect("undo-delete-note", r, [b"HI"], 2, 0, 1,
+           r.bytes("NoteName", 5) == b"NOTE\0" and r.peek("NoteSaved") == 0,
+           f", name {r.bytes('NoteName', 5)!r}, saved {r.peek('NoteSaved')}")
+    r = Run(syms, foo + undo + save + [(10, "")], "undo-delete-note-ask", files=notes if EXT else None)
+    kept = file_foo(r)
+    check(fails, "undo-delete-note-ask", r.peek("DgOpenFlag") == 1 and r.peek("NoteSaved") == 0
+          and doc(r) == note_width_document([b"HI"]) and kept == old,
+          f"dialogue {r.peek('DgOpenFlag')}, saved {r.peek('NoteSaved')}, "
+          f"file FOO crc32 {zlib.crc32(kept or b''):08x}/{zlib.crc32(old):08x}")
 
     # Two notepads, a snapshot each: UNDO in the second leaves the first.
     r = Run(syms, base + typed("AB") + new + typed("CD") + undo + [(10, "")], "undo-two", files={})
