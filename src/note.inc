@@ -1350,8 +1350,7 @@ NmoLoad:
                 jr      c,NmoOk
                 ld      a,(hl)
                 or      a
-                ld      hl,TapeIn+4
-                call    z,NoteSetName
+                call    z,NoteTapeName
                 xor     a
 NmoOk:
                 ld      (NoteResult),a
@@ -1360,6 +1359,25 @@ NmoOk:
                 ld      a,(WndCur)
                 call    WndTouch
                 jp      RowsAddLive
+
+; The header's name, if SAVE AS would accept it: a later FILE > SAVE
+; writes under it without asking (lf-1551). Anything else is NOTE.
+NoteTapeName:
+                ld      hl,TapeIn+4
+                call    NoteSetName
+                ld      hl,NoteName
+                ld      a,(hl)
+                or      a
+                jr      z,NtnNote
+                call    NoteNameValid           ; HL ends on the terminator
+                jr      c,NtnNote
+                dec     hl
+                ld      a,(hl)
+                cp      '.'
+                ret     nz
+NtnNote:
+                ld      hl,TxtNoteName
+                jp      NoteSetName
 
 TxtNoteName:    defb    "NOTE",0
 TxtWinTitle:    defb    "NOTEPAD",0
