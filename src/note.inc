@@ -1861,7 +1861,8 @@ NoteUnpackRow:
 ; The selection into the clipboard. It is built in CmdBuf, which
 ; holds the most a selection can give (224 cells and 15 breaks), and
 ; moved when it fits: carry, and the clipboard as it was, when it
-; does not or when there is no selection.
+; does not or when there is no selection. Not fitting says so with an
+; alert (lf-1550); the selection and the document stay as they were.
 NoteClipCopy:
                 call    NoteSelectionBounds
                 scf
@@ -1942,8 +1943,7 @@ NccDone:
                 sbc     hl,de                   ; the length, at most 239
                 ld      a,l
                 cp      CLIPSIZE+1
-                ccf
-                ret     c                       ; more than the clipboard holds
+                jr      nc,NccBig               ; more than the clipboard holds
                 ld      (ClipLen),a
                 or      a
                 ret     z                       ; padding alone: an empty clipboard
@@ -1954,6 +1954,13 @@ NccDone:
                 ldir
                 or      a
                 ret
+NccBig:
+                ld      hl,TxtClipBig
+                ld      de,0
+                call    DlgAlert
+                scf
+                ret
+TxtClipBig:     defb    "SELECTION TOO BIG",0
 
 ; Scroll model: count hard lines, not the chunks of a long line.
 
