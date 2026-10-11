@@ -59,7 +59,8 @@ MOUSEWAIT       equ     10              ; settle loops between strobe and sample
 ; ---- Tiles. Codes 32-127 are the BIOS font; these are ours.
 T_LATTICE       equ     $80             ; the desktop halftone
 T_RULE          equ     $81             ; lattice with the menu bar's rule on top
-T_DIM           equ     $01             ; U N D O in grey, $01-$04 (LoadDim)
+T_DIM           equ     $01             ; the EDIT items' letters in grey, $01
+                                        ; on: DimLetters (LoadDim)
 
 ; ---- Colours, ink in the high nibble
 C_TEXT          equ     $1F             ; black on white: the glyphs, every third
@@ -1378,9 +1379,10 @@ LcThird:
                 djnz    LcThird
                 ret
 
-; UNDO's four letters again at T_DIM, in all three thirds, coloured as
-; the lattice: the EDIT menu paints them when the front notepad has no
-; snapshot block (NoteUndoDim). Codes below $20 are no glyph otherwise.
+; The letters of the EDIT items (DimLetters, DIMCOUNT of them) again
+; from T_DIM on, in all three thirds, coloured as the lattice: the
+; EDIT menu paints an item with them when it would do nothing
+; (NoteEditDim). Codes below $20 are no glyph otherwise.
 LoadDim:
                 ld      hl,PGT+T_DIM*8
                 ld      b,3
@@ -1388,8 +1390,8 @@ LdThird:
                 push    bc
                 push    hl
                 call    SetWrt
-                ld      de,MnUndo
-                ld      b,4
+                ld      de,DimLetters
+                ld      b,DIMCOUNT
 LdGlyph:
                 push    bc
                 push    de
@@ -1413,7 +1415,7 @@ LdGlyph:
                 add     hl,bc
                 call    SetWrt
                 ld      a,C_LATTICE
-                ld      b,4*8
+                ld      b,DIMCOUNT*8
                 call    FillVram
                 pop     hl
                 ld      bc,$0800

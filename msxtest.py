@@ -624,6 +624,26 @@ def menu_open_nt(defs, nt0, menu):
     return bytes(nt)
 
 
+def dim_letters(syms):
+    """The ROM's DimLetters: each grey letter's T_DIM code, as LoadDim
+    numbers them (lf-1549)."""
+    rom = open(ROM, "rb").read()
+    p = syms["DimLetters"] - ROMBASE
+    return {c: syms["T_DIM"] + i for i, c in enumerate(rom[p:p + syms["DIMCOUNT"]])}
+
+
+def menu_dim_nt(nt, defs, menu, dim, codes):
+    """menu_open_nt's screen with the items whose indexes are in `dim`
+    painted grey: their letters replaced by the T_DIM codes."""
+    col, width, dropw, items = defs[menu - 1]
+    x = min(col, COLS - dropw)
+    nt = bytearray(nt)
+    for i in dim:
+        at = (1 + i) * COLS + x + 1
+        nt[at:at + len(items[i])] = bytes(codes.get(c, c) for c in items[i])
+    return bytes(nt)
+
+
 def menu_checks(syms, fails, vram0):
     """A pull down: opened from the bar, painted over the desktop with
     the title inverted, closed by a pick or a press elsewhere with the
@@ -3833,7 +3853,7 @@ def clipboard_checks(syms, fails):
           and [d[0] for d in defs] == [0, 10, 16, 22, 28],
           f"name table crc32 {zlib.crc32(r.nt()):08x}, titles at {[d[0] for d in defs]}")
     r = Run(syms, base[:2] + click(132, 3) + [(10, "")], "clip-menu")
-    want = menu_open_nt(defs, nt0, 3)
+    want = menu_dim_nt(menu_open_nt(defs, nt0, 3), defs, 3, range(4), dim_letters(syms))   # no notepad: all grey (lf-1549)
     check(fails, "clip-menu", r.peek("MenuOpen") == 3 and r.nt() == want
           and defs[2][3] == [b"CUT", b"COPY", b"PASTE", b"UNDO"],
           f"MenuOpen {r.peek('MenuOpen')}, crc32 {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
@@ -4317,6 +4337,144 @@ def undo_checks(syms, fails):
     expect("undo-heap-after", r, [b"HIJ"], 3, 0, 1)
 
 
+def edit_dim_checks(syms, fails):
+    """EDIT's items grey when they would do nothing (lf-1549): CUT and
+    COPY without a selection, PASTE with an empty clipboard, UNDO with
+    nothing to swap in, all four over anything but a notepad. Asserted
+    on the name table against the compositor with the T_DIM codes from
+    the ROM's DimLetters, on the glyphs and colours in VRAM, and, for a
+    grey item picked, on the document, clipboard, caret and modified
+    flag."""
+    print("edit-dim:")
+    _, _, _, _, click, tap, menu = note_width_steps(syms)
+    defs, codes, nt0 = menu_defs(syms), dim_letters(syms), expected_nt()
+    items = defs[2][3]
+    base = [(10, "plug joyporta mouse"), (10, "exec xdotool mousemove 300 200")] + menu(11)
+    def typed(text):
+        matrix = {c: (r, 1 << i) for r, row in enumerate([
+            "01234567", "89-=\\[];", "'`,./?AB", "CDEFGHIJ", "KLMNOPQR", "STUVWXYZ"])
+                  for i, c in enumerate(row)}
+        matrix[' '] = (8, 1)
+        return sum((tap(*matrix[c]) for c in text), [])
+    def arrows(mask, n):
+        return [(5, 'key_down 6 1')] + tap(8, mask) * n + [(5, 'key_up 6 1')]
+    def shortcut(row, mask):
+        return [(5, 'key_down 6 4')] + tap(row, mask) + [(5, 'key_up 6 4')]
+    def point(x, y):
+        return [(5, f"debug write memory {syms['PtrX']} {x}; debug write memory {syms['PtrY']} {y}; "
+                    f"debug write memory {syms['EvLastX']} {x}; debug write memory {syms['EvLastY']} {y}")]
+    copy, clock, saveas = shortcut(5, 64), shortcut(4, 1), shortcut(5, 1)
+    edit = click(132, 3)                                # EDIT's title is cell 16
+    def pick(y):                                        # CUT, COPY, PASTE, UNDO on rows 1-4
+        return edit + click(140, y)
+    enter, select, escape = tap(7, 128), tap(7, 64), tap(7, 4)
+    def doc(r):
+        return r.bytes("NoteBuf", 256)
+    def clip(r):
+        return r.bytes("ClipBuf", r.peek("ClipLen"))
+    def caret(r):
+        return r.peek("NoteCX"), r.peek("NoteCY")
+    def note_nt(lines, cx, cy, selected=None, title=b"NOTEPAD"):
+        painted = [(1 + i, 1, line, False) for i, line in enumerate(lines)]
+        if selected:
+            painted.append(selected)                    # no caret while a selection shows
+        else:
+            painted.append((1 + cy, 1 + cx, (lines[cy][cx:cx + 1] or b" ") if cy < len(lines) else b" ", True))
+        painted += [(-2, 16, b"", False), (-1, 0, b"", False)]
+        return compose(nt0, [(8, 6, 16, 9, title, painted)])
+    def dimmed(nt, dim):
+        return menu_dim_nt(menu_open_nt(defs, nt, 3), defs, 3, dim, codes)
+    def grey(i):
+        return bytes(codes.get(c, c) for c in items[i])
+    def drop(r):                                        # the four items as painted
+        return [r.nt()[(1 + i) * COLS + 17:(1 + i) * COLS + 17 + len(items[i])] for i in range(4)]
+    def screen(name, steps, want, dim, detail=""):
+        r = Run(syms, steps + edit + [(10, "")], name, files={})
+        want = dimmed(want, dim)
+        check(fails, name, r.peek("MenuOpen") == 3 and r.nt() == want,
+              f"MenuOpen {r.peek('MenuOpen')}, items {[d.hex() for d in drop(r)]}, "
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}{detail}")
+        return r
+
+    # The grey glyphs: eleven letters, U N D O first at $01-$04 as they
+    # were, the seven the other items add after them; each the BIOS
+    # glyph of its letter in the lattice's grey, in all three thirds.
+    letters = bytes(codes)
+    r = Run(syms, [(10, "")], "dim-glyphs")
+    glyphs = all(r.vram[t * 0x800 + code * 8:t * 0x800 + code * 8 + 8]
+                 == r.vram[t * 0x800 + c * 8:t * 0x800 + c * 8 + 8]
+                 and r.vram[0x2000 + t * 0x800 + code * 8:0x2000 + t * 0x800 + code * 8 + 8] == b"\xef" * 8
+                 for c, code in codes.items() for t in range(3))
+    check(fails, "dim-glyphs", letters == b"UNDOCTPYASE" and set(letters) == set(b"".join(items))
+          and codes[ord("U")] == 1 and syms["T_DIM"] == 1 and glyphs,
+          f"DimLetters {letters!r} at ${syms['T_DIM']:02X}-${syms['T_DIM'] + len(letters) - 1:02X}, glyphs {glyphs}")
+
+    # A new notepad: nothing selected, nothing on the clipboard, no
+    # snapshot taken: all four grey, though the snapshot block is there.
+    r = screen("dim-new", base, note_nt([], 0, 0), range(4))
+    check(fails, "dim-new-block", r.peek16_at(syms["NoteUndoP"]) != 0 and r.peek("NoteUndoSt") == 0,
+          f"NoteUndoP {r.peek16_at(syms['NoteUndoP']):04x}, NoteUndoSt {r.peek('NoteUndoSt')}")
+    # Typed: UNDO in the font, the rest grey.
+    screen("dim-typed", base + typed("HI"), note_nt([b"HI"], 2, 0), range(3))
+    # A selection by SHIFT+arrow: CUT and COPY in the font, PASTE grey;
+    # after COPY nothing grey; after ESC CUT and COPY grey, PASTE not.
+    hello = base + typed("HELLO WORLD") + arrows(16, 11)
+    selected = hello + select + arrows(128, 5)
+    document = note_width_document([b"HELLO WORLD"])
+    with_sel = note_nt([b"HELLO WORLD"], 5, 0, selected=(1, 1, b"HELLO", True))
+    screen("dim-select", selected, with_sel, [2])
+    screen("dim-copied", selected + copy, with_sel, [])
+    screen("dim-escape", selected + copy + escape, note_nt([b"HELLO WORLD"], 5, 0), [0, 1])
+    # A selection by the mouse: the drop's rows, and a selection there.
+    drag = (point(72, 56) + [(5, "set ::throttle on"), (5, "exec xdotool mousedown 1"), (5, "mouse_move 80 0"),
+                             (5, "exec xdotool mouseup 1"), (10, "set ::throttle off")])
+    r = Run(syms, hello + drag + edit + [(10, "")], "dim-drag", files={})
+    check(fails, "dim-drag", r.peek("MenuOpen") == 3 and drop(r) == [items[0], items[1], grey(2), items[3]]
+          and r.peek("NoteAnchor", 2) >> 8 != 255,
+          f"items {[d.hex() for d in drop(r)]}, anchor/end {r.bytes('NoteAnchor', 4).hex()}")
+
+    # Over the clock, the commander or no window at all (clip-menu):
+    # all four grey, as none has a notepad to act on.
+    r = Run(syms, base[:2] + clock + edit + [(10, "")], "dim-clock", files={})
+    rec = syms["WndTab"] - WORK
+    clk = clock_win(r.ram[rec], r.ram[rec + 1], r.peek("ClkH"), r.peek("ClkM"))
+    want = dimmed(compose(nt0, [clk]), range(4))
+    check(fails, "dim-clock", r.peek("MenuOpen") == 3 and r.peek("WinApp", 2) == syms["AppClock"] and r.nt() == want,
+          f"MenuOpen {r.peek('MenuOpen')}, items {[d.hex() for d in drop(r)]}, "
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+    r = Run(syms, base[:2] + click(180, 3) + click(188, 51) + edit + [(10, "")], "dim-commander", files={})
+    check(fails, "dim-commander", r.peek("MenuOpen") == 3 and r.peek("WinApp", 2) == syms["AppCommander"]
+          and drop(r) == [grey(i) for i in range(4)],
+          f"MenuOpen {r.peek('MenuOpen')}, front ${r.peek('WinApp', 2):04X}, items {[d.hex() for d in drop(r)]}")
+
+    # A grey item picked changes nothing. CUT and COPY on a document
+    # saved as LETTER with HELLO on the clipboard and no selection: the
+    # 256 bytes, the clipboard, the caret and the modified flag (0) as
+    # they were, the menu gone and the screen as composed. PASTE and
+    # UNDO on a new notepad: blank, unmodified, an empty clipboard.
+    saved = selected + copy + escape + saveas + typed("LETTER") + enter + [(10, "")]
+    screen("dim-saved", saved, note_nt([b"HELLO WORLD"], 5, 0, title=b"LETTER"), [0, 1])
+    for name, y in (("dim-pick-cut", 11), ("dim-pick-copy", 19)):
+        r = Run(syms, saved + pick(y) + [(10, "")], name, files={})
+        want = note_nt([b"HELLO WORLD"], 5, 0, title=b"LETTER")
+        check(fails, name, doc(r) == document and clip(r) == b"HELLO" and caret(r) == (5, 0)
+              and r.peek("NoteModified") == 0 and r.peek("NoteSaved") == 1 and r.peek("MenuOpen") == 0
+              and r.peek("MenuPick") == y // 8 - 1 and r.nt() == want,
+              f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(document):08x}, clipboard {clip(r)!r}, "
+              f"caret {caret(r)}, modified {r.peek('NoteModified')}, pick {r.peek('MenuPick')}, "
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+    blank = note_width_document([])
+    for name, y in (("dim-pick-paste", 27), ("dim-pick-undo", 35)):
+        r = Run(syms, base + pick(y) + [(10, "")], name, files={})
+        want = note_nt([], 0, 0)
+        check(fails, name, doc(r) == blank and r.peek("ClipLen") == 0 and caret(r) == (0, 0)
+              and r.peek("NoteModified") == 0 and r.peek("MenuOpen") == 0 and r.peek("MenuPick") == y // 8 - 1
+              and r.peek("DgOpenFlag") == 0 and r.nt() == want,
+              f"document crc32 {zlib.crc32(doc(r)):08x}/{zlib.crc32(blank):08x}, ClipLen {r.peek('ClipLen')}, "
+              f"modified {r.peek('NoteModified')}, pick {r.peek('MenuPick')}, "
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}")
+
+
 def note_del_checks(syms, fails):
     """DEL deletes forward (lf-1572): the character under the caret goes
     and the caret stays; at a line's end the next line joins it, at the
@@ -4454,6 +4612,15 @@ def frame_checks(syms, fails):
     check(fails, "fb-focus-clock", r.peek("WndZ") == 0 and r.peek("WndCur") == 0 and r.nt() == want
           and r.peek("Dropped", 2) == 0,
           f"front {r.peek('WndZ')}, live {r.peek('WndCur')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+          f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # EDIT opened over the 24x17 notepad (lf-1549): the drop with all
+    # four items grey (nothing typed, no selection, an empty clipboard)
+    # in the frame of the press, no frame dropped
+    defs = menu_defs(syms)
+    r = Run(syms, timing + big + s.click(132, 3) + [(10, "")], "fb-edit-menu", files={})
+    want = menu_dim_nt(menu_open_nt(defs, compose(expected_nt(), [first]), 3), defs, 3, range(4), dim_letters(syms))
+    check(fails, "fb-edit-menu", r.peek("MenuOpen") == 3 and r.nt() == want and r.peek("Dropped", 2) == 0,
+          f"MenuOpen {r.peek('MenuOpen')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
           f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
     # SAVE AS on RAM: GRAPH+S, the name, ENTER (lf-1556). The disk's
     # write is the exception: there Dropped is 0 up to the ENTER and
@@ -4653,6 +4820,9 @@ def main():
     if sys.argv[1:] == ["--undo"]:
         undo_checks(syms, fails)
         return bool(fails)
+    if sys.argv[1:] == ["--edit-dim"]:
+        edit_dim_checks(syms, fails)
+        return bool(fails)
     if sys.argv[1:] == ["--saveas"]:
         saveas_checks(syms, fails)
         return bool(fails)
@@ -4719,6 +4889,7 @@ def main():
     note_selection_checks(syms, fails)
     clipboard_checks(syms, fails)
     undo_checks(syms, fails)
+    edit_dim_checks(syms, fails)
     note_del_checks(syms, fails)
     frame_checks(syms, fails)
     note_load_checks(syms, fails)

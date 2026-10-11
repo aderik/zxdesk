@@ -1990,33 +1990,100 @@ NmuSwap:
                 call    NwInvalidate            ; another text: no table
                 jp      NoteRefresh
 
-; MenuPaint's last word: EDIT open over a notepad that got no snapshot
-; block has UNDO in grey (T_DIM), as it would do nothing.
-NoteUndoDim:
+; MenuPaint's last word: EDIT open paints the items that would do
+; nothing in grey (T_DIM, lf-1549). Over anything but a notepad all
+; four; over one CUT and COPY without a selection, PASTE with an empty
+; clipboard, and UNDO without a snapshot to swap in: no block, or none
+; taken yet (lf-1530 greyed the first case only). The actions test the
+; same things themselves, so a grey item picked does nothing, and
+; GRAPH+E, Y, P and U do nothing either, as before.
+NoteEditDim:
                 ld      a,(MenuOpen)
                 cp      3
                 ret     nz
                 call    NoteIsFront
-                ret     nz
+                jr      z,NedNote
+                ld      b,0
+                call    NoteDimItem
+                ld      b,1
+                call    NoteDimItem
+                ld      b,2
+                call    NoteDimItem
+                ld      b,3
+                jr      NoteDimItem
+NedNote:
+                call    NoteSelectionBounds
+                jr      nz,NedPaste
+                ld      b,0
+                call    NoteDimItem
+                ld      b,1
+                call    NoteDimItem
+NedPaste:
+                ld      a,(ClipLen)
+                or      a
+                jr      nz,NedUndo
+                ld      b,2
+                call    NoteDimItem
+NedUndo:
                 ld      hl,(NoteUndoP)
                 ld      a,h
                 or      l
+                jr      z,NedUndoDim
+                ld      a,(NoteUndoSt)
+                and     UNDO_HAVE
                 ret     nz
+NedUndoDim:
+                ld      b,3
+                ; falls through
+
+; Item B of the open drop in grey: each letter of its text replaced
+; by its T_DIM code, T_DIM plus the letter's place in DimLetters. A
+; character not in there stays as it is.
+NoteDimItem:
+                push    bc
+                ld      hl,(MnItemPtr)
+                ld      a,b
+                or      a
+                jr      z,NdiFound
+NdiSkip:
+                ld      a,(hl)                  ; past B of the strings
+                inc     hl
+                or      a
+                jr      nz,NdiSkip
+                djnz    NdiSkip
+NdiFound:
+                ex      de,hl                   ; DE = the item's text
+                pop     bc
                 ld      a,(MnY)
-                add     a,3
+                add     a,b
                 ld      b,a
                 ld      a,(MnX)
                 inc     a
                 ld      c,a
-                call    CellAddr
-                ld      a,T_DIM
-                ld      b,4
-NudLoop:
-                ld      (hl),a
+                push    de
+                call    CellAddr                ; HL = its first cell; MarkRow takes DE
+                pop     de
+NdiLetter:
+                ld      a,(de)
+                or      a
+                ret     z
+                push    hl
+                ld      hl,DimLetters
+                ld      b,DIMCOUNT
+                ld      c,T_DIM
+NdiFind:
+                cp      (hl)
+                jr      z,NdiGot
                 inc     hl
-                inc     a
-                djnz    NudLoop
-                ret
+                inc     c
+                djnz    NdiFind
+                ld      c,a                     ; no grey glyph: the letter itself
+NdiGot:
+                pop     hl
+                ld      (hl),c
+                inc     hl
+                inc     de
+                jr      NdiLetter
 
 ; A = a packed endpoint (NotePack). Returns A = its chunk row.
 NoteUnpackRow:

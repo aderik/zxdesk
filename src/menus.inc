@@ -40,7 +40,7 @@ MnItems2:       defb    "NEW",0
 MnItems3:       defb    "CUT",0
                 defb    "COPY",0
                 defb    "PASTE",0
-MnUndo:         defb    "UNDO",0                ; also LoadDim's grey letters
+                defb    "UNDO",0
 MnItems4:       defb    "CLOCK",0
                 defb    "CALENDAR",0
                 defb    "CASCADE",0
@@ -49,6 +49,12 @@ MnItems4:       defb    "CLOCK",0
                 defb    "COMMANDER",0
 MnItems5:       defb    "KEYS",0
                 defb    "ABOUT",0
+
+; The distinct letters of the EDIT items, each a grey glyph at T_DIM
+; plus its place here (LoadDim, NoteEditDim): U N D O first, as they
+; were at $01-$04 (lf-1530), then the seven the other items add.
+DimLetters:     defb    "UNDOCTPYASE"
+DIMCOUNT        equ     11
 
 ; Which title is under cell column B? Returns A = index+1, or zero.
 MenuHitTitle:
@@ -286,7 +292,7 @@ MpSkip:
                 add     a,MENUROW+1
                 cp      b
                 jr      nz,MpItem
-                jp      NoteUndoDim
+                jp      NoteEditDim
 
 ; A = the item picked from MnLastMenu. The actions arrive with the
 ; things they open; until then a pick is recorded and nothing more.
