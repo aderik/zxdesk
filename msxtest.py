@@ -3869,6 +3869,25 @@ def undo_checks(syms, fails):
     r = Run(syms, base + typed("HI") + save + typed("NOTE") + enter + undo + [(10, "")],
             "undo-past-save", files={})
     expect("undo-past-save", r, [], 0, 0, 1, title=b"NOTE")
+    # SAVE AS under a new name: the snapshot, compared under the old
+    # name, takes the new one after the write (lf-1563). UNDO is HI as
+    # an earlier version of TWO, modified, both files as written.
+    def stored(r, name):
+        if EXT:
+            return read_disk_image(DISK).get(name.decode())
+        ramdir = r.bytes("RamDir", 64)
+        for i in range(4):
+            if ramdir[16 * i + 15] and ramdir[16 * i:16 * i + len(name) + 1] == name + b"\0":
+                return r.bytes("RamHeap", 1024)[256 * i:256 * i + 256]
+    two = base + typed("HI") + save + typed("ONE") + enter + typed("X") + menu(35) + typed("TWO") + enter
+    r = Run(syms, two + undo + [(10, "")], "undo-saveas", files={})
+    one_file, two_file = stored(r, b"ONE"), stored(r, b"TWO")
+    expect("undo-saveas", r, [b"HI"], 2, 0, 1,
+           r.bytes("NoteName", 4) == b"TWO\0" and r.peek("NoteSaved") == 1
+           and one_file == note_width_document([b"HI"]) and two_file == note_width_document([b"HIX"]),
+           f", name {r.bytes('NoteName', 4)!r}, saved {r.peek('NoteSaved')}, "
+           f"file ONE crc32 {zlib.crc32(one_file or b''):08x}, file TWO crc32 {zlib.crc32(two_file or b''):08x}",
+           title=b"TWO")
 
     # FILE > OPEN over HI: UNDO is HI again, its name, title and edited
     # flag included; the redo is BETA as it was loaded.
