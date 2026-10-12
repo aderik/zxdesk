@@ -2907,6 +2907,12 @@ def tape_import_checks(ts, rom, fails):
     check(fails, "imp-full", alert(r, b"ALPHA") and r.bytes("RamHeap", 1024) == other * 4
           and ram_files(r) == [n.encode() for n in full] and r.peek("CmdStatus") == 0 and left(r) == 0,
           f"alert {r.peek('DgOpenFlag')}, RAM {ram_files(r)}, status {r.peek('CmdStatus')}")
+    # A on the full store: its first file refused, nothing went in, so the
+    # status under the alert is READY as with I, not IMPORTED (lf-1598)
+    r = run(a_key, "imp-full-all", tape_blocks([("ALPHA", alpha), ("BETA", beta)]), ram=full)
+    check(fails, "imp-full-all", alert(r, b"ALPHA") and r.bytes("RamHeap", 1024) == other * 4
+          and ram_files(r) == [n.encode() for n in full] and r.peek("CmdStatus") == 0 and left(r) == 2,
+          f"alert {r.peek('DgOpenFlag')}, RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
     r = run(a_key, "imp-full-after", tape_blocks([("ALPHA", alpha), ("BETA", beta), ("GAMMA", gamma)]),
             ram={"ONE": other, "TWO": other})
     check(fails, "imp-full-after", alert(r, b"GAMMA") and ram_files(r) == [b"ONE", b"TWO", b"ALPHA", b"BETA"]
