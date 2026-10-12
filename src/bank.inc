@@ -1391,8 +1391,9 @@ BankDeleteHint:
 ;  What the rest of the desktop asks
 ; ------------------------------------------------------------
 ; A = backend id, B = 1 for the next one, 2 for the previous: the
-; next available id round the ring RAM, BANK, DISK. RAM is always
-; there, so it ends.
+; next available id round the ring RAM, BANK, DISK, and TAPE in a
+; TAPE build (so a Commander pane can be the tape on a disk machine,
+; lf-1575). RAM is always there, so it ends.
 StRingStep:
                 ld      c,0
                 cp      ST_BANK
@@ -1400,14 +1401,26 @@ StRingStep:
                 inc     c
 StRsNotBank:
                 cp      ST_DISK
-                jr      nz,StRsStep
+                jr      nz,StRsNotDisk
                 ld      c,2
+StRsNotDisk:
+IF TAPE
+                cp      ST_TAPE
+                jr      nz,StRsStart
+                ld      c,3
+ENDIF
+StRsStart:
+                ld      a,b
+                cp      2
+                ld      b,1                     ; the previous one is a step
+                jr      nz,StRsStep             ; of the ring's length less one
+                ld      b,STRINGN-1
 StRsStep:
                 ld      a,c
                 add     a,b
-                cp      3
+                cp      STRINGN
                 jr      c,StRsIn
-                sub     3
+                sub     STRINGN
 StRsIn:
                 ld      c,a
                 ld      hl,StRing
@@ -1431,12 +1444,22 @@ StRsNoCy2:
                 ld      a,(hl)
                 ret
 StRing:         defb    ST_RAM, ST_BANK, ST_DISK
+IF TAPE
+                defb    ST_TAPE
+STRINGN         equ     4
+ELSE
+STRINGN         equ     3
+ENDIF
 
 ; A = backend id. Z if it can be selected: RAM always, BANK with a
-; bank, DISK with a BDOS.
+; bank, DISK with a BDOS, TAPE in a TAPE build.
 StAvail:
                 cp      ST_RAM
                 ret     z
+IF TAPE
+                cp      ST_TAPE
+                ret     z
+ENDIF
                 cp      ST_DISK
                 jp      z,DskPresent
                 cp      ST_BANK
