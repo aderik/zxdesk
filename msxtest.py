@@ -5595,6 +5595,13 @@ def frame_checks(syms, fails):
     #   dropped, 15.2 sometimes): at 50 Hz Dropped 0 is asserted, at 60
     #   one dropped is allowed and the frame reported, the PO's
     #   question.
+    # - fb-click-gone: a click on the ghost row, G saved as above, the
+    #   page read with G on it (SHIFT+DOWN twice), BETA selected again,
+    #   then G deleted from the notepad (FILE > DELETE) and the picker
+    #   brought back (lf-1604's browse-gone-click, lf-1613): 20.3 ms,
+    #   one dropped, 21.9 at 50 Hz, one dropped. Now the page is read
+    #   again and its rows painted, BETA still selected; Dropped 0 is
+    #   asserted at both.
     # - fb-move-end: SHIFT+DOWN on the last file and SHIFT+UP on the
     #   first, which move nothing: 17.4 and 16.4 ms, one dropped each
     #   (CmdDone's recompose). Now nothing is painted: 3.6 ms.
@@ -5641,12 +5648,19 @@ def frame_checks(syms, fails):
             return read_disk_image(DISK) == {k: v for k, v in files.items() if k != name}
         return r.bytes("RamDir", 64)[15::16] == bytes(int(k != name) for k in files)
     saved_g = (note + picker + nxt + shortcut(5, 1) + text("G") + s.enter + [(10, "")] + nxt)
+    g_gone = nxt + s.click(88, 3) + s.click(96, 51) + tab + s.enter + [(10, "")] + nxt + [(15, "")]
     for name, seeded, steps, windows, state, want_composes in [
             ("fb-click-row", files, note + picker + mark("before") + row_click(1) + [(10, "")] + row_click(2) + [(10, "")],
              lambda r: [hi_note, slot_at(r, 1, picker_win(names, 2))], lambda r: r.peek("CmdSel0") == 2, 0),
             ("fb-click-stale", two, saved_g + mark("before") + row_click(2) + [(10, "")],
              lambda r: [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G"), slot_at(r, 1, picker_win(["ALPHA", "BETA", "G"], 2))],
              lambda r: r.peek("CmdSel0") == 2, 0),
+            ("fb-click-gone", two, saved_g + s.down * 2 + [(10, "")] + s.up + [(10, "")] + g_gone + mark("before")
+             + row_click(2) + [(10, "")],
+             lambda r: [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G"), slot_at(r, 1, picker_win(["ALPHA", "BETA"], 1))],
+             lambda r: r.peek("CmdSel0") == 1 and not any(r.bytes("RamDir", 64)[i * 16:i * 16 + 2] == b"G\0"
+                                                          and r.bytes("RamDir", 64)[i * 16 + 15] for i in range(4))
+             if not EXT else "G" not in read_disk_image(DISK), 0),
             ("fb-move-end", files, note + picker + s.down * 3 + [(10, "")] + mark("before") + s.down + [(10, "")]
              + s.up * 3 + [(10, "")] + s.up + [(10, "")],
              lambda r: [hi_note, slot_at(r, 1, picker_win(names, 0))], lambda r: r.peek("CmdSel0") == 0, 0),
