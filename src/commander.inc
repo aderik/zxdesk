@@ -439,6 +439,12 @@ CivStore:
 
 ; Single-pane picker: one click selects a cached row; [OPEN] activates it.
 ; The event dispatcher has focused this window and excluded its frame.
+; The row is checked against the directory first (CmdRowStale, one
+; StDir, lf-1604): when it no longer says what the cache does, a file
+; saved or deleted from another window since the page was read, the
+; page is read again and the click selects what the row holds now,
+; nothing when it is blank, the window recomposed either way. A row
+; the directory confirms reads nothing, and a blank one is no click.
 CmdPress:
                 ld      a,(CmdBrowse)
                 or      a
@@ -454,22 +460,37 @@ CmdPress:
                 sub     2
                 cp      CMDROWS
                 ret     nc
-                ld      b,a
-                ld      hl,CmdCache0
-                ld      de,CMDENT
-                or      a
+                push    af
+                call    StIdent
+                ld      (CmdWasK),a
+                xor     a
+                ld      (CmdPane),a             ; the picker's one pane
+                call    CmdUse
+                pop     af
+                call    CmdRowStale
                 jr      z,CprRow
-CprNext:
-                add     hl,de
-                dec     a
-                jr      nz,CprNext
-CprRow:
+                call    CmdReadPane
+                ld      a,(CmdRow)              ; CmdRowAt's, kept through the read
+                sub     2
+                call    CmdRowAt
+                ld      hl,(CmdCacheP)
                 ld      a,(hl)
                 or      a
-                ret     z                       ; blank rows cannot select a file
-                ld      a,(CmdTop0)
-                add     a,b
+                jr      z,CprBack               ; blank now: nothing to select
+                jr      CprSelect
+CprRow:
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                jr      nz,CprSelect
+                ld      a,(CmdWasK)             ; blank rows cannot select a file
+                jp      StSelect
+CprSelect:
+                ld      a,(CmdIndex)
                 ld      (CmdSel0),a
+CprBack:
+                ld      a,(CmdWasK)
+                call    StSelect
                 jr      CprPaint
 CprOpen:
                 ld      a,(PtrX)
@@ -647,6 +668,11 @@ CmdDown:
 ; The top moved: the cache described the page before it, so the pane
 ; is read again from its new top and all of its rows painted.
 CmdPaged:
+                call    CmdPaintPage
+                jr      CmdPainted
+; The live pane read again from its top into its cache and its six
+; rows painted and marked.
+CmdPaintPage:
                 call    CmdReadPane
                 xor     a
 CpgRow:
@@ -656,18 +682,35 @@ CpgRow:
                 inc     a
                 cp      CMDROWS
                 jr      c,CpgRow
-                jr      CmdPainted
-; No file after the selection: nothing moves, unless the selection's
-; own row no longer says what the directory does (its file deleted
-; from another window, lf-1593): then the page is read again and
-; painted as it is, the selection on its blank row.
+                ret
+; No file after the selection: nothing moves, unless a row no longer
+; says what the directory does, a file deleted from another window
+; since the page was read: the row the move was for, which the cache
+; names where StDir has just found nothing (lf-1604, no second StDir
+; for it), or the selection's own (lf-1593). Then the page is read
+; again and painted as it is, the selection where it stood, on a
+; blank row when its own file went.
 CdnEnd:
+                push    bc
+                call    CmdTopAt
+                ld      a,(hl)
+                pop     bc
+                ld      c,a                     ; B = the proposed selection, C = the top
+                ld      a,b
+                sub     c
+                cp      CMDROWS
+                jr      nc,CdnSelf              ; past the page: no row cached
+                push    bc
+                call    CmdRowAt
+                pop     bc
+                ld      hl,(CmdCacheP)
+                ld      a,(hl)
+                or      a
+                jr      nz,CmdPaged             ; a name where the directory has none
+CdnSelf:
                 ld      a,b
                 dec     a
-                push    af
-                call    CmdTopAt
-                pop     af
-                sub     (hl)
+                sub     c
                 call    CmdRowStale
                 jp      z,CmdDone
                 jr      CmdPaged
@@ -773,7 +816,7 @@ CpkAt:
 CpkFind:
                 ld      a,(CmdIndex)
                 call    StDir
-                ret     c
+                jr      c,CpkGone
                 push    de                      ; current size, not cached size
                 ld      de,CmdWork
                 ld      b,13
@@ -793,6 +836,23 @@ CpkNext:
                 jr      nz,CpkFind
 CpkMissing:
                 scf
+                ret
+; The directory ended without the name the cache has on the selection's
+; row: its file deleted from another window since the page was read
+; (lf-1604). The key ends here with NO FILE SELECTED over a page read
+; again, the selection on its blank row: the caller's return address
+; goes (every caller is a CmdKey route that would say the same through
+; CmdEmpty, with a recompose of the whole window and a frame dropped at
+; 60 Hz) and the six rows and the status row are painted and marked
+; instead, the page route of a move.
+CpkGone:
+                pop     hl
+                call    CmdPaintPage
+                ld      a,6
+                call    CmdPaintStatus
+                ld      a,(CmdWasK)
+                call    StSelect
+                ld      a,2
                 ret
 CpkFound:
                 pop     de
