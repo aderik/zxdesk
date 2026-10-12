@@ -1203,7 +1203,8 @@ end-of-chunk caret, line ends at either end, up to 224 bytes; WRAP on
 at EU and JP, off at EU) against the base build: 227 pastes went in,
 all through the one pass, 93 opened DOCUMENT FULL through the old
 route. The one byte difference: the snapshot block of a notepad that
-never took one, where the first paste failed, lies 8 bytes further on.
+never took one, where the first paste failed, lay 8 bytes further on
+while `CmdWork` was 21 bytes; at 13 it is the base's (seed 2 again).
 
 **Measured and not built, for the PO.** A paste of 223 bytes (the
 whole document) is **21.2 to 23.0 ms**: at 60 Hz 1.9 ms the frame's
@@ -1225,12 +1226,15 @@ equal; at 50 Hz the five pastes fail and the two cuts pass.
 
 Budget against `fa73d9d`: the code before the page pad of `NsanTab`
 **27,684 → 29,045 bytes (+1,361)**, TEST **29,538 → 30,899**, TAPE=1
-**27,702 → 29,063**; static RAM **4,002 → 4,010 (+8**: `CmdWork` 13 →
-21 bytes, the one pass's state), heap **8,286 → 8,278** without a disk
-ROM and **2,901 → 2,893** with one (TEST 155 → 147); one scratch byte
-in the tape buffer (`NkSpanLong`, TapeBuf+215). Padded ROM crc32:
-normal **5f5ddc6b**, TEST **5b6a80c9**, TAPE=1 **53b97fa0** (base
-666789ba / fcfcdaf7 / 217de59a).
+**27,702 → 29,063**; static RAM **4,002**, heap **8,286** without a
+disk ROM and **2,901** with one (TEST 155), unchanged: the one pass's
+state is `CmdWork`'s 13 bytes, which its rollback no longer needs, and
+the edit routines' scratch and `NoteGot` (a first version grew
+`CmdWork` to 21 bytes and left the TEST build 147 bytes of heap on a
+disk machine, too few for `heap-stat`); one scratch byte in the tape
+buffer (`NkSpanLong`, TapeBuf+215). Padded ROM crc32: normal
+**153b02e0**, TEST **45395f74**, TAPE=1 **b3fa073d** (base 666789ba /
+fcfcdaf7 / 217de59a).
 
 ## FILE > OPEN in the budget (lf-1590)
 

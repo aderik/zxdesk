@@ -2073,27 +2073,30 @@ NrPlain:
 ; and then NoteInsert and NoteEnter a byte at a time would leave it,
 ; worked out first and built in CmdBuf (NotePasteBuild), then put in
 ; (NotePastePut). The state is in CmdWork, which the rollback of the
-; byte-at-a-time route takes when this one does not.
+; byte-at-a-time route takes when this one does not, and in scratch.
 PsOut           equ     CmdWork         ; the next byte of the lines built
-PsQ             equ     CmdWork+2       ; the line being built: its cells before the caret
-PsNc            equ     CmdWork+3       ; and its chunks
-PsRs            equ     CmdWork+4       ; the text after the span: up to its last cell that is not a space
-PsJ1            equ     CmdWork+5       ; nothing typed on the line yet: its chunks to the caret's, else 0
-PsN             equ     CmdWork+6       ; the chunks of the lines before the last
-PsLeft          equ     CmdWork+7       ; cells left in the chunk being built
-PsSrc           equ     CmdWork+8       ; and in the source's chunk
-PsCnt           equ     CmdWork+9       ; cells still to copy; the chunks wanted
-PsL0            equ     CmdWork+10      ; the span's lines: the first chunk
-PsLn            equ     CmdWork+11      ; and their chunks, which the lines built replace
-PsK             equ     CmdWork+12      ; the clipboard's line ends
-PsMove          equ     CmdWork+13      ; the chunks between the span and the empty lines after it
-PsJoined        equ     CmdWork+14      ; the line ends the erase joins (NwJoined)
-PsCX            equ     CmdWork+15      ; the caret: after the erase, then after the paste
-PsCY            equ     CmdWork+16
-PsPeak          equ     CmdWork+17      ; the most chunks the lines had at any byte
-PsUx            equ     CmdWork+18      ; the selection's upper bound, where the text
-PsUc            equ     CmdWork+19      ; after the span resumes
-PsRsN           equ     CmdWork+20      ; and the chunks it fills, one at least
+PsN             equ     CmdWork+2       ; the chunks of the lines before the last
+PsNc            equ     CmdWork+3       ; the line being built: its chunks
+PsSrc           equ     CmdWork+4       ; cells left in the source's chunk
+PsCnt           equ     CmdWork+5       ; cells still to copy; the chunks wanted
+PsL0            equ     CmdWork+6       ; the span's lines: the first chunk
+PsLn            equ     CmdWork+7       ; and their chunks, which the lines built replace
+PsK             equ     CmdWork+8       ; the clipboard's line ends
+PsMove          equ     CmdWork+9       ; the chunks between the span and the empty lines after it
+PsJoined        equ     CmdWork+10      ; the line ends the erase joins (NwJoined)
+PsCX            equ     CmdWork+11      ; the caret: after the erase, then after the paste
+PsCY            equ     CmdWork+12
+; NotePasteBuild's alone, in the edit routines' scratch and NoteGot,
+; which it does not touch (CmdWork stays 13 bytes: the TEST build's
+; heap on a disk machine has no room for more)
+PsQ             equ     NoteRowIx       ; the line being built: its cells before the caret
+PsRs            equ     NoteJoinAt      ; the text after the span: up to its last cell that is not a space
+PsJ1            equ     NoteExtendRow   ; nothing typed on the line yet: its chunks to the caret's, else 0
+PsLeft          equ     NoteOldLink     ; cells left in the chunk being built
+PsPeak          equ     NoteDeleteCount ; the most chunks the lines had at any byte
+PsRsN           equ     NoteChar        ; the chunks the text after the span fills, one at least
+PsUx            equ     NoteGot         ; the selection's upper bound, where the text
+PsUc            equ     NoteGot+1       ; after the span resumes
 
 ; The lines from the selection's lower bound's to its upper bound's
 ; (or the caret's line) are their cells, one after the other. The
