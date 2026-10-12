@@ -1053,10 +1053,13 @@ CopOk:
 ; A stops when the first name comes round again, the tape ends, or
 ; ESC or SPACE is held between files; within a block the BIOS's own
 ; CTRL+STOP ends the transfer. The first name written is kept in
-; TapeHdr's name field, free while no tape file is open: A stops when
-; it comes round, and it says whether anything went in at all, so A
-; refused on its first file reads READY under the alert, as I does
-; (lf-1598).
+; TapeHdr, free while no tape file is open: the header's name as the
+; tape holds it in the name field, before the NOTE fallback, so two
+; refused names are not the same file (lf-1602), and a flag in the
+; length field that says whether anything went in at all, so A refused
+; on its first file reads READY under the alert, as I does (lf-1598).
+; The names are compared through their terminator: what a header
+; carries behind it is not part of the name.
 CmdImport:
                 ld      hl,CmdBk0
                 call    CmdField                ; CmdPane is the active pane
@@ -1076,7 +1079,7 @@ CimTarget:
                 ld      a,13
                 jp      z,CmdResult
                 xor     a
-                ld      (TapeHdr+4),a           ; no first name yet
+                ld      (TapeHdr+17),a          ; no first name yet
 CimNext:
                 call    TapeNext
                 jp      c,CimEnd
@@ -1091,16 +1094,18 @@ CimNext:
                 ld      hl,CmdBuf
                 call    TapeBlock
                 jp      c,CimError
-                ld      a,(TapeHdr+4)
+                ld      a,(TapeHdr+17)
                 or      a
                 jr      z,CimWrite              ; nothing written yet: no name to meet
-                ld      hl,CmdWork
+                ld      hl,TapeIn+4             ; the header's name, not CmdWork's NOTE
                 ld      de,TapeHdr+4
                 ld      b,13
 CimSame:
                 ld      a,(de)
                 cp      (hl)
                 jr      nz,CimWrite
+                or      a
+                jr      z,CimEnd                ; the same through the terminator
                 inc     hl
                 inc     de
                 djnz    CimSame
@@ -1130,13 +1135,15 @@ CimClosed:
                 or      a
                 sbc     hl,de
                 jr      nz,CimNoRoom            ; a short write: it did not fit
-                ld      a,(TapeHdr+4)
+                ld      a,(TapeHdr+17)
                 or      a
                 jr      nz,CimKept
-                ld      hl,CmdWork              ; the first file in: its name
+                ld      hl,TapeIn+4             ; the first file in: its header's name
                 ld      de,TapeHdr+4
                 ld      bc,13
                 ldir
+                inc     a                       ; A was the flag's 0: now set
+                ld      (TapeHdr+17),a
 CimKept:
                 ld      a,(CmdKeyCh)
                 cp      'A'
@@ -1146,7 +1153,7 @@ CimKept:
                 ld      a,14                    ; IMPORT STOPPED
                 jr      CimStatus
 CimEnd:
-                ld      a,(TapeHdr+4)
+                ld      a,(TapeHdr+17)
                 or      a
                 ld      a,12                    ; NO FILE ON TAPE
                 jr      z,CimStatus
@@ -1173,7 +1180,7 @@ CimNoRoom:
                 call    StDelete
 ; Refused whole, with an alert over the status the files before it earned.
 CimRefuse:
-                ld      a,(TapeHdr+4)
+                ld      a,(TapeHdr+17)
                 or      a
                 ld      a,0
                 jr      z,CimRefused
