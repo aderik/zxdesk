@@ -822,6 +822,72 @@ C-BIOS_MSX1_JP 736 ok, all subjects pass (the three subjects above are
 new; against `5264508`'s source they fail at JP with Dropped 2, 1
 and 1).
 
+## The row route in a full document (lf-1599)
+
+The review of lf-1596: its two subjects hold two short lines, and the
+route it added (a one-line job within the key's frame, the rows the
+end moved over painted alone) was measured on those. With the
+document full the same keys cost more, and one of them drops. Eight
+lines of ABCDEFGHIJKLMNOPQRSTU VWXYZ (two chunks, two rows each) at
+24x17 with WRAP on, the view scrolled by one row, SELECT at the end
+of the last line, SHIFT+RIGHT into the spaces after it and SHIFT+UP
+off it, measured as in the sections above on C-BIOS JP:
+
+| key | `12e61ad` (lf-1596) | now |
+|---|---|---|
+| SHIFT+RIGHT into the spaces (the line's job, one row painted) | 12.7 ms / 0 dropped | 11.4 / 0 |
+| SHIFT+UP off the line (the line's job, two rows painted) | **15.1 / 1** | 13.7 / 0 |
+| the same keys on five lines of 39 characters (three chunks, the caret on chunks 12 to 14) | 14.5 / 0 | 13.6 / 0 |
+| `fb-select-past-end`'s SHIFT+DOWN (two short lines) | 9.8 / 0 | 9.7 / 0 |
+
+Where the 15.1 ms went, by breakpoints on the routines' entries: the
+row route's painter 2.3 ms before the first row it painted, the
+line-of walk 0.4 ms three times a key (`NwCaretCheck`, `NwEditLineAt`
+and `NwDerive` after the job), the row-at walk of SHIFT+UP 1.0 ms,
+the line's job 1.1 ms, the two rows painted 1.7 ms and blitted 1.4
+ms. What changed:
+
+- **The row route's painter** (`NwpOnly`): the rows of the view
+  above `NdRowLo` are walked in registers (the walk advanced, the
+  table's rows counted down) and the buffer cell is moved past them
+  in one step; the every-row loop (`NwpEvery`) then paints `NdRowHi -
+  NdRowLo + 1` rows and stops. The loop lf-1596 gave the route tested
+  the range against both bounds, counted the row in memory and
+  stepped the cell through a call for every row of the view, 150 us a
+  row and 2.3 ms for the thirteen rows above the caret at the bottom
+  of the view; the same rows are 0.6 ms now. `NwPRow`
+  (`TapeBuf+196`) is no longer used.
+- **The line-of walk** (`NwLineOf`): the stride is added to L with a
+  carry into H instead of a 16-bit add around a saved DE, 0.33 ms
+  instead of 0.42 for the sixteenth chunk.
+
+The every-row loop is untouched: `fb-type-24` is 14.5 ms at JP as
+before. Screens, documents, anchors and ends are those of `12e61ad`
+in every scenario measured (the oracle `wrap_win` with the ROM's own
+anchor and end): two-chunk lines with the caret past their end and
+SHIFT+DOWN or SHIFT+UP after it, a row added past the end (the 23rd
+column of a 19-character line, two chunks) and taken away again, HOME
+and ESC from the spaces, sixteen one-letter lines with the view
+scrolled, a plain cursor key off the extended line and a typed key
+after it, a mouse click after it, and the four documents of the
+table.
+
+`fb-select-past-end-full` (`./test.sh --frames`) types the eight
+lines at the home size, grips to 24x17, SELECT, SHIFT+RIGHT, SHIFT+UP,
+SHIFT+DOWN, SHIFT+UP: the screen against the compositor with the
+selection inverted (anchor (13, 15), end (5, 14), top 1), the
+document, Dropped 0 from boot, the longest frame from SELECT on in the
+detail. Against `12e61ad`'s source it fails at JP with Dropped 1.
+
+Budget against `12e61ad`: the code before the page pad of `NsanTab`
+(the last byte used, `build/msxdesk.rom`) **26,150 → 26,116 bytes
+(-34)**, TEST **27,904 → 27,870 (-34)**; the build line stays
+25,856 / 28,160 (page-aligned); static RAM **3,997**, heap **8,291**
+without a disk ROM and **2,906** with one, unchanged; one scratch byte
+freed. Padded ROM crc32: normal **922d06d3**, TEST **e7b21f14**.
+`./test.sh`: C-BIOS_MSX1_EU 766 ok, C-BIOS_MSX1_JP 756 ok, all
+subjects pass.
+
 ## FILE > OPEN in the budget (lf-1590)
 
 The two exceptions lf-1583 left, measured on main `3393724` and on

@@ -5006,6 +5006,28 @@ def frame_checks(syms, fails):
               f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
               f"{zlib.crc32(doc):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, Dropped={r.peek('Dropped', 2)}, "
               f"longest frame from SELECT {longest} us")
+    # The same past the end of the last of eight lines that fill the
+    # document, two rows each, the view scrolled by one (lf-1599, the
+    # reviewer on lf-1596): SHIFT+RIGHT into the spaces after the
+    # line, SHIFT+UP off it, SHIFT+DOWN and SHIFT+UP again. The caret
+    # is on the last chunks and at the bottom of the view, so the
+    # chunk walks are the longest and the row route's painter steps
+    # over thirteen rows: 15.1 ms and a frame dropped at 60 Hz on
+    # 12e61ad. The screen against the compositor with the selection
+    # inverted, the document, anchor and end, Dropped 0 from boot, the
+    # longest frame from SELECT on (13.7 ms at 60 Hz now).
+    full = b"ABCDEFGHIJKLMNOPQRSTU VWXYZ"
+    steps = (s.new + (text(full.decode()) + s.enter) * 7 + text(full.decode()) + grown + mark("select") + tap(7, 64)
+             + shifted(128) + shifted(32) + shifted(64) + shifted(32) + [(10, "")])
+    r = Run(syms, timing + steps, "fb-select-past-end-full", files={})
+    doc = note_width_document([full] * 8)
+    want = compose(expected_nt(), [wrap_win(doc, 5, 14, 1, w=24, h=17, sel=(0xE5, 0xFD))[0]])
+    longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("\nmark select")[-1])))
+    check(fails, "fb-select-past-end-full", r.nt() == want and r.bytes("NoteBuf", 256) == doc
+          and r.bytes("NoteAnchor", 4) == bytes((0x8D, 15, 5, 14)) and r.peek("NoteTop") == 1 and r.peek("Dropped", 2) == 0,
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
+          f"{zlib.crc32(doc):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, top {r.peek('NoteTop')}, "
+          f"Dropped={r.peek('Dropped', 2)}, longest frame from SELECT {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)
