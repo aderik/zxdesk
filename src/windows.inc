@@ -383,6 +383,14 @@ WcShift:
                 djnz    WcShift
 WcShifted:
                 call    RowsAddLive             ; the rows it vacates
+                ld      a,(CmdLoadDue)          ; a load waiting for it is
+                ld      hl,WndCur               ; void: its slot may be the
+                dec     a                       ; next window's (lf-1624)
+                cp      (hl)
+                jr      nz,WcNoLoad
+                xor     a
+                ld      (CmdLoadDue),a
+WcNoLoad:
                 ld      a,(WndCur)
                 add     a,HEAPOWN_WIN
                 call    HeapFreeOwner

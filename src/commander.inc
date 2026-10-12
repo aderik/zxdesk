@@ -1199,7 +1199,10 @@ CopFind:
                 inc     hl
                 djnz    CopFind
 ; A fresh notepad: its load waits for the next frame (CmdLoadService),
-; the file's name set now and the notepad's device the pane's. The
+; the file's name and the pane's device kept aside until then, not
+; set in the notepad: one skipped (closed or sent behind first) stays
+; NOTE on its own device, so no SAVE writes the blank over the file
+; (lf-1624). The
 ; open (the old front's state saved, three heap walks, the blank
 ; document, the old front's cap flipped: 6.6 ms) and the load (the
 ; read, the undo snapshot, NoteSanitise: 7.1) were one frame of 16.8
@@ -1211,9 +1214,10 @@ CopNew:
                 ld      a,7
                 jp      c,CmdResult
                 ld      a,(CmdSrcBk)
-                ld      (NoteBackend),a
+                ld      (CmdLoadBk),a
                 ld      hl,CmdWork
-                call    NoteSetName
+                ld      de,CmdLoadName
+                call    NoteCopyName
                 ld      a,(WndCur)
                 inc     a
                 ld      (CmdLoadDue),a          ; the slot, plus one
@@ -1252,12 +1256,12 @@ CopOk:
                 ld      a,2
                 ret
 ; The frame after CopNew's open: the file loaded into the notepad it
-; opened, under the name set there, when that notepad is still the
-; front window (a close or a focus change in between leaves it as it
-; is, blank). Then as CopOk has it, the compose and the blit from the
-; next frame on; a failed load gives the name and the device back and
-; says so, as CopLoad does. Called once a frame from the main loop,
-; before the repaint.
+; opened, under the name and device kept there, when that notepad is
+; still the front window (a close or a focus change in between leaves
+; it as it is, blank, NOTE on its own device: lf-1624). Then as CopOk
+; has it, the compose and the blit from the next frame on; a failed
+; load gives the name and the device back and says so, as CopLoad
+; does. Called once a frame from the main loop, before the repaint.
 CmdLoadService:
                 ld      a,(CmdLoadDue)
                 or      a
@@ -1273,6 +1277,10 @@ CmdLoadService:
                 ret     nz
                 ld      a,(NoteBackend)
                 push    af
+                ld      a,(CmdLoadBk)
+                ld      (NoteBackend),a
+                ld      hl,CmdLoadName
+                call    NoteSetName
                 ld      hl,NoteName
                 call    NoteLoadNamed
                 jr      nc,ClsOk
@@ -1285,9 +1293,8 @@ CmdLoadService:
                 call    RowsLiveText
                 jp      NoteLoadAlert
 ClsOk:
-                pop     af
-                call    NoteUndoBackend         ; UNDO gives that device back
-                ld      a,(WndCur)
+                pop     af                      ; the snapshot has the file's
+                ld      a,(WndCur)              ; device, as before lf-1624
                 call    WndTouch
                 call    RowsLiveText
                 jp      RepaintLater

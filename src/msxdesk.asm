@@ -365,6 +365,8 @@ CMDSTSZ         equ     _ram-CmdState
                 var     CmdHandle, 1
                 var     CmdSrcBk, 1
                 var     CmdLoadDue, 1   ; a fresh notepad's slot plus one: its load next frame (lf-1592)
+                var     CmdLoadBk, 1    ; its device and name, set only at the load (lf-1624)
+                var     CmdLoadName, NOTENAMEMAX+1
                 var     CmdWork, 13
                 var     CmdBuf, 256
                 ; the clock
