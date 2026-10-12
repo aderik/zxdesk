@@ -5317,9 +5317,22 @@ def frame_checks(syms, fails):
     # the selection covered are painted and blitted alone: 6 to 10 ms a
     # cursor key, 9.4 to 11.6 a typed key, 12.0 to 13.8 an ENTER whose
     # rows below are empty, 7.4 for ESC. At 50 Hz 0850c2d drops nothing
-    # in these but fb-type-24-full: the frames are under its 20 ms.
+    # in these: the frames are under its 20 ms (fb-type-24-full's
+    # longest is 17.5 ms there).
+    # A letter, BS or DEL over a selection that crosses a line end
+    # (lf-1608, dev3 on lf-1597): HELLO WORLD, FOO BAR and BAZ typed at
+    # the home size, the grip, SELECT and two SHIFT+UP (HEL|LO WORLD
+    # through BAZ), then X, BS or DEL; and X after SELECT and three
+    # SHIFT+UP in the full document (fb-esc-24 without the ESC). On
+    # efd6b0b the erase went backwards a NoteBack a character over a
+    # line end, 0.5 ms each and NoteTrimTail 2 ms at each join: 21.1 ms
+    # at 60 Hz and 22.9 at 50 for the three lines, 37.0 for the full
+    # document, Dropped 1 (JP 2 in the full one) at both machines. Now
+    # the cells between the bounds go in one NoteDeleteN with the hard
+    # ends linked first.
     eight = s.new + (text(full.decode()) + s.enter) * 7 + text(full.decode()) + grown + mark("before")
     seven = s.new + (text(full.decode()) + s.enter) * 7 + text("HELLO WORLD") + grown + mark("before")
+    three = s.new + text("HELLO WORLD") + s.enter + text("FOO BAR") + s.enter + text("BAZ") + grown + mark("before")
     for name, steps, lines, caret, top in [
             ("fb-caret-24", eight + shifted(32) * 2 + shifted(16) * 11, [full] * 8, (2, 13), 1),
             ("fb-type-24-16", big + mark("before") + (text("A") + s.enter) * 15 + text("A"), [b"A"] * 16, (1, 15), 1),
@@ -5327,7 +5340,11 @@ def frame_checks(syms, fails):
              [full] * 8, (13, 15), 1),
             ("fb-esc-24", eight + tap(7, 64) + shifted(32) * 3 + s.esc + s.home + text("X"),
              [full] * 6 + [b"X" + full, full], (1, 12), 1),
-            ("fb-sel-letter-24", seven + tap(7, 64) + shifted(16) * 5 + text("XY"), [full] * 7 + [b"HELLO XY"], (8, 14), 0)]:
+            ("fb-sel-letter-24", seven + tap(7, 64) + shifted(16) * 5 + text("XY"), [full] * 7 + [b"HELLO XY"], (8, 14), 0),
+            ("fb-sel-lines-24", three + tap(7, 64) + shifted(32) * 2 + text("X"), [b"HELX"], (4, 0), 0),
+            ("fb-sel-lines-24-bs", three + tap(7, 64) + shifted(32) * 2 + tap(7, 32), [b"HEL"], (3, 0), 0),
+            ("fb-sel-lines-24-del", three + tap(7, 64) + shifted(32) * 2 + tap(8, 8), [b"HEL"], (3, 0), 0),
+            ("fb-sel-lines-24-full", eight + tap(7, 64) + shifted(32) * 3 + text("X"), [full] * 6 + [b"ABCDEX"], (6, 12), 1)]:
         r = Run(syms, timing + steps + [(10, "")] + mark("end"), name, files={})
         m = marks(r)
         doc = note_width_document(lines)
@@ -5425,6 +5442,17 @@ def note_selection_checks(syms, fails):
     r = Run(syms, reverse + tap(5, 32) + [(10, '')], 'sel-chunks-type', files={})
     expected = note_width_document([long_text[:15] + b'X'])
     check(fails, 'sel-chunks-type', r.bytes('NoteBuf', 256) == expected,
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
+    # A selection whose lower bound is the end-of-chunk caret (0, 14)
+    # of a line that goes on (lf-1608): fifteen characters, two
+    # SHIFT+LEFT, Z typed at column 13 leaves the caret at 14 with the
+    # link set; SELECT, SHIFT+RIGHT selects the N at (1, 0); X replaces
+    # it. The one pass of efd6b0b began at the chunk's terminator there
+    # and wrote over it and the link; now the cells begin at (1, 0).
+    chunk_end = base + typed(long_text[:15].decode()) + arrows(16, 2) + typed('Z') + tap(7, 64) + arrows(128, 1)
+    r = Run(syms, chunk_end + typed('X') + [(10, '')], 'sel-chunk-end-type', files={})
+    expected = note_width_document([long_text[:13] + b'ZXO'])
+    check(fails, 'sel-chunk-end-type', r.bytes('NoteBuf', 256) == expected and r.peek('NoteAnchor', 2) >> 8 == 255,
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(expected):08x}")
     # Select backwards across two hard breaks and a continuation chunk.
     # UP is a logical line here, not a screen row: WRAP off.

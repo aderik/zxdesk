@@ -935,8 +935,9 @@ other key in a 24x17 notepad with WRAP on still composed and blitted
 the whole window in its frame. Measured as in the sections above
 (C-BIOS JP, the loop iteration from `FrameWatch` to `MainLoop`,
 breakpoints on the routines' entries for the split), on `0850c2d` and
-on this change; EU drops nothing in these on `0850c2d` but in the
-full document typed, its frames being under 20 ms.
+on this change; EU drops nothing in these on `0850c2d`, its frames
+being under 20 ms (the full document typed, measured again for
+lf-1608: 17.5 ms at most, Dropped 0).
 
 | key at 24x17, WRAP on (frame ms / Dropped, JP) | `0850c2d` | now |
 |---|---|---|
@@ -1052,6 +1053,93 @@ next pages); static RAM **3,997**, heap **8,291** without a disk ROM
 and **2,906** with one, unchanged; nineteen bytes of `TapeBuf`
 scratch (+196, +200 to +214). Padded ROM crc32: normal **ff97d1db**,
 TEST **25db1ce9** (base 9e3fa2c7 / be30eb22).
+
+## A letter, BS or DEL over a selection that crosses a line end (lf-1608)
+
+dev3's finding on lf-1597 (point 3): X typed over HEL|LO WORLD through
+BAZ at 24x17 with WRAP on was still a **21.1 ms** frame at 60 Hz and
+22.9 at 50, one dropped at both machines, BS and DEL the same, and
+37 ms with two dropped (one at 50 Hz) over three SHIFT+UP in the full
+document. lf-1597 gave only a selection within one line the one pass;
+over a line end `NoteEraseSelection` still deleted backwards, a
+`NoteBack` a character (`NoteDeleteAt`, `NoteTrimTail`,
+`NoteMarkEdited`, `NoteUndoDue`: 0.5 ms each) with `NbHard` and a 2 ms
+`NoteTrimTail` at each join, 12 ms before the span job and the split
+compose. Measured as in the sections above (the loop iteration from
+`FrameWatch` to `MainLoop`, breakpoints on the routines' entries for
+the route), on main `9a0a185` and on this change; the longest frame
+from SELECT on, `Dropped` from boot.
+
+| at 24x17, WRAP on (frame ms / Dropped) | `9a0a185` JP | `9a0a185` EU | now, both |
+|---|---|---|---|
+| HELLO WORLD, FOO BAR, BAZ; SELECT, two SHIFT+UP, X | 21.1 / 1 | 22.9 / 1 | 12.3 / 0 |
+| the same, BS | 20.7 / 1 | 22.5 / 1 | 11.9 / 0 |
+| the same, DEL | 20.7 / 1 | 22.4 / 1 | 11.9 / 0 |
+| the same selection made downwards (SELECT at HEL, two SHIFT+DOWN), X | 21.1 / 1 | 22.9 / 1 | 12.3 / 0 |
+| HOME after the two SHIFT+UP (all three lines), BS | 22.1 / 1 | 23.9 / 1 | 12.0 / 0 |
+| the full document (eight lines of 27): SELECT, three SHIFT+UP, X | 35.1 / 2 | 36.7 / 1 | 11.4 / 0 |
+| the same, BS | 34.7 / 2 | 36.4 / 1 | 11.5 / 0 |
+| three SHIFT+UP and three SHIFT+LEFT (a soft and a hard end between the bounds), DEL | 36.3 / 2 | 37.8 / 1 | 11.5 / 0 |
+| A, CDEFGH, IJKL; two SHIFT+UP from IJKL's end (the lower bound among A's trailing spaces), X | 20.3 / 1 | 18.3 / 0 | 12.5 / 0 |
+| fourteen characters, ENTER, OPQ; the caret at (0, 14), SELECT, SHIFT+DOWN, X | 13.1 / 0 | 13.1 / 0 | 11.7 / 0 |
+| ENTER over the three lines | 24.3 / 1 | 26.1 / 1 | 15.5 / 0 |
+| GRAPH+E (CUT) of the three lines | 27.5 / 1 | 27.4 / 1 | 17.1 / 1 (JP), 16.9 / 0 (EU) |
+| GRAPH+P (PASTE) over the three lines | 27.7 / 1 | 27.6 / 1 | 20.7 / 1 (JP), 22.4 / 1 (EU) |
+
+What changed (`NoteEraseSelection`, `src/note.inc`): every selection
+goes in one pass. The caret goes to the lower bound and the links of
+the chunks from its chunk to the one before the upper bound's are
+walked once; a line that ends among them is joined the way `NbHard`
+has it, the link set and `NwJoined` counted for the span job. When
+the lower bound's own chunk ends its line and the bound lies among
+its trailing spaces, the caret moves back to the text's end, where
+the join left it before, and those spaces count as cells. Then one
+`NoteDeleteN` over the cells between the bounds (the packed distance
+less two a chunk end), one `NoteTrimTail`, one `NoteMarkEdited`; the
+span job and the compose after it are lf-1597's (a join composes the
+window the split way, as `fb-join-bs` has it). A lower bound of 14,
+the end-of-chunk caret a chunk filled by typing leaves, begins the
+cells at the next chunk's first and keeps the caret: lf-1597's one
+pass began at that chunk's terminator and wrote the cells over it and
+the link (fifteen characters, two SHIFT+LEFT, Z, SELECT, SHIFT+RIGHT
+and X left `ABCDEFGHIJKLMZ`, a chunk `O` with a spoiled link and `X`
+on a third, the caret at (15, 0)); it is `ABCDEFGHIJKLMZXO` now
+(`sel-chunk-end-type`).
+
+Documents, carets, tops and screens are byte for byte `9a0a185`'s in
+every scenario of the table (the ROM's own name table against the
+base build's) and in UNDO after the X (the three lines back), but the
+end-of-chunk one.
+
+**Measured and not built, for the PO.** ENTER over a selection over
+lines is **15.5 ms** at 60 Hz: no frame dropped in the run, but in
+the band (15.2 to 15.9) where it depends on where the frame starts;
+the erase, `NoteEnter` and the span job over the joined and split
+lines in one frame. CUT and PASTE over lines go through `NoteRefresh`
+(the whole window composed and blitted in the frame): **17.1 ms** and
+**20.7 to 22.4 ms**, a frame dropped (27.5 before). Neither is the
+ticket's letter, BS or DEL.
+
+Tests (`msxtest.py`): `fb-sel-lines-24`, `-bs`, `-del` (the three
+lines, SELECT, two SHIFT+UP, X, BS or DEL) and `fb-sel-lines-24-full`
+(the full document, SELECT, three SHIFT+UP, X) in `frame_checks`, each
+Dropped before the keys and at the end both 0, the screen against
+`wrap_win`, the document, the caret, the top and no selection; on
+`9a0a185`'s source they fail at both machines with Dropped 1, 1, 1
+and 1 at 50 Hz (22.9, 22.5, 22.4 and 36.7 ms) and 1, 1, 1 and 2 at
+60 Hz (21.1, 20.7, 20.7 and 36.9 ms). `sel-chunk-end-type` in
+`note_selection_checks` asserts the document above (on `9a0a185` crc32
+1c159c07 for 1c614ff9). The comment on the lf-1597 subjects said
+`0850c2d` dropped a frame in `fb-type-24-full` at 50 Hz; measured
+again on `0850c2d`'s source it does not (Dropped 0, longest frame
+17.5 ms), and the comment and the section above say so now.
+
+Budget against `9a0a185`: the code before the page pad of `NsanTab`
+**27,113 → 27,128 bytes (+15)**, TEST **28,867 → 28,882 (+15)**; the
+build line 27,392 and 29,184 unchanged; static RAM **3,997**, heap
+**8,291** without a disk ROM and **2,906** with one, unchanged, no
+new scratch. Padded ROM crc32: normal **8d0434e3**, TEST **e7f28946**
+(base bef87f9c / 52adccde).
 
 ## FILE > OPEN in the budget (lf-1590)
 
