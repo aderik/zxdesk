@@ -976,6 +976,70 @@ ROM and **2,885 → 2,891** with one (TEST 5,538 → 5,544 and 153 →
 **bb02f548**. `./test.sh`: C-BIOS_MSX1_EU 741 ok, C-BIOS_MSX1_JP 731
 ok, all subjects pass.
 
+## The page against the directory (lf-1593)
+
+The review of lf-1590: since a move within the page no longer reads
+the directory, the page's cache goes stale when another window adds
+or removes a file meanwhile. A notepad with HI, FILE > OPEN over
+ALPHA and BETA, GRAPH+X to the notepad, GRAPH+S with the name G,
+GRAPH+X back and two SHIFT+DOWN: the selection stood on index 2, the
+row stayed blank, nothing was inverted and ENTER said NO FILE
+SELECTED. R put it right.
+
+Now a move checks the two rows it is about to paint against the
+directory first (`CmdRowStale`: one `StDir` and a name compare a
+row), and when either no longer says what the cache does (a blank
+row where a file now is, a name where none or another one is) it
+takes the page route of a page turn (`CmdPaged`: the pane read again
+from its top, its six rows painted and marked). SHIFT+DOWN at the end
+of the directory checks the selection's own row the same way, so a
+file deleted from under the selection leaves no ghost: the page is
+read again and the selection stands on its blank row. A move whose
+two rows the directory confirms reads nothing, as before; the
+Commander's other pane is checked on its own moves, as it is read on
+its own page turns. The mouse's click on a blank row and the picker
+brought to the front are as they were.
+
+Measured as in the section above on C-BIOS JP (the same lengths on
+EU), two files on RAM, a 16x9 notepad behind the picker:
+
+| step | `3b7d9cd` | now |
+|---|---|---|
+| SHIFT+DOWN within a current page (ALPHA to BETA), two rows painted | 8.2 ms | 8.9 (the two rows checked first) |
+| SHIFT+DOWN onto the row the cache has blank where the directory has G | 7.6: the row stays blank, ENTER says NO FILE SELECTED | 14.7 (the page read again, six rows painted and blitted), 4.8 (their flush): G on the row, inverted, ENTER loads it; Dropped 0 at 50 and 60 Hz |
+| SHIFT+DOWN past the last file (nothing moves; `CmdDone`'s full recompose) | 15.3, one dropped at 60 Hz, as before lf-1590 | 15.7 (the selection's row checked), one dropped |
+
+The last row was dropping before this change and still does: a key
+that moves nothing recomposes the whole window. The page route's
+14.7 ms is that of a page turn since lf-1590; it stays under the
+14.8 that never dropped at 60 Hz, with no room to spare.
+
+Subjects (`./test.sh --commander`, all configurations):
+`browse-saved-behind` the route above, the screen against the
+compositor (G on the third row, inverted, the notepad behind it
+titled G), `CmdSel0` 2 and G stored as HI; `browse-saved-behind-open`
+ENTER then loads G (the name, the 256 bytes, unmodified);
+`cmd-saved-behind` and `cmd-saved-behind-right` the same route in the
+two-pane Commander, G in the left pane after its two moves and in the
+right one, on RAM, after TAB and its own two. On RAM, the directory
+table written behind the picker's back: `browse-added-behind` a third
+entry, found on the move onto its row; `browse-gone-behind` BETA
+removed with the selection on ALPHA, the move lands on GAMMA;
+`browse-gone-under` DELTA removed from under the selection, SHIFT+DOWN
+reads the page again (the selection on its blank row), and
+`browse-gone-under-up` SHIFT+UP from there takes GAMMA.
+`browse-move-rows`, `cmd-move-rows` and `fb-open` as they were: one
+repaint pass of rows 5 to 6, no compose, Dropped 0.
+
+Budget against `3b7d9cd`: the code before the page pad of `NsanTab`
+**26,115 → 26,181 bytes (+66)**, TEST **27,869 → 27,935 (+66)**; the
+build line stays 26,624 for the normal ROM and goes 28,160 → 28,416
+for TEST (the pad: `NsanTab` moved a page up); static RAM **3,997**
+(TEST 6,729), heap **8,291** without a disk ROM and **2,906** with
+one, unchanged. Padded ROM crc32: normal **bb5dd696**, TEST
+**dc7ff500**. `./test.sh`: C-BIOS_MSX1_EU 777 ok, C-BIOS_MSX1_JP 767 ok, all
+subjects pass.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
