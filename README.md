@@ -1141,6 +1141,97 @@ build line 27,392 and 29,184 unchanged; static RAM **3,997**, heap
 new scratch. Padded ROM crc32: normal **8d0434e3**, TEST **e7f28946**
 (base bef87f9c / 52adccde).
 
+## CUT and PASTE over lines at 24x17 (lf-1611)
+
+The question lf-1608 left: CUT and PASTE over a selection that
+crosses a line end went through `NoteRefresh`, the whole table laid
+out again in the frame of the edit; PASTE put the clipboard in a byte
+at a time through `NoteInsert` and `NoteEnter` (0.35 ms a character, a
+row moved at every line end) after a 256-byte rollback copy. Measured
+as in the sections above, on main `fa73d9d` and on this change, the
+frame of the cut or the paste (the longest from the key on) and the
+frames dropped by it; HELLO WORLD, FOO BAR and BAZ, or the full
+document of eight lines of 27, at 24x17 with WRAP on, SELECT and two
+(three) SHIFT+UP:
+
+| frame ms / Dropped | `fa73d9d` JP | `fa73d9d` EU | now JP | now EU |
+|---|---|---|---|---|
+| GRAPH+E over the three lines | 17.1 / 1 | 17.0 / 0 | 11.3 / 0 | 11.3 / 0 |
+| GRAPH+P on the caret after it | 25.9 / 1 | 25.9 / 1 | 12.3 / 0 | 12.3 / 0 |
+| GRAPH+Y, then GRAPH+P over the selection | 29.9 / 1 | 31.6 / 1 | 11.0 / 0 | 11.0 / 0 |
+| EDIT > CUT, then EDIT > PASTE | 18.5 and 25.5 / 2 | 18.4 and 27.2 / 1 | 12.7 and 13.7 / 0 | 12.7 and 13.7 / 0 |
+| GRAPH+E in the full document | 15.9 / 1 | 15.7 / 0 | 11.5 / 0 | 11.5 / 0 |
+| GRAPH+P on the caret after it | 30.9 / 1 | 32.7 / 1 | 12.3 / 0 | 12.3 / 0 |
+| the full document cut (sixteen SHIFT+UP, HOME), the 223 bytes pasted into the empty notepad | 114.3 / 6 | 114.1 / 5 | 21.2 / 2 | 23.0 / 1 |
+| the 223 bytes copied and pasted over the whole document | 151.1 / 9 | 150.8 / 7 | 22.2 / 2 | 22.2 / 1 |
+
+What changed (`src/note.inc`):
+
+- CUT with WRAP on: the erase is lf-1608's (`NoteEraseSelection`),
+  then the span job over the lines it joined and the split compose,
+  as a BS over the selection has it (`NkEditSpan`, `NoteEditDone`).
+  `NoteMenuEdit` keeps what `NoteKey` keeps before an edit (the links,
+  the caret's row, the rows, `NwKeyed` 2).
+- PASTE in one pass: `NotePasteBuild` works out the document the
+  erase and the bytes one at a time would leave and builds the lines
+  in `CmdBuf`, nothing changed yet: the cells before the lower bound
+  and the text after the upper bound (the lower bound back to its
+  line's text and the end-of-chunk caret as lf-1608 has them,
+  `NoteTrimTail`'s blank chunks given back), a run of bytes leaving
+  the line chunks enough for its text or as many as it had (a byte
+  adds a chunk when the text fills them), a line end keeping the
+  chunks to the caret's and giving the text after the span the chunks
+  it fills. It counts the most chunks the lines ever had: those beyond
+  the span's come from the empty lines at the document's end, as
+  `NoteExtend` takes them, and when there are too few the bytes go in
+  one at a time as before, rollback and DOCUMENT FULL included.
+  `NotePastePut` takes the undo snapshot's place after it: the chunks
+  between the span and the empty lines move by the chunks added or
+  given back, the lines go in, the caret after the last byte. The
+  span job runs over the lines made (`NkEditSpanAt`: D old lines, E
+  new) and the window is composed the split way; a paste of more than
+  `NKSPANMAX` chunks leaves the job to the service (`NkSpanLong`), as
+  a long typed line does.
+- `NoteTrimTail` gives a line's blank chunks back together, the rows
+  below moved up once (two of them were 2.9 ms of the cut's frame).
+
+Documents, carets, tops, undo states and snapshots and screens are
+byte for byte `fa73d9d`'s in every row of the table, and in a
+differential run of 320 random documents, carets, selections and
+clipboards (spaces at chunk ends, blank continuation chunks, the
+end-of-chunk caret, line ends at either end, up to 224 bytes; WRAP on
+at EU and JP, off at EU) against the base build: 227 pastes went in,
+all through the one pass, 93 opened DOCUMENT FULL through the old
+route. The one byte difference: the snapshot block of a notepad that
+never took one, where the first paste failed, lies 8 bytes further on.
+
+**Measured and not built, for the PO.** A paste of 223 bytes (the
+whole document) is **21.2 to 23.0 ms**: at 60 Hz 1.9 ms the frame's
+input, 7.7 building the lines, 1.5 the room, 1.5 the snapshot, 1.5
+putting them in, 2.4 starting the job and 3.4 the service's first
+step of it in the same frame; one frame
+dropped (two at 60 Hz, the compose of the laid out document 17.9 ms
+after it). The cut of the whole document is still 36 ms (the erase of
+223 cells). Neither is the ticket's selection over lines.
+
+Tests (`msxtest.py`, `frame_checks`): `fb-cut-lines-24`,
+`fb-paste-lines-24`, `fb-paste-sel-24`, `fb-paste-lines-24-menu`,
+`fb-paste-lines-24-undo`, `fb-cut-lines-24-full` and
+`fb-paste-lines-24-full`, each Dropped before the keys and at the end
+both 0, the screen against `wrap_win`, the document, the caret, the
+top, no selection and the clipboard. On `fa73d9d`'s source all seven
+fail at 60 Hz (Dropped 1, 2, 1, 2, 2, 1, 2) with every other value
+equal; at 50 Hz the five pastes fail and the two cuts pass.
+
+Budget against `fa73d9d`: the code before the page pad of `NsanTab`
+**27,684 → 29,045 bytes (+1,361)**, TEST **29,538 → 30,899**, TAPE=1
+**27,702 → 29,063**; static RAM **4,002 → 4,010 (+8**: `CmdWork` 13 →
+21 bytes, the one pass's state), heap **8,286 → 8,278** without a disk
+ROM and **2,901 → 2,893** with one (TEST 155 → 147); one scratch byte
+in the tape buffer (`NkSpanLong`, TapeBuf+215). Padded ROM crc32:
+normal **5f5ddc6b**, TEST **5b6a80c9**, TAPE=1 **53b97fa0** (base
+666789ba / fcfcdaf7 / 217de59a).
+
 ## FILE > OPEN in the budget (lf-1590)
 
 The two exceptions lf-1583 left, measured on main `3393724` and on
