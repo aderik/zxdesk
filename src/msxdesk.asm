@@ -139,6 +139,9 @@ _ram            defl    _ram+size
                 var     TapePos, 2
                 var     TapeMode, 1
                 var     TapeBusy, 1
+                var     TapeKeep, 1     ; TapeBuf holds the file TapeIn names (lf-1576)
+                var     TapeSum, 2      ; and summed to this when it came in
+                var     TapeShown, 1    ; the band says a tape runs: cleared next frame
                 var     StBackend, 1
                 var     StCapability, 1
                 var     StVecOpen, 2
@@ -412,6 +415,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     DskSetRow, 1    ; the DESKTOP window's focus, per window
 IFDEF TEST
                 var     TestDone, 1
+                var     TthResults, 14  ; TestTapeHeld's seven pairs (lf-1576)
                 var     ThPtr, 6
                 var     ThStat, 12
                 var     TcMonths, CALYEARS*12*2
@@ -633,6 +637,7 @@ MainLoop:
                 halt
                 call    FrameWatch
                 call    PtrUpdate
+                call    TapeBandIdle    ; a tape notice goes with this frame
                 call    NtFlush
                 call    ReadInput
                 call    EvPoll          ; ends in KbdPoll

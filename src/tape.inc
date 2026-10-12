@@ -26,6 +26,19 @@ TapeOpenMode:
                 ret     c
                 ld      a,b
                 ld      (TapeMode),a
+                ; Asked by name for the file the buffer still holds (lf-1576):
+                ; the tape has played past it, so it is served from the
+                ; buffer, at its start, without a leader being waited for.
+                cp      FA_READ
+                jr      nz,TapeFresh
+                call    TapeHeld
+                jr      nz,TapeFresh
+                ld      hl,0
+                ld      (TapePos),hl
+                jr      TapeOpened
+TapeFresh:
+                xor     a                       ; a write takes the header and
+                ld      (TapeKeep),a            ; the buffer, a read the buffer
                 ld      hl,0
                 ld      (TapeLen),hl
                 ld      (TapePos),hl
@@ -39,6 +52,7 @@ TapeOpenMode:
                 ld      a,(TapeMode)
                 cp      FA_OVERWRITE
                 jr      z,TapeOpened
+                call    TapeReading
                 ld      a,1
                 ld      (TapeBusy),a
                 di
@@ -70,11 +84,14 @@ TapeCompare:
                 ld      hl,TapeBuf
                 call    TapeGetBlock
                 jr      c,TapeLoadFail
-                push    af
                 xor     a
                 ld      (TapeBusy),a
-                pop     af
                 ei
+                ; The file is in: TapeIn names it, the sum says it is intact
+                call    TapeSumBuf
+                ld      (TapeSum),hl
+                ld      a,1
+                ld      (TapeKeep),a
 TapeOpened:
                 ld      a,1
                 or      a
@@ -92,6 +109,119 @@ TapeLoadFail:
                 ret
 TapeMagic:      defb    "MSXT"
 
+; Z when the buffer still holds the file RamName asks for (lf-1576):
+; TapeKeep set by the read that brought it in and dropped by whatever
+; has used the buffer or the header since (a write, Commander's
+; import, the notepad's wrap table and painters, which live in
+; TapeBuf: NwStartJob, NoteDraw, NoteKey, NoteLayService), the name the
+; header carries equal to RamName through its terminator (what a header
+; holds behind the name is not part of it, lf-1602), and the bytes
+; summing as they did when they came in: a scribble by a path that does
+; not drop the flag sends the open to the tape, the doubt resolved the
+; tape's way. An empty name is the next file on the tape, never the
+; buffer.
+TapeHeld:
+                ld      a,(TapeKeep)
+                or      a
+                jr      z,ThNo
+                ld      a,(RamName)
+                or      a
+                jr      z,ThNo
+                ld      hl,RamName
+                ld      de,TapeIn+4
+                ld      b,13
+ThName:
+                ld      a,(de)
+                cp      (hl)
+                jr      nz,ThNo
+                or      a
+                jr      z,ThSum                 ; equal through the terminator
+                inc     hl
+                inc     de
+                djnz    ThName
+ThSum:
+                call    TapeSumBuf
+                ld      de,(TapeSum)
+                or      a
+                sbc     hl,de
+                ret     z
+ThNo:
+                or      1
+                ret
+
+; HL = a sum of TapeBuf's TapeLen bytes: the sum so far rotated left a
+; bit and the byte added, so a byte changed or moved changes it. 256
+; bytes measured at 25,388 cycles, 7.1 ms (openMSX breakpoints either
+; side), at a tape open only: after the read that brought the file in
+; and when the buffer is asked for by name.
+TapeSumBuf:
+                ld      hl,0
+                ld      de,TapeBuf
+                ld      bc,(TapeLen)
+TsbLoop:
+                ld      a,b
+                or      c
+                ret     z
+                add     hl,hl
+                jr      nc,TsbAdd
+                inc     l                       ; bit 15 round to bit 0
+TsbAdd:
+                ld      a,(de)
+                add     a,l
+                ld      l,a
+                jr      nc,TsbNext
+                inc     h
+TsbNext:
+                inc     de
+                dec     bc
+                jr      TsbLoop
+
+; The BIOS holds the frame for a transfer: a read waits on a silent
+; tape for ever, a recording runs as long as the file. Before the first
+; block the status band says what runs and that CTRL+STOP ends it, on
+; the screen now rather than at the frame's end (upstream 277c7ca,
+; lf-1576; the Commander's status row says RECORDING as well, lf-1603):
+; the band in the shadow, inverted as the band is, from the left with
+; the key echoes cleared, and NtFlush puts out the dirty rows, the band
+; and whatever a menu's close or a dialogue's answer left, so the user
+; looks at the desktop while the tape runs, not at the FILE menu. The
+; frame after the transfer gives the band back (TapeBandIdle).
+TapeReading:
+                ld      hl,TxtTapeReading
+TapeNotice:
+                push    hl
+                call    TapeBandClear
+                pop     hl
+                ld      a,(PrintInv)
+                push    af
+                ld      a,INVBANK
+                ld      (PrintInv),a
+                ld      b,STATROW
+                ld      c,0
+                call    PrintStr
+                pop     af
+                ld      (PrintInv),a
+                ld      a,1
+                ld      (TapeShown),a
+                jp      NtFlush
+; The band blank (CellAddr marks the row), the echoes from the left again.
+TapeBandClear:
+                xor     a
+                ld      (StatCol),a
+                ld      a,' '+INVBANK
+                ld      b,STATROW
+                jp      FillRow
+; Every frame, before the flush: a notice shown goes with the first
+; frame after the transfer, whichever caller ran it.
+TapeBandIdle:
+                ld      a,(TapeShown)
+                or      a
+                ret     z
+                xor     a
+                ld      (TapeShown),a
+                jr      TapeBandClear
+TxtTapeReading: defb    "READING TAPE, CTRL+STOP ENDS",0
+
 ; Commander's import (lf-1575). A tape has no directory, so the next
 ; file is whatever header comes by: TapeNext reads header blocks into
 ; TapeIn until one carries the MSXT magic and passes over the others
@@ -102,6 +232,8 @@ TapeMagic:      defb    "MSXT"
 ; own seek: FILE > OPEN by name fails on the first wrong block rather
 ; than wait for a leader that is not coming.
 TapeNext:
+                xor     a                       ; TapeIn names another file than
+                ld      (TapeKeep),a            ; the buffer holds (lf-1576)
                 ld      hl,TapeIn
                 ld      bc,19
                 call    TapeBlock
@@ -127,6 +259,11 @@ TnCompare:
 ; HL = buffer, BC = count: a block read, the PSG and the interrupt
 ; mask the BIOS's meanwhile, as in TapeOpen. Carry from the BIOS.
 TapeBlock:
+                push    hl
+                push    bc
+                call    TapeReading             ; the band says so first (lf-1576)
+                pop     bc
+                pop     hl
                 ld      a,1
                 ld      (TapeBusy),a
                 di
@@ -251,6 +388,8 @@ TapeClose:
 TapeSave:
                 ld      hl,(TapeLen)
                 ld      (TapeHdr+17),hl
+                ld      hl,TxtCmdRecording      ; RECORDING, CTRL+STOP ENDS on the
+                call    TapeNotice              ; band before the header (lf-1576)
                 ld      a,1
                 ld      (TapeBusy),a
                 di

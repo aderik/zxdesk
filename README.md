@@ -2972,3 +2972,97 @@ normal ROM **26,191 → 26,270 bytes (+79)**, TEST ROM **27,945 →
 28,024 (+79)**, TAPE=1 ROM **26,209 → 26,288 (+79)**; static RAM
 **3,997 (+0)**, heap **8,291 / 2,906** unchanged. crc32 of the padded
 ROMs: normal **c6efd7ca**, TEST **0c70c71e**, TAPE=1 **63e875b7**.
+
+## The file in the tape buffer served again, and the band while the tape runs (lf-1576)
+
+Upstream da60fed and 277c7ca, and dev4's observation on lf-1603
+(lf-1610). A file the tape has just played (`TapeOpen` for reading
+brings its header into `TapeIn` and its bytes into `TapeBuf`) asked
+for again by name went back to the tape, which had played past it,
+so the BIOS waited on silence with the desktop stopped. And the BIOS
+holds the frame for every transfer: a SAVE or SAVE AS to tape from
+the notepad recorded with the FILE menu or the SAVE AS dialogue still
+on the screen (the shadow had them closed, nothing had flushed it),
+and a read waited with nothing saying how to end it.
+
+- **Served from the buffer.** `TapeOpen` for reading with a name that
+  is the file the buffer still holds puts `TapePos` at 0 and succeeds
+  without a BIOS call (`TapeHeld`). Held means: `TapeKeep` set, which
+  only the read that brought the file in sets; the name equal to the
+  header's in `TapeIn+4` through its terminator (what a header carries
+  behind the name is not part of it, lf-1602); and the bytes summing
+  to `TapeSum` as they did when they came in. An empty name is the
+  next file on the tape, never the buffer; another name goes to the
+  tape, and the read that follows replaces the buffer.
+- **MSX-specific: the buffer is the notepad's.** The wrap table, the
+  layout job's and the painters' scratch live in `TapeBuf` (note.inc,
+  `TapeBuf+0` to `+214`), so the flag drops wherever the notepad takes
+  the buffer: `NwStartJob` (the table), `NoteDraw` (the painters),
+  `NoteKey` (the key's scratch), `NoteLayService` once it works
+  (`NlsLive`); and where the header or the buffer go to other use: the
+  open for writing (`TapeFresh`), `TapeNext` (Commander's import reads
+  another header into `TapeIn`), `StInit`. The sum is the backstop for
+  a path that writes the buffer without dropping the flag: the open
+  goes to the tape, the doubt resolved the tape's way. `TapeSumBuf` is
+  the sum so far rotated left a bit plus the byte, 256 bytes in
+  **25,388 cycles, 7.1 ms** (openMSX breakpoints at `TapeSumBuf` and
+  at `TsbLoop` with BC nought), at a tape open only.
+- **The band says what runs.** Before the first block of a read
+  (`TapeOpen`, and `TapeBlock` for Commander's import) the status band
+  says `READING TAPE, CTRL+STOP ENDS`; before the header of a
+  recording (`TapeSave`, so every writer: the notepad's SAVE and SAVE
+  AS, Commander's C, which keeps its own `RECORDING` on its status row
+  from lf-1603) it says `RECORDING, CTRL+STOP ENDS`, the one string
+  `TxtCmdRecording`. `TapeNotice` clears the band (the key echoes with
+  it, `StatCol` to 0), prints inverted as the band is, and `NtFlush`
+  puts out every dirty row: the band and the rows a menu's close or a
+  dialogue's answer left, so the user looks at the desktop while the
+  tape runs. `TapeShown` is set, and the first frame after the
+  transfer (`TapeBandIdle`, before the loop's `NtFlush`) gives the band
+  back blank, whichever caller ran the tape: no exit to chase in the
+  import's status, refuse and error paths. A SAVE ended by CTRL+STOP is
+  the existing route: carry from the close, `COULD NOT SAVE`, the
+  document modified and not saved.
+
+No UI route on the MSX asks the tape by name for a read (FILE > OPEN
+on the tape takes the next file; a note kept elsewhere loads from its
+own device; Commander's panes list no tape file), so the buffer hit is
+asserted in the TEST build with the read trap armed before boot
+(`Run(..., setup=)`, `tape_trap_tcl`): `TestTapeHeld` records seven
+pairs. The read trap now logs the name table at every block, as the
+write trap does, the screen while the tape runs.
+
+| subject | asserts |
+|---|---|
+| tape-held (TEST build, every machine) | ALPHA, BETA, ALPHA, ALPHA on the tape: ALPHA read (two blocks), ALPHA again from the buffer (no block), BETA from the tape, ALPHA from the tape (BETA was in the buffer), a byte of the buffer changed by a path that drops no flag sends ALPHA to the tape (the sum), `NwStartFull` drops the flag and the open after it finds the tape run out, carry and STERR_NOTFOUND; nine blocks asked for, the tape empty. It runs first of the subjects and every TEST build run arms its tape (the bank runs too: on Roms_MSX1 the real BIOS waited on TAPION for ever, the run timed out), with a breakpoint that removes itself at the ninth read, before the bank fill. The breakpoint fires only with this ROM's `ld ix,TAPION` at the address: `TapeGetBlock` is in page 1, where a disk ROM in slot 1 runs its own code at boot and in every BDOS call, and on Roms_MSX1 + Roms_Disk its boot took one block off the tape (pairs 01 05, 01 05, 01 05 before the fix) |
+| imp-reading (`--tape-import`) | at both blocks of I the band reads `READING TAPE, CTRL+STOP ENDS` over the Commander with READY on its row, against the compositor; imp-next-screen has the band blank after |
+| cp-tape-recording | now the Commander with `RECORDING` on its row and on the band |
+| note-tape-save, note-tape-saveas-recording, note-tape-save-recording (`--tape-note`, TAPE=1, not the disk machine) | FILE > NEW, A, FILE > SAVE (SAVE AS: LETTER), A, FILE > SAVE: two recordings of the header and the document; at both headers the band says `RECORDING, CTRL+STOP ENDS` with the menu's rows and the dialogue's as on the screen after; saved, unmodified, the band blank after |
+| note-tape-stop | carry on the header: nothing recorded, `COULD NOT SAVE`, modified 1, saved 0, the document kept |
+| note-tape-read, note-tape-reading | FILE > OPEN on a new note of the tape's: LETTER in, the name set, the band saying `READING TAPE` at both blocks with the menu gone, blank after |
+
+On `ab93a19`'s sources with this harness, note-tape-saveas-recording,
+note-tape-save-recording and note-tape-reading fail on C-BIOS_MSX1_EU
+(the band empty, the menu or the dialogue on the screen at the block);
+the others pass there, the save and the load themselves being right.
+With the change: `--tape-note` 6 ok on EU; `--tape-import` 38 ok on
+EU and JP (imp-reading, cp-tape-recording among them); `--sound`
+(TEST build, sound-transfer-TapeOpen through the stub, settings) on
+EU and `--settings` on JP, tape-held ok; `--tape` 61 ok on Roms_MSX1
+(the real BIOS: note-tape, tape-error, tape-name, cp-tape-wav with the
+notices in the path); `--tape-import` 36 ok on Roms_MSX1 + Roms_Disk
+(the notepad group skipped there: a new note is the disk's).
+
+Base `ab93a19` → this change (the last byte before `NsanTab`'s $FF
+pad, read from the ROM): normal ROM **27,212 → 27,443 bytes (+231)**,
+TEST **28,966 → 29,297 (+331)**, TAPE=1 **27,230 → 27,461 (+231)**;
+build line 27,648 → 27,904 and 29,440 → 29,696 (the pad: `NsanTab` a
+page up); static RAM **3,997 → 4,001 (+4)**: `TapeKeep` 1, `TapeSum`
+2, `TapeShown` 1; the TEST build 14 more for `TthResults` (`CmdBuf`
+is taken: `TbResults`, the bank subject's record, sits at
+`CmdBuf+221`, and the first cut of this record over it failed bank-rw
+in the full suite), **6,729 → 6,747**; heap **8,291 → 8,287 / 2,906 →
+2,902**, no heap allocation. Per frame: `TapeBandIdle` is a load, a
+test and a return, 45 cycles. crc32 of the padded ROMs: normal
+**6ad150f4**, TEST **24f3f3c2** (TestTapeHeld first in TestRun), TAPE=1 **f8ff14f1** (base dd9db94c /
+b5928469 / 814e16cf, the same three from `git archive ab93a19`).
