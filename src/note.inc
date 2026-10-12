@@ -2632,8 +2632,7 @@ NwCaretEnt      equ     TapeBuf+192     ; NwDerive: the entry of the caret's row
 NwPastEnd       equ     TapeBuf+193     ; and 1 when the caret is past the edge of its line's last row
 NdRowLo         equ     TapeBuf+194     ; the painters: the first row of the view to paint
 NdRowHi         equ     TapeBuf+195     ; and the last (NoteDraw: all of them)
-NwPRow          equ     TapeBuf+196     ; NwPaint's row of the view
-NpcSel          equ     TapeBuf+197     ; NotePaintChunk: the chunk has selected cells
+NpcSel          equ     TapeBuf+197     ; NotePaintChunk: the chunk has selected cells (+196 free, lf-1599)
 NoteOldRow      equ     TapeBuf+198     ; the selection's end before a move: its row
                                         ; (WRAP: the table's, else the line), NWNONE unknown
 NdRowsOnly      equ     TapeBuf+199     ; 1: the painters take NdRowLo..NdRowHi alone (NoteDrawRows)
@@ -2977,10 +2976,12 @@ NloLoop:
                 inc     a
                 ld      c,a
 NloNext:
-                push    de
-                ld      de,NOTESTRIDE
-                add     hl,de
-                pop     de
+                ld      a,l                     ; the next link byte, without
+                add     a,NOTESTRIDE            ; a 16-bit add around DE: the
+                ld      l,a                     ; walk runs three times a key
+                jr      nc,NloSame              ; on the row route (lf-1599)
+                inc     h
+NloSame:
                 inc     d
                 djnz    NloLoop
                 ld      a,e
@@ -3548,8 +3549,6 @@ NwPaint:
                 ld      a,(WinH)
                 sub     2
                 ld      (NwPRows),a
-                xor     a
-                ld      (NwPRow),a
                 ld      a,(NoteTop)
                 ld      (NwPLeft),a             ; rows above the view
                 ; the walk to a row at or above the top, kept from the last
@@ -3637,73 +3636,57 @@ NwpBelow:
                 call    NwpRow
                 jr      NwpEvery
 
-; The rows wanted, NdRowLo to NdRowHi, counted in NwPRow: the walk
-; steps over a row above them without painting and stops after the
-; last.
+; The rows wanted, NdRowLo to NdRowHi (NemClip keeps them within the
+; view): the cell moves past the rows above them in one step, the
+; walk goes over those rows as far as the table reaches, in
+; registers, and the every-row loop paints the rows wanted and no
+; more. A loop that tested the range and counted the row in memory
+; for every row of the view cost 150 us a row: with the caret at the
+; bottom of a 24x17 view, SHIFT+UP off a line laid out as far as it
+; was a 15.1 ms frame at 60 Hz, one dropped (lf-1599).
 NwpOnly:
-                ld      a,(NwPRows)
-                or      a
-                ret     z
-                dec     a
-                ld      (NwPRows),a
-                ld      a,(NwPRow)
-                push    hl
-                ld      hl,NdRowHi
-                cp      (hl)
-                jr      z,NwpWanted
-                jr      nc,NwpPast
-                dec     hl                      ; NdRowLo
-                cp      (hl)
-                jr      nc,NwpWanted
-                pop     hl
                 push    hl
                 push    de
-                call    NwpCellOn
-                pop     de
-                pop     hl
-                ld      a,b
+                push    bc
+                ld      a,(NdRowHi)
+                ld      hl,NdRowLo
+                sub     (hl)
+                inc     a
+                ld      (NwPRows),a             ; the rows to paint
+                ld      a,(hl)                  ; the rows above them
                 or      a
-                jr      z,NwpNext               ; below the table: no walk
-                ld      a,(hl)
-                inc     hl
-                call    NwAdvRow
-                dec     b
-                jr      NwpNext
-NwpPast:
-                pop     hl
-                ret
-NwpWanted:
-                pop     hl
-                ld      a,b
-                or      a
-                jr      z,NwpOnlyBelow
-                ld      a,(hl)
-                call    NwpRow
-                ld      a,(hl)
-                inc     hl
-                call    NwAdvRow
-                dec     b
-                jr      NwpNext
-NwpOnlyBelow:
-                xor     a
-                call    NwpRow
-NwpNext:
-                push    hl
-                ld      hl,NwPRow
-                inc     (hl)
-                pop     hl
-                jr      NwpOnly
-
-; The painter's cell on to the next row of the view, as NwpDone has
-; it after a painted row.
-NwpCellOn:
+                jr      z,NwpOnlyGo
                 ld      hl,(NwPCell)
+                ld      c,a
                 ld      a,(WinW)
                 ld      e,a
                 ld      d,0
+                ld      a,c
+NwpOnlyCell:
                 add     hl,de
+                dec     c
+                jr      nz,NwpOnlyCell
                 ld      (NwPCell),hl
-                ret
+NwpOnlyGo:
+                pop     bc
+                pop     de
+                pop     hl
+                cp      b                       ; the table ends within
+                jr      c,NwpOnlyWalk           ; them: the rows below it
+                ld      a,b                     ; are blank wherever the view is
+NwpOnlyWalk:
+                or      a
+                jr      z,NwpEvery
+NwpOnlyStep:
+                push    af
+                ld      a,(hl)
+                inc     hl
+                call    NwAdvRow
+                dec     b
+                pop     af
+                dec     a
+                jr      nz,NwpOnlyStep
+                jr      NwpEvery
 
 ; A = an entry, DE = the chunk's link byte, C = the row's offset in
 ; it: the row's text into the cell at NwPCell, then spaces to the edge
