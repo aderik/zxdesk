@@ -39,8 +39,11 @@ proc mouse_move {dx dy} { exec xdotool mousemove_relative -- $dx $dy }
 # carry, as the BIOS does when a block runs out; an empty list is the
 # tape's end, carry with nothing read. BC is what was not read, which
 # is what the real loop leaves. No BIOS cassette code runs, so C-BIOS
-# reads tapes this way too.
-set tape {}
+# reads tapes this way too. The name table as it stands goes into the
+# note with the block (lf-1576): the screen while the tape runs. A
+# ::tape set from the command line before this script (the TEST
+# build's subjects read before the first step) is kept.
+if {![info exists tape]} { set tape {} }
 proc tape_trap {} {
     set hl [reg HL]
     set bc [reg BC]
@@ -60,7 +63,8 @@ proc tape_trap {} {
     set sp [reg SP]
     reg PC [expr {[debug read memory $sp] | ([debug read memory [expr {$sp + 1}]] << 8)}]
     reg SP [expr {$sp + 2}]
-    note "tape block: asked $bc, unread $left, carry $carry, [llength $::tape] left"
+    binary scan [debug read_block VRAM 0x1800 768] H* nt
+    note "tape block: asked $bc, unread $left, carry $carry, [llength $::tape] left, nt $nt"
 }
 
 # The write trap (lf-1603), the tape trap's other half: a breakpoint

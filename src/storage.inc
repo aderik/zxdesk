@@ -169,6 +169,8 @@ StInit:
                 xor     a
                 ld      (TapeMode),a
                 ld      (TapeBusy),a
+                ld      (TapeKeep),a            ; nothing in the buffer yet
+                ld      (TapeShown),a
                 call    RamInit
                 call    BkInit                  ; the bank, if the machine has one
                 call    DskPresent              ; a disk ROM planted the BDOS
