@@ -308,7 +308,6 @@ NOTESTSZ        equ     _ram-NoteState
                 var     ClipLen, 1
                 var     ClipIx, 1       ; the byte a paste is at
                 var     NoteMouse, 1
-                var     NotePaintBuf, 15
                 var     NoteCursorX, 1
                 var     NoteCursorY, 1
                 var     NoteRows, 1

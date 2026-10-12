@@ -141,7 +141,15 @@ NsBelowTop:
 
 ; Walk chunks, concatenating continuation chunks on the same row.
 ; All text and caret writes go through the same interior clip.
+; The painters (NotePaintChunk, NotePaintAddr, NwpRow) write the rows
+; of the view from NdRowLo to NdRowHi only: every row for the draw,
+; the rows a selection's end moved over for NoteDrawRows.
 NoteDraw:
+                xor     a
+                ld      (NdRowLo),a
+                ld      (NdRowsOnly),a
+                dec     a
+                ld      (NdRowHi),a
                 ld      a,(SetWrap)
                 or      a
                 jp      nz,NoteDrawWrap
@@ -159,6 +167,7 @@ NoteDraw:
                 ld      a,(NoteFollow)
                 or      a
                 call    nz,NoteFitEnd
+NdWalk:
                 xor     a
                 ld      (NoteDrawX),a
                 ld      (NoteDrawY),a
@@ -282,13 +291,25 @@ NfeLower:
                 ld      (hl),a
                 ret
 
-; The live buffer's interior, spaces.
+; The live buffer's interior, spaces; NoteBlankRows the rows of the
+; view from NdRowLo to NdRowHi of it.
 NoteBlankInterior:
                 ld      b,1
-                ld      c,1
-                call    WinCell
                 ld      a,(WinH)
                 sub     2
+                jr      NbiFrom
+NoteBlankRows:
+                ld      a,(NdRowLo)
+                ld      b,a
+                inc     b
+                ld      a,(NdRowHi)
+                sub     b
+                add     a,2                     ; hi - lo + 1
+NbiFrom:
+                ld      c,1
+                push    af
+                call    WinCell
+                pop     af
                 ld      b,a
 NbiRow:
                 push    bc
@@ -311,7 +332,12 @@ NbiCell:
 ; the others are copied by LDIR, not through WinPrint's 60 T a cell:
 ; the WRAP-off compose of a 22x17 window, sixteen chunks at 0.45 ms
 ; each, was 15.1 to 15.3 ms of a 60 Hz frame and dropped one
-; (lf-1583). A selection goes through WinPrint, inverted cells and all.
+; (lf-1583). A chunk with selected cells is copied the same way and
+; its selected cells are then inverted in place; the others are
+; painted as if there were no selection. Every chunk went through a
+; copy with the inverse bank (NotePaintSelection) and WinPrint's 60 T
+; a cell as soon as anything was selected: 0.7 ms a chunk, 11 ms of
+; a 24x17 compose with WRAP off (lf-1591).
 NotePaintChunk:
                 ld      a,(NoteTop)
                 ld      c,a
@@ -324,10 +350,26 @@ NotePaintChunk:
                 cp      b
                 ret     z
                 ret     c
+                ld      a,(NdRowsOnly)          ; the rows wanted alone: the
+                or      a                       ; row route (NoteDrawRows)
+                jr      z,NpcAnyRow
+                ld      a,b
+                push    hl
+                call    NdRowWanted
+                pop     hl
+                ret     c
+NpcAnyRow:
                 inc     b
+                xor     a
+                ld      (NpcSel),a
                 ld      a,(NoteAnchor+1)        ; $FF: nothing selected, the
-                inc     a                       ; usual case
+                inc     a                       ; usual case, at the cost of
+                jr      z,NpcBlank              ; the grow's frame (lf-1574)
+                push    bc
+                call    NpcSelected
+                pop     bc
                 jr      nz,NpcView
+NpcBlank:
                 push    hl                      ; a space only when all
                 ld      a,(hl)                  ; fourteen are, as text is
                 rept    NOTECOLS-1              ; never below one
@@ -361,11 +403,6 @@ NpcView:
 NpcColumn:
                 ld      c,a
                 inc     c
-                xor     a
-                ld      (PrintInv),a
-                ld      a,(NoteAnchor+1)
-                inc     a
-                jr      nz,NpcSelection
                 ld      a,(WinW)                ; the cells up to the edge
                 dec     a
                 sub     c
@@ -378,18 +415,112 @@ NpcFit:
                 push    hl
                 push    af
                 call    WinCell
-                ex      de,hl
+                ex      de,hl                   ; DE = the first cell
                 pop     af
-                pop     hl
+                pop     hl                      ; HL = the first character
+                push    de
+                push    hl
                 ld      c,a
                 ld      b,0
+                push    bc                      ; the count
                 ldir
-                ret
-NpcSelection:
-                push    bc
-                call    NotePaintSelection
+                ld      a,(NpcSel)
+                or      a
+                jr      nz,NpcInvert
                 pop     bc
-                jp      WinPrint
+                pop     hl
+                pop     de
+                ret
+NpcInvert:
+                ; the selected cells among those copied, packed cells
+                ; (chunk*16+column) as NwpSel has them: from the lower
+                ; bound or the first copied to the upper bound or the
+                ; last, in one run
+                call    NoteSelectionBounds     ; B = the lower, C = the upper bound
+                pop     de                      ; E = the count
+                pop     hl
+                push    bc
+                ld      bc,NoteBuf
+                or      a
+                sbc     hl,bc
+                ld      a,l                     ; the first character's packed cell
+                pop     bc
+                pop     hl                      ; HL = its cell in the buffer
+                ld      d,a
+                add     a,e                     ; the cell after the last copied
+                cp      c
+                jr      c,NpcInvEnd
+                ld      a,c                     ; the upper bound comes first
+NpcInvEnd:
+                ld      c,a                     ; C = the end, exclusive
+                ld      a,b
+                cp      d
+                jr      nc,NpcInvStart          ; the lower bound at or after the first
+                ld      a,d
+NpcInvStart:
+                ld      b,a                     ; B = the start
+                sub     d
+                ld      e,a                     ; the cells before it
+                ld      d,0
+                add     hl,de
+                ld      a,c
+                sub     b                       ; the cells to invert
+                ret     z                       ; none: the selection lies in the
+                ret     c                       ; cells clipped away
+                ld      b,a
+NpcInvLoop:
+                ld      a,(hl)
+                or      INVBANK
+                ld      (hl),a
+                inc     hl
+                djnz    NpcInvLoop
+                ret
+
+; HL = a chunk: NpcSel and NZ when one of its fourteen cells is
+; selected, in the front window only (the instances behind show no
+; selection). HL is kept.
+NpcSelected:
+                ld      a,(WndZ)
+                push    hl
+                ld      hl,WndCur
+                cp      (hl)
+                pop     hl
+                jr      nz,NpsNone
+                push    hl
+                call    NoteSelectionBounds
+                pop     hl
+                jr      z,NpsNone
+                push    hl
+                ld      de,NoteBuf
+                or      a
+                sbc     hl,de
+                ld      a,l                     ; the chunk's first cell, packed
+                pop     hl
+                cp      c
+                jr      nc,NpsNone              ; at or past the upper bound
+                add     a,NOTELAST              ; its last cell
+                cp      b
+                jr      c,NpsNone               ; before the lower
+                ld      a,1
+                ld      (NpcSel),a
+                ret
+NpsNone:
+                xor     a
+                ld      (NpcSel),a
+                ret
+
+; A = a row of the view: carry when it is not among the rows wanted,
+; NdRowLo to NdRowHi. A, B and C are kept.
+NdRowWanted:
+                ld      hl,NdRowLo
+                cp      (hl)
+                ret     c                       ; above them
+                inc     hl
+                cp      (hl)
+                ccf                             ; below them: hi < a
+                ret     nz
+                or      a                       ; the last of them
+                ret
 
 NotePaintAddr:
                 ld      a,(NoteTop)
@@ -402,6 +533,9 @@ NotePaintAddr:
                 sub     2
                 cp      b
                 jr      z,NpaOutside
+                jr      c,NpaOutside
+                ld      a,b
+                call    NdRowWanted
                 jr      c,NpaOutside
                 inc     b
                 ld      a,(NoteLeftCol)
@@ -1088,7 +1222,9 @@ NhFirst:
                 jr      NhFirst
 
 ; The key vector. Returns A = 1: every key it takes moves the cursor,
-; and the cursor is painted, so the window is recomposed.
+; and the cursor is painted, so the window is recomposed; 2 when the
+; rows that changed are painted and marked here (a selection's end
+; moved, NoteEndMoved) or nothing on the screen changed (SELECT).
 NoteKey:
                 ld      (NoteChar),a
                 xor     a
@@ -1097,6 +1233,7 @@ NoteKey:
                 ld      (NwKeyed),a             ; the job's budget this frame
                 call    NwLinksSave             ; for NkEdited, whatever the key
                 call    NoteUndoKey
+                call    NoteEndRowSave          ; marking: the end's row, for NkMoved
                 ld      a,(NoteChar)
                 cp      KEY_SELECT
                 jp      z,NoteToggleSelection
@@ -1150,7 +1287,15 @@ NkNotU:
                 call    NoteDown
 NkMoved:
                 call    NwCaretCheck            ; with WRAP: a caret among
-                jr      NkView                  ; trailing spaces has its row
+                ld      a,(NoteAnchor)          ; trailing spaces has its row
+                bit     7,a
+                jr      z,NkView
+                ; marking: the end follows, and only the rows it moved
+                ; over are painted unless the view scrolls (lf-1591)
+                call    NoteEndMoved
+                cp      2
+                ret     z
+                jp      NoteRecomposeSplit
 NkNotD:
                 cp      KEY_DELETE
                 jr      nz,NkNotBs
@@ -2473,6 +2618,13 @@ NwDrvW          equ     TapeBuf+190
 NwLnX           equ     TapeBuf+191     ; the caret's column in the line laid out, NWNONE: not its line
 NwCaretEnt      equ     TapeBuf+192     ; NwDerive: the entry of the caret's row
 NwPastEnd       equ     TapeBuf+193     ; and 1 when the caret is past the edge of its line's last row
+NdRowLo         equ     TapeBuf+194     ; the painters: the first row of the view to paint
+NdRowHi         equ     TapeBuf+195     ; and the last (NoteDraw: all of them)
+NwPRow          equ     TapeBuf+196     ; NwPaint's row of the view
+NpcSel          equ     TapeBuf+197     ; NotePaintChunk: the chunk has selected cells
+NoteOldRow      equ     TapeBuf+198     ; the selection's end before a move: its row
+                                        ; (WRAP: the table's, else the line), NWNONE unknown
+NdRowsOnly      equ     TapeBuf+199     ; 1: the painters take NdRowLo..NdRowHi alone (NoteDrawRows)
 NwLinks         equ     TapeBuf+160     ; the sixteen links before an edit
 
 ; NZ when the table is not the live window's at its width.
@@ -3354,6 +3506,8 @@ NwPaint:
                 ld      a,(WinH)
                 sub     2
                 ld      (NwPRows),a
+                xor     a
+                ld      (NwPRow),a
                 ld      a,(NoteTop)
                 ld      (NwPLeft),a             ; rows above the view
                 ; the walk to a row at or above the top, kept from the last
@@ -3416,6 +3570,40 @@ NwpRows:
                 ret     z
                 dec     a
                 ld      (NwPRows),a
+                ; the rows wanted, NdRowLo to NdRowHi (the row route): the
+                ; walk steps over a row above them and stops after the last
+                ld      a,(NdRowsOnly)
+                or      a
+                jr      z,NwpEvery
+                ld      a,(NwPRow)
+                push    hl
+                ld      hl,NdRowHi
+                cp      (hl)
+                jr      z,NwpWanted
+                jr      nc,NwpPast
+                dec     hl                      ; NdRowLo
+                cp      (hl)
+                jr      nc,NwpWanted
+                pop     hl
+                push    hl
+                push    de
+                call    NwpAdvance
+                pop     de
+                pop     hl
+                ld      a,b
+                or      a
+                jr      z,NwpRows               ; below the table: no walk
+                ld      a,(hl)
+                inc     hl
+                call    NwAdvRow
+                dec     b
+                jr      NwpRows
+NwpPast:
+                pop     hl
+                ret
+NwpWanted:
+                pop     hl
+NwpEvery:
                 ld      a,b
                 or      a
                 jr      z,NwpBelow
@@ -3430,6 +3618,18 @@ NwpBelow:
                 xor     a                       ; a row below the table: blank
                 call    NwpRow
                 jr      NwpRows
+
+; The painter's cell on to the next row of the view.
+NwpAdvance:
+                ld      hl,NwPRow
+                inc     (hl)
+                ld      hl,(NwPCell)
+                ld      a,(WinW)
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      (NwPCell),hl
+                ret
 
 ; A = an entry, DE = the chunk's link byte, C = the row's offset in
 ; it: the row's text into the cell at NwPCell, then spaces to the edge
@@ -3501,16 +3701,13 @@ NwpSel:
                 sbc     hl,de                   ; packed: the document offset's
                 ld      c,l                     ; low byte
                 ld      hl,(NwPCell)
+                ld      de,(NwSelLo)            ; E = the lower bound, D the upper
 NwpSelLoop:
-                ld      a,(NwSelLo)
-                cp      c
-                jr      z,NwpSelIn
-                jr      nc,NwpSelOut
-NwpSelIn:
-                ld      a,(NwSelHi)
-                cp      c
-                jr      z,NwpSelOut
-                jr      c,NwpSelOut
+                ld      a,c
+                cp      e
+                jr      c,NwpSelOut             ; before the lower bound
+                cp      d
+                jr      nc,NwpSelOut            ; at or past the upper
                 ld      a,(hl)
                 or      INVBANK
                 ld      (hl),a
@@ -3550,12 +3747,7 @@ NwpSpace:
                 inc     de
                 djnz    NwpSpace
 NwpDone:
-                ld      hl,(NwPCell)
-                ld      a,(WinW)
-                ld      e,a
-                ld      d,0
-                add     hl,de
-                ld      (NwPCell),hl
+                call    NwpAdvance
                 pop     bc
                 pop     de
                 pop     hl
@@ -3584,25 +3776,7 @@ NoteDrawWrap:
                 ld      (NoteFollow),a
                 bit     7,b
                 jr      nz,NdwGrown
-                ld      a,(NoteCursorY)
-                cp      c
-                jr      nc,NdwBelow
-                ld      c,a                     ; above the view
-                jr      NdwClamp
-NdwBelow:
-                ld      b,a
-                ld      a,(WinH)
-                sub     2
-                ld      e,a
-                ld      a,c
-                add     a,e
-                dec     a                       ; the last row in view
-                cp      b
-                jr      nc,NdwClamp
-                ld      a,b
-                sub     e
-                inc     a
-                ld      c,a
+                call    NwFollow
                 jr      NdwClamp
 NdwGrown:
                 ; A larger window (lf-1565): the empty lines after the
@@ -3641,40 +3815,75 @@ NdwEndTop:
                 jr      nc,NdwClamp
                 ld      c,a
 NdwClamp:
+                call    NwClamp
+                ld      (NoteTop),a
+                call    NdwSelect
+                call    NwPaint
+                ld      a,1
+                ld      (NwDerived),a           ; for the scroll bar's model
+                jr      NdwCaret
+
+; C = a top: C = that top following the caret derived (NoteCursorY),
+; up to it when it is above the view, down when it is below.
+NwFollow:
+                ld      a,(NoteCursorY)
+                cp      c
+                jr      nc,NwfBelow
+                ld      c,a                     ; above the view
+                ret
+NwfBelow:
+                ld      b,a
+                ld      a,(WinH)
+                sub     2
+                ld      e,a
+                ld      a,c
+                add     a,e
+                dec     a                       ; the last row in view
+                cp      b
+                ret     nc
+                ld      a,b
+                sub     e
+                inc     a
+                ld      c,a
+                ret
+
+; C = a top wanted: A = it, at most the last page (the rows less the
+; rows in view; 0 when they all fit).
+NwClamp:
                 ld      a,(WinH)
                 sub     2
                 ld      b,a
                 ld      a,(NoteRows)
                 sub     b
-                jr      nc,NdwMax
+                jr      nc,NwcMax
                 xor     a
-NdwMax:
+NwcMax:
                 cp      c
-                jr      nc,NdwTopSet
-                ld      c,a
-NdwTopSet:
+                ret     c
                 ld      a,c
-                ld      (NoteTop),a
-                ; the selection, inverted by the painter in the front
-                ; window only, as NotePaintSelection has it
+                ret
+
+; The selection for NwPaint, inverted in the front window only, as
+; NpcSelected has it.
+NdwSelect:
                 xor     a
                 ld      (NwSelOn),a
                 ld      a,(WndZ)
                 ld      hl,WndCur
                 cp      (hl)
-                jr      nz,NdwNoSel
+                ret     nz
                 call    NoteSelectionBounds
-                jr      z,NdwNoSel
+                ret     z
                 ld      a,b
                 ld      (NwSelLo),a
                 ld      a,c
                 ld      (NwSelHi),a
                 ld      a,1
                 ld      (NwSelOn),a
-NdwNoSel:
-                call    NwPaint
-                ld      a,1
-                ld      (NwDerived),a           ; for the scroll bar's model
+                ret
+
+; The caret inverted, in the view and without a selection.
+NdwCaret:
                 call    NoteSelectionBounds
                 ret     nz                      ; no caret with a selection, as
                                                 ; NoteDraw: in any instance
@@ -3698,6 +3907,179 @@ NdwNoSel:
                 or      INVBANK
                 ld      (hl),a
                 ret
+
+; ---- A selection's end moving with the caret (SHIFT+arrow while
+; marking, the mouse drag): the inverse changes on the rows between
+; the old end and the new one only, so those rows alone are painted
+; into the buffer and marked when the view stays where it is. The
+; whole window composed and blitted was 17 to 19 ms a key at 24x17
+; with WRAP on and 24 to 27 with it off, a frame dropped at 60 Hz
+; for each (lf-1591).
+;
+; Before the move: NoteOldRow = the end's row, which is the caret's
+; (the table's row with WRAP, else the line). NWNONE when the table
+; is stale or a job is under way: the whole window then. NoteKey
+; calls it only while marking; the drag always.
+NoteEndRowSave:
+                ld      a,NWNONE
+                ld      (NoteOldRow),a
+                ld      a,(NoteAnchor)
+                bit     7,a
+                ret     z
+NoteEndRowNow:
+                ld      a,NWNONE
+                ld      (NoteOldRow),a
+                ld      a,(SetWrap)
+                or      a
+                jr      z,NersPlain
+                ld      a,(NwBusy)
+                or      a
+                ret     nz
+                call    NwStale
+                ret     nz
+                call    NwDerive                ; as derived for this caret
+                jr      NersRow
+NersPlain:
+                call    NoteMeasure
+NersRow:
+                ld      a,(NoteCursorY)
+                ld      (NoteOldRow),a
+                ret
+
+; After the move: NoteEnd follows the caret. Returns A = 2 with the
+; rows from the old end's to the new one's painted and marked, the
+; view as it was; else A = 0 with the scroll decided (NoteScroll) for
+; the compose the caller arranges: the top or the left column changes
+; with WRAP off, with WRAP the top the draw would follow the caret to
+; differs, or the old row is unknown.
+NoteEndMoved:
+                ld      hl,(NoteCX)
+                ld      (NoteEnd),hl
+                ld      a,(SetWrap)
+                or      a
+                jr      nz,NemWrap
+                ld      a,(NoteTop)
+                ld      b,a
+                ld      a,(NoteLeftCol)
+                ld      c,a
+                push    bc
+                call    NoteScroll              ; measures, the left column, the top
+                pop     bc
+                ld      a,(NoteTop)
+                cp      b
+                jr      nz,NemFull
+                ld      a,(NoteLeftCol)
+                cp      c
+                jr      nz,NemFull
+                ld      a,(NoteOldRow)
+                cp      NWNONE
+                jr      nz,NemRows
+NemFull:
+                xor     a
+                ret
+NemWrap:
+                ld      a,(NoteOldRow)
+                cp      NWNONE
+                jr      z,NemScroll
+                ld      a,(NwBusy)              ; a line laid out again: its
+                or      a                       ; rows move
+                jr      nz,NemScroll
+                call    NwStale
+                jr      nz,NemScroll
+                call    NwDerive
+                ld      a,(NoteTop)
+                ld      c,a
+                call    NwFollow
+                call    NwClamp
+                ld      hl,NoteTop
+                cp      (hl)
+                jr      z,NemRows
+NemScroll:
+                call    NoteScroll              ; NoteFollow: the compose scrolls
+                xor     a
+                ret
+NemRows:
+                ; the rows of the view from the old end's to the new,
+                ; clipped to the view: an end above or below it (the bar
+                ; scrolled the caret out) changes nothing in view beyond
+                ld      a,(NoteTop)
+                ld      c,a
+                ld      a,(WinH)
+                sub     3
+                ld      e,a                     ; the last row of the view
+                ld      a,(NoteOldRow)
+                call    NemClip
+                ld      b,a
+                ld      a,(NoteCursorY)
+                call    NemClip
+                cp      b
+                jr      nc,NemOrdered
+                ld      d,a
+                ld      a,b
+                ld      b,d
+NemOrdered:
+                ld      (NdRowHi),a
+                ld      a,b
+                ld      (NdRowLo),a
+                call    NoteDrawRows
+                ld      a,(NdRowHi)
+                ld      hl,NdRowLo
+                sub     (hl)
+                inc     a
+                ld      c,a                     ; the rows
+                ld      a,(WinY)
+                add     a,(hl)
+                inc     a
+                ld      b,a                     ; the screen row of the first
+                call    RowsAddText
+                ld      a,2
+                ret
+; A = a row (the table's or the line), C = the top, E = the last row
+; of the view: A = its row of the view, clipped to it.
+NemClip:
+                sub     c
+                jr      nc,NecLow
+                xor     a
+                ret
+NecLow:
+                cp      e
+                ret     c
+                ld      a,e
+                ret
+
+; The whole window for a key that moved the selection's end and
+; scrolled the view, or SELECT over a selection there was: nothing
+; this frame (RepaintLater), the compose the next frame and the blit
+; the one after, with WRAP on and off alike (NoteLayService, NwKeyed
+; 3). The key's frame with the compose and the blit of 24x17 in it
+; dropped one at 60 Hz: the compose alone is 11.3 ms with WRAP on
+; over a selection of fifteen rows (lf-1591). Returns A = 2.
+NoteRecomposeSplit:
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsLiveText
+                call    RepaintLater
+                ld      a,3
+                ld      (NwKeyed),a
+                ld      a,2
+                ret
+
+; The rows NdRowLo to NdRowHi of the view painted into the buffer as
+; the draw would paint them, the rest of the buffer left alone: the
+; document, its layout and the top are as the last compose had them,
+; so what differs there is the selection's inverse and the caret.
+NoteDrawRows:
+                ld      a,1
+                ld      (NdRowsOnly),a
+                call    NoteBlankRows
+                ld      a,(SetWrap)
+                or      a
+                jr      nz,NdrWrap
+                jp      NdWalk                  ; the chunks on those rows, the caret
+NdrWrap:
+                call    NdwSelect
+                call    NwPaint
+                jp      NdwCaret
 
 ; ---- Up and down move a screen row, keeping the column where the
 ; row is long enough; HOME goes to the row's start. The row wanted
@@ -3772,7 +4154,8 @@ NoteHomeWrap:
 ; With WRAP off an edit's frame paints nothing and the next paints it
 ; all: ENTER measured 16.7 to 19.2 ms on the 60 Hz machine with the
 ; compose and the blit in its frame, and a typed key 15.3 to 15.9,
-; dropping one in two (lf-1583).
+; dropping one in two (lf-1583). NwKeyed 3 (NoteRecomposeSplit) is
+; composed here with WRAP off as well, and blitted the next frame.
 NoteLayService:
                 ld      a,(SetWrap)
                 or      a
@@ -3781,6 +4164,8 @@ NoteLayService:
                 or      a
                 jr      nz,NlsOn
                 ld      a,(NwKeyed)
+                cp      3
+                jr      z,NlsOn
                 cp      2
                 jp      z,NlsOne
                 xor     a
@@ -3903,7 +4288,7 @@ NlsDecide:
                 jp      nz,NlsOne               ; the desktop under it too: next frame
                 ld      a,(NwKeyed)
                 cp      2
-                jp      z,NlsOne                ; an edit's frame: ENTER into a full
+                jp      nc,NlsOne               ; an edit's frame: ENTER into a full
                 ld      hl,(NwWork)             ; line is 5 ms before any layout
                 ld      de,NWSMALL+1
                 or      a
@@ -4002,19 +4387,26 @@ NoteClearSelection:
                 dec     a
                 ld      (NoteAnchor+1),a
                 ret
+; SELECT: marking off keeps the selection as shown, marking on from
+; the caret shows it as before too (an empty selection paints the
+; caret): nothing to repaint, A = 2. A selection there was (the mouse,
+; or marking ended earlier) goes: the window, next frame as an edit's
+; (lf-1591: the compose in the key's frame dropped one at 24x17).
 NoteToggleSelection:
                 ld      hl,NoteAnchor
                 bit     7,(hl)
                 jr      z,NselStart
                 res     7,(hl)
-                ld      a,1
+                ld      a,2
                 ret
 NselStart:
+                call    NoteSelectionBounds
+                ld      a,2
+                call    nz,NoteRecomposeSplit   ; A = 2 as well
                 ld      hl,(NoteCX)
                 ld      (NoteEnd),hl
                 set     7,l
                 ld      (NoteAnchor),hl
-                ld      a,1
                 ret
 
 ; Pack chunk Y and X into a sortable byte (terminators are skipped).
@@ -4049,73 +4441,6 @@ NoteSelectionBounds:
                 ret
 NselEmpty:
                 xor     a
-                ret
-
-; Prepare only the clipped chunk. WinPrint writes the inverse-bank codes
-; to the window buffer, which the compositor copies through ShadowNT.
-NotePaintSelection:
-                push    hl
-                ld      a,(WndZ)
-                ld      hl,WndCur
-                cp      (hl)
-                jr      nz,NpsPlain
-                call    NoteSelectionBounds
-                jr      z,NpsPlain
-                pop     hl
-                push    hl
-                ld      de,NoteBuf
-                or      a
-                sbc     hl,de
-                ld      a,l
-                cp      c
-                jr      nc,NpsPlain
-                or      $0F
-                dec     a                       ; exclusive chunk text end
-                cp      b
-                jr      c,NpsPlain
-                jr      z,NpsPlain
-                cp      c
-                jr      c,NpsWhole
-                jr      z,NpsWhole
-NpsPartial:
-                ld      a,l
-                pop     hl
-                ld      de,NotePaintBuf
-NpsLoop:
-                push    af
-                cp      b
-                jr      c,NpsNormal
-                cp      c
-                jr      nc,NpsNormal
-                ld      a,(hl)
-                or      a
-                jr      z,NpsEnd
-                or      INVBANK
-                jr      NpsPut
-NpsNormal:
-                ld      a,(hl)
-                or      a
-                jr      z,NpsEnd
-NpsPut:
-                ld      (de),a
-                inc     de
-                inc     hl
-                pop     af
-                inc     a
-                jr      NpsLoop
-NpsEnd:
-                ld      (de),a
-                pop     af
-                ld      hl,NotePaintBuf
-                ret
-NpsWhole:
-                ld      a,l
-                cp      b
-                jr      c,NpsPartial
-                ld      a,INVBANK
-                ld      (PrintInv),a
-NpsPlain:
-                pop     hl
                 ret
 
 ; Delete backwards so the lower endpoint remains stable while chunks
@@ -4177,15 +4502,23 @@ NoteMouseFrame:
                 ret     nz
                 call    NoteIsFront
                 ret     nz
+                call    NoteEndRowNow           ; the end's row before the move
                 ld      hl,(NoteCX)
                 push    hl
                 call    NoteMousePosition
                 pop     de
                 ld      hl,(NoteCX)
-                ld      (NoteEnd),hl
                 or      a
                 sbc     hl,de
                 ret     z
+                ; the drag's frame paints the rows the end moved over
+                ; when the view stays (lf-1591), else the window as
+                ; a press does
+                call    NoteEndMoved
+                cp      2
+                ret     z
+                call    RowsAddLive
+                jp      NoteComposeLater
 NmouseTouch:
                 call    NoteScroll
                 call    RowsAddLive
