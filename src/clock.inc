@@ -129,7 +129,11 @@ ClkBump:
                 jp      CalNextDay              ; midnight is the one moment
 
 ; Once a frame: tick, and when the minute changed, every clock window
-; is recomposed at the end of the frame.
+; is recomposed at the end of the frame. WndFlush returns with A =
+; WndCur, not the count it read, so the count is read again after it:
+; with the live window in slot 0 the loop below ran 256 slots, past
+; WndZ and WndTab, 357 ms and 18 to 24 frames dropped every minute a
+; window was open (lf-1601).
 ClkService:
                 call    ClkTick
                 ld      a,(ClkDirty)
@@ -141,6 +145,7 @@ ClkService:
                 or      a
                 ret     z
                 call    WndFlush
+                ld      a,(WndCount)
                 ld      b,a
                 ld      c,0
 CsSlot:

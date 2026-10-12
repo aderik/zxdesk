@@ -647,6 +647,7 @@ What changed, each measured on its own route:
 | fb-select, fb-select-wrap-off | a 24x17 notepad, HELLO WORLD, SELECT, five SHIFT+LEFT, two SHIFT+DOWN and two SHIFT+UP (lf-1591): the screen against the compositor with the selection inverted (with WRAP on the end goes down the empty lines to (0, 0): the whole line; with it off it keeps column 6 and comes back to WORLD), the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on in the detail |
 | fb-type-24 | a 24x17 notepad with WRAP on, eight lines of A and ENTER, then A (lf-1596): the screen against `wrap_win`, the document, Dropped 0 from boot; the eighth line's frames are 14.3 and 14.6 ms at 60 Hz, the painter's limit |
 | fb-select-past-end, fb-select-past-end-up | HELLO WORLD and FOO BAR (and BAZ) typed at the home size, the grip to 24x17, SELECT, SHIFT+RIGHT past the line's end and SHIFT+DOWN (SHIFT+UP) (lf-1596): the screen with the selection inverted, the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on |
+| fb-minute-note, fb-minute-clock, fb-minute-both | a minute's roll (ClkS set to 59, 90 frames) with a 24x17 notepad open, with a clock alone (GRAPH+K) and with the clock behind the notepad (lf-1601): Dropped before and after the roll both 0, 12:01 counted, every clock window recomposed with the new minute and the notepad as it was, the longest frame from the roll on in the detail |
 
 And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
 zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
@@ -887,6 +888,42 @@ without a disk ROM and **2,906** with one, unchanged; one scratch byte
 freed. Padded ROM crc32: normal **922d06d3**, TEST **e7b21f14**.
 `./test.sh`: C-BIOS_MSX1_EU 766 ok, C-BIOS_MSX1_JP 756 ok, all
 subjects pass.
+
+## The minute's roll with a window open (lf-1601)
+
+Found by dev3 testing lf-1599, older than that ticket: every minute
+with a window open the main loop stalled, 357 ms with a notepad and
+488 with a clock alone, Dropped +18 at 50 Hz and +22 to +24 at 60,
+nothing without a window. `ClkService` read `WndCount`, called
+`WndFlush` and then took A as the slot count; `WndFlush` returns with
+A = `WndCur`, so with the live window in slot 0 the loop ran 256
+slots, `WndRecAt` on each, past `WndZ` and `WndTab` (and `WndTouch`
+and `RowsAddSlot` on whatever record there happened to hold
+`AppClock`). The count is read again after the flush; `WndFlush` is
+as it was. A minute's roll measured by the frame probe, the longest
+frame from the roll on:
+
+| window | `3b7d9cd` | now |
+|---|---|---|
+| a 24x17 notepad | 337 ms / 16 dropped at EU, 344 / 20 at JP | 3.7 / 0 |
+| a clock alone | 466 / 23 at EU, 467 / 27 at JP | 5.4 / 0 |
+| the clock behind the notepad | 349 / 17 at EU, 352 / 21 at JP | 12.9 / 0 |
+
+`fb-minute-note`, `fb-minute-clock` and `fb-minute-both` (`./test.sh
+--frames`): the wait for the minute is bridged by writing 59 to
+`ClkS`, so the next second rolls it within 60 frames; 90 frames
+later Dropped is read again. Asserted: Dropped before and after the
+roll both 0, the clock at 12:01, the screen against the compositor
+with every clock window showing the new minute (behind the notepad
+too, slot 1, not the live window) and the notepad as it was. Against
+`3b7d9cd`'s source the three fail on both machines with the Dropped
+in the table.
+
+Budget against `3b7d9cd`: the code before the page pad of `NsanTab`
+**26,115 → 26,118 bytes (+3)**, TEST **27,869 → 27,872 (+3)**; the
+build line stays 26,624 / 28,160 (page-aligned); static RAM
+**3,997**, heap **8,291** without a disk ROM and **2,906** with one,
+unchanged. Padded ROM crc32: normal **891c3b63**, TEST **070c48f7**.
 
 ## FILE > OPEN in the budget (lf-1590)
 
