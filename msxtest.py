@@ -5151,6 +5151,56 @@ def frame_checks(syms, fails):
               and r.peek("Dropped", 2) == 0 and r.nt() == want and r.peek("WndCount") == len(windows(r)),
               f"{r.peek('ClkH'):02d}:{r.peek('ClkM'):02d}, Dropped {m}, screen {zlib.crc32(r.nt()):08x}/"
               f"{zlib.crc32(want):08x}, {r.peek('WndCount')} windows, longest frame from the roll {longest} us")
+    # The keys at 24x17 with WRAP on that composed and blitted the whole
+    # window in their frame (lf-1597, dev3 on lf-1591 and lf-1599), each
+    # with Dropped read before the keys and at the end, both 0, the
+    # screen against wrap_win, the document, the caret, the top and no
+    # selection; the longest frame from the first mark on in the detail.
+    # Where the typing is not what is measured the document is typed at
+    # the home size and the window grown before the mark, as the
+    # fb-select-past-end subjects have it. On 0850c2d at 60 Hz:
+    # - fb-caret-24: two SHIFT+UP and eleven SHIFT+LEFT without marking
+    #   in the full document of eight lines of 27 (the caret on the last
+    #   chunks, the view scrolled by one), 18.6 to 21.5 ms a key, Dropped
+    #   13; after three short lines 15.2 to 16.0 ms, Dropped 9;
+    # - fb-type-24-16: sixteen lines of A and ENTER, the typed key's
+    #   frame 13.1 ms at the first line and 15.6 at the sixteenth,
+    #   Dropped 3 to 7 (fb-type-24 stops at eight lines);
+    # - fb-type-24-full: the eight lines of 27 typed in the grown
+    #   window, two chunks each, the fifteenth character of each line
+    #   going on into a new chunk with the whole table laid out again
+    #   from the first line over three frames, the last with the compose
+    #   and the blit, Dropped 38 to 39;
+    # - fb-esc-24: SELECT and three SHIFT+UP in the full document, then
+    #   ESC, HOME and X: 19 ms each, three dropped;
+    # - fb-sel-letter-24: seven lines of 27 and HELLO WORLD, WORLD
+    #   selected, X and Y: 16 to 17 ms, Dropped 1 to 2.
+    # Now the caret's rows, the edited line's rows (laid out again by a
+    # job over that line alone, the rows after it parked) and the rows
+    # the selection covered are painted and blitted alone: 6 to 10 ms a
+    # cursor key, 9.4 to 11.6 a typed key, 12.0 to 13.8 an ENTER whose
+    # rows below are empty, 7.4 for ESC. At 50 Hz 0850c2d drops nothing
+    # in these but fb-type-24-full: the frames are under its 20 ms.
+    eight = s.new + (text(full.decode()) + s.enter) * 7 + text(full.decode()) + grown + mark("before")
+    seven = s.new + (text(full.decode()) + s.enter) * 7 + text("HELLO WORLD") + grown + mark("before")
+    for name, steps, lines, caret, top in [
+            ("fb-caret-24", eight + shifted(32) * 2 + shifted(16) * 11, [full] * 8, (2, 13), 1),
+            ("fb-type-24-16", big + mark("before") + (text("A") + s.enter) * 15 + text("A"), [b"A"] * 16, (1, 15), 1),
+            ("fb-type-24-full", big + mark("before") + (text(full.decode()) + s.enter) * 7 + text(full.decode()),
+             [full] * 8, (13, 15), 1),
+            ("fb-esc-24", eight + tap(7, 64) + shifted(32) * 3 + s.esc + s.home + text("X"),
+             [full] * 6 + [b"X" + full, full], (1, 12), 1),
+            ("fb-sel-letter-24", seven + tap(7, 64) + shifted(16) * 5 + text("XY"), [full] * 7 + [b"HELLO XY"], (8, 14), 0)]:
+        r = Run(syms, timing + steps + [(10, "")] + mark("end"), name, files={})
+        m = marks(r)
+        doc = note_width_document(lines)
+        want = compose(expected_nt(), [wrap_win(doc, caret[0], caret[1], top, w=24, h=17)[0]])
+        longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("\nmark before")[-1])))
+        check(fails, name, r.nt() == want and r.bytes("NoteBuf", 256) == doc and (r.peek("NoteCX"), r.peek("NoteCY")) == caret
+              and r.peek("NoteTop") == top and r.peek("NoteAnchor", 2) >> 8 == 0xFF and m["before"] == 0 and m["end"] == 0,
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
+              f"{zlib.crc32(doc):08x}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')})/{caret}, top {r.peek('NoteTop')}/{top}, "
+              f"anchor {r.bytes('NoteAnchor', 4).hex()}, Dropped {m}, longest frame from the mark {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)

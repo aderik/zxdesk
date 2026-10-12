@@ -648,6 +648,7 @@ What changed, each measured on its own route:
 | fb-type-24 | a 24x17 notepad with WRAP on, eight lines of A and ENTER, then A (lf-1596): the screen against `wrap_win`, the document, Dropped 0 from boot; the eighth line's frames are 14.3 and 14.6 ms at 60 Hz, the painter's limit |
 | fb-select-past-end, fb-select-past-end-up | HELLO WORLD and FOO BAR (and BAZ) typed at the home size, the grip to 24x17, SELECT, SHIFT+RIGHT past the line's end and SHIFT+DOWN (SHIFT+UP) (lf-1596): the screen with the selection inverted, the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on |
 | fb-minute-note, fb-minute-clock, fb-minute-both | a minute's roll (ClkS set to 59, 90 frames) with a 24x17 notepad open, with a clock alone (GRAPH+K) and with the clock behind the notepad (lf-1601): Dropped before and after the roll both 0, 12:01 counted, every clock window recomposed with the new minute and the notepad as it was, the longest frame from the roll on in the detail |
+| fb-caret-24, fb-type-24-16, fb-type-24-full, fb-esc-24, fb-sel-letter-24 | at 24x17 with WRAP on (lf-1597): two SHIFT+UP and eleven SHIFT+LEFT without marking in the full document; sixteen lines of A and ENTER; eight lines of 27 characters typed in the grown window; SELECT, three SHIFT+UP, ESC, HOME and X in the full document; WORLD selected after seven full lines, X and Y: the screen against `wrap_win`, the document, the caret, the top, no selection, Dropped read before the keys and at the end both 0, the longest frame from the mark in the detail |
 
 And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
 zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
@@ -924,6 +925,133 @@ Budget against `3b7d9cd`: the code before the page pad of `NsanTab`
 build line stays 26,624 / 28,160 (page-aligned); static RAM
 **3,997**, heap **8,291** without a disk ROM and **2,906** with one,
 unchanged. Padded ROM crc32: normal **891c3b63**, TEST **070c48f7**.
+
+## The caret, the typed key and ESC at 24x17 with WRAP on (lf-1597)
+
+dev3's observations on lf-1591 and lf-1599, the scope lf-1591 and
+lf-1596 put off: those tickets gave SHIFT+arrow while marking the row
+route (the rows the end moved over painted and blitted alone); every
+other key in a 24x17 notepad with WRAP on still composed and blitted
+the whole window in its frame. Measured as in the sections above
+(C-BIOS JP, the loop iteration from `FrameWatch` to `MainLoop`,
+breakpoints on the routines' entries for the split), on `0850c2d` and
+on this change; EU drops nothing in these on `0850c2d` but in the
+full document typed, its frames being under 20 ms.
+
+| key at 24x17, WRAP on (frame ms / Dropped, JP) | `0850c2d` | now |
+|---|---|---|
+| 1. two SHIFT+UP and eleven SHIFT+LEFT, no marking, after three short lines | 15.2 to 16.0 a key / 9 | 6.0 to 7.2 / 0 |
+| the same in the full document (eight lines of 27, the caret on the last chunks, the view scrolled by one) | 18.6 to 21.5 / 13 | 7.1 to 9.7 / 0 |
+| 2. sixteen lines of A and ENTER: the typed key | 13.1 at the first line to 15.6 at the sixteenth | 9.4 to 11.6 |
+| the ENTER | 14.2 to 14.9 (and 20 ms when the rows below were painted in the frame, see below) | 12.0 to 12.5 |
+| Dropped over the sixteen lines | 3 to 7 | 0 |
+| eight lines of 27 characters (two chunks each): the fifteenth character going on into a new chunk | the table laid out again from the first line over three frames, the last with the compose and the blit, 13.1 to 16.3; Dropped 38 over the eight lines | the line's job in the key's frame, 8.0 to 11.7 / 0 |
+| 3. ESC over a selection of three lines | 15.0 / 0 or 1 | 7.4 |
+| HOME after it | 15.5 / 1 | 6.0 |
+| X typed over WORLD selected (HELLO WORLD alone / after seven full lines) | 15.3 / 1 and 16 to 17 / 1 to 2 | 9.9 and 12.2 / 0 |
+| ESC, HOME, X after SELECT and three SHIFT+UP in the full document | 19.4 / 3 | 13.0 / 0 |
+
+What changed (`src/note.inc`; WRAP off keeps every route it had):
+
+- **A caret move without marking** (`NkCaret`): `NoteEndRowSave` keeps
+  the caret's row before every key with WRAP on, and the move goes
+  the marking move's way with the end left alone (`NoteCaretMoved`,
+  the entry of `NoteEndMoved` after its store of the end): the row
+  the caret left and the one it reached are painted and marked when
+  the top stays, else the window is composed the split way
+  (`NoteRecomposeSplit`: nothing in the key's frame, the compose the
+  next, the blit the one after) instead of composed and blitted in
+  the key's frame.
+- **An edit** (`NkEditSpan`, `NwEditSpan`, `NoteEditRows`): the
+  table is no longer laid out again from the first line. The job over
+  one line lf-1596 gave the same-links edit (`NwEditLineAt`) now
+  covers a span: D lines there were from the caret's line (one more
+  for every line `NbHard` joined into it, counted in `NwJoined`), E
+  lines there are now (two after ENTER split it, `NwSplit`), and the
+  blank lines that came or went at the document's end (an inserted
+  chunk pushes the last one out, a reclaimed one comes back blank:
+  the links taken away less the lines the span lost) are taken from
+  the parked tail's end or added behind it, one `NW_END` entry each.
+  The job runs within the key's frame; when the top stays, the
+  scroll bar neither comes nor goes and the rows after the span are
+  empty or as many as before, the span's rows (the old ones and the
+  new, whichever reach lower) and the caret's old row are painted and
+  marked and the bar's marker is moved along; a join, a shift of rows
+  with text below, a scroll or the bar's coming or going compose the
+  window the split way. `NwLinksSame`, for WRAP off, counts a join
+  as a change instead of `NbHard` spoiling the saved links.
+- **ESC over a selection** (`NkEscape`, `NoteSelRows`, `NwRowsOf`):
+  one walk over the table finds the rows the selection's first and
+  last cells are on (the last row that starts at or before each, as
+  the painter's inverse has them); those rows and the caret's are
+  painted with the caret shown again. Without a selection ESC is a
+  caret move that stayed where it was.
+- **A selection within one line goes in one pass**
+  (`NoteEraseSelection`): the caret at the lower bound and
+  `NoteDeleteN` over the characters between the bounds, the tail
+  reclaimed once; a BS a character was a pass over the rest of the
+  line each, 0.4 ms a character (five of them 2 ms of the X above).
+  Over a line end it is deleted backwards as before.
+- **The row route's painter pads** (`NoteDrawRows`): with WRAP on
+  the rows are no longer blanked before they are painted; the painter
+  pads them to the edge as at the home size (`WdFull`), 0.23 ms a row
+  less.
+
+**Not built, a question for the PO.** ENTER (or a character that
+wraps a word onto a new row) with text below the caret shifts the
+rows below it. Painted and blitted in the key's frame they were
+**20.1 ms** for ENTER at the top of the 24x17 view (3.2 ms blanking,
+2.7 painting and 4.7 blitting the fifteen rows, on 9.5 of key, job
+and the document's own shift), decreasing by 0.6 ms a row down to
+12.8 ms with one row below, and a frame dropped at 60 Hz down to
+about six rows below (and at 50 Hz at the top). Such an ENTER now
+composes the window the split way: 9.0, 8.5, 7.2 and 9.5 ms
+(key and job; compose; blit; flush), no frame dropped, one frame of
+latency more than before. Painting the shifted rows within the key's
+frame needs the buffer's rows moved instead of painted (about 0.17 ms
+a row for the interior cells, the bar's column kept) and their blit
+deferred to the next frame (a pending row range applied by
+`NoteLayService`), estimated at 12 to 13 ms for the key's frame: a
+second deferral mechanism next to `RepaintDue`, which this ticket
+does not introduce without a decision. While typing a document from
+the top the rows below are empty lines, which show nothing shifting,
+and ENTER stays on the row route (the table above).
+
+What stays per key with the lines above the caret: the line-of walk
+(`NwLineOf`, three times a key, 0.02 ms a chunk), the caret's
+derivation over the table's rows (`NwDerive`, twice), the walk to the
+span's first entry and the row route's walk past the rows above the
+first one it paints (0.06 ms a row): 0.15 ms a line, 9.4 ms for the
+first A and 11.6 for the sixteenth (13.1 to 15.6 before); the table
+is no longer laid out from the first line for any key.
+
+Screens, documents, carets and tops are byte for byte those of
+`0850c2d` in every scenario probed (the ROM's own name table against
+the base build's, and against the `wrap_win` oracle in the subjects):
+the three above with three short lines, with the full document and
+with sixteen lines of A, ESC and HOME over a selection of one line
+and of three, X over WORLD, five BS down to and over a line's start.
+
+Tests (`msxtest.py`, `frame_checks`, `./test.sh --frames`):
+`fb-caret-24`, `fb-type-24-16`, `fb-type-24-full`, `fb-esc-24` and
+`fb-sel-letter-24` (the table in "Frame budget at 60 Hz"). Each reads
+Dropped before its keys and at the end and asserts both 0, the
+screen, the document, the caret, the top and no selection; where the
+typing is not what is measured the document is typed at the home
+size and the window grown before the first mark. Against `0850c2d`'s
+source they fail at 60 Hz with Dropped 13, 3, 39, 3 and 2 and pass at
+50 Hz, where its frames are under 20 ms. `fb-join-bs` and
+`fb-join-del` take the split way now (13.3 ms at both machines, as
+before); the join's span job, its rows painted and blitted in the
+key's frame, was 16.0 ms at 60 Hz, one dropped.
+
+Budget against `0850c2d`: the code before the page pad of `NsanTab`
+**26,184 → 27,027 bytes (+843)**, TEST **27,938 → 28,781 (+843)**;
+the build line 26,624 → 27,392 and 28,416 → 29,184 (`NsanTab` on the
+next pages); static RAM **3,997**, heap **8,291** without a disk ROM
+and **2,906** with one, unchanged; nineteen bytes of `TapeBuf`
+scratch (+196, +200 to +214). Padded ROM crc32: normal **ff97d1db**,
+TEST **25db1ce9** (base 9e3fa2c7 / be30eb22).
 
 ## FILE > OPEN in the budget (lf-1590)
 
