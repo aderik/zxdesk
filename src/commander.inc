@@ -159,9 +159,15 @@ CmdDraw:
                 ld      hl,TxtCmdHelp1
                 ld      bc,$0901
                 call    WinPrint
-                ld      a,(CmdActive)           ; a tape pane has no file to
-                ld      (CmdPane),a             ; open, copy or delete: its
-                ld      hl,CmdBk0               ; keys import (lf-1575)
+                call    CmdDrawHelp2
+                jr      CdStatus
+; The help's second row: the active pane's keys. A tape pane has no
+; file to open, copy or delete: its keys import (lf-1575). TAB paints
+; this row again (CmdPaneSet).
+CmdDrawHelp2:
+                ld      a,(CmdActive)
+                ld      (CmdPane),a
+                ld      hl,CmdBk0
                 call    CmdField
                 ld      a,(hl)
                 cp      ST_TAPE
@@ -170,8 +176,7 @@ CmdDraw:
                 ld      hl,TxtCmdHelp2
 CdHelp2:
                 ld      bc,$0A01
-                call    WinPrint
-                jr      CdStatus
+                jp      WinPrint
 CdBrowseHelp:
                 xor     a
                 ld      (PrintInv),a
@@ -196,6 +201,31 @@ CdStatus:
                 jp      WinPrint
 CmdDrawPane:
                 call    CmdUseCol
+                call    CmdDrawHeader
+                call    CmdCacheAt
+                ld      (CmdCacheP),hl
+                call    CmdTopAt
+                ld      a,(hl)
+                ld      (CmdIndex),a
+                ld      a,2
+                ld      (CmdRow),a
+CdpRow:
+                call    CmdPaintRow
+                ld      hl,(CmdCacheP)
+                ld      de,CMDENT
+                add     hl,de
+                ld      (CmdCacheP),hl
+                ld      hl,CmdIndex
+                inc     (hl)
+                ld      hl,CmdRow
+                inc     (hl)
+                ld      a,(hl)
+                cp      2+CMDROWS
+                jr      c,CdpRow
+                ret
+; The live pane's header, its device's name, inverted when it is the
+; active pane; CmdUseCol done.
+CmdDrawHeader:
                 ld      hl,CmdBk0
                 call    CmdField
                 ld      a,(hl)
@@ -219,28 +249,28 @@ CdpHeader:
                 ld      a,(CmdCol)
                 ld      c,a
                 ld      b,1
-                call    WinPrint
-                call    CmdCacheAt
-                ld      (CmdCacheP),hl
-                call    CmdTopAt
-                ld      a,(hl)
-                ld      (CmdIndex),a
-                ld      a,2
+                jp      WinPrint
+; A = a pane: its header and its selection's row painted again into
+; the window's buffer and marked, the live pane after. TAB changes
+; the inversion of both (CmdPaneSet, lf-1592).
+CmdPaintPaneSel:
+                ld      (CmdPane),a
+                call    CmdUseCol
+                ld      a,1
                 ld      (CmdRow),a
-CdpRow:
-                call    CmdPaintRow
-                ld      hl,(CmdCacheP)
-                ld      de,CMDENT
-                add     hl,de
-                ld      (CmdCacheP),hl
-                ld      hl,CmdIndex
-                inc     (hl)
-                ld      hl,CmdRow
-                inc     (hl)
+                call    CmdBlankRow
+                call    CmdDrawHeader
+                ld      a,1
+                call    CmdMarkRow
+                call    CmdSelAt
                 ld      a,(hl)
-                cp      2+CMDROWS
-                jr      c,CdpRow
-                ret
+                push    af
+                call    CmdTopAt
+                pop     af
+                sub     (hl)
+                cp      CMDROWS
+                ret     nc                      ; off the page: no row of it
+                jp      CmdPaintPageRow
 ; A = a row of the page, 0 to CMDROWS-1: CmdRow, CmdIndex and
 ; CmdCacheP on it, for the live pane.
 CmdRowAt:
@@ -272,12 +302,23 @@ CraDone:
 ; blank row where StDir finds a file, a name where it finds none or
 ; another one: all stale. The name is compared, not the size. On RAM
 ; this is a walk of four entries; on the disk one BDOS search.
+; CmdRowNamed is the same check with the directory's answer in hand:
+; HL = the name StDir found at the row's index. SHIFT+DOWN looks the
+; next index up to know there is a file, and that lookup is the row's
+; check too (lf-1592): it was made again here, a second BDOS search on
+; the disk for every move.
+CmdRowNamed:
+                push    hl
+                call    CmdRowAt
+                pop     hl
+                jr      CrsCompare
 CmdRowStale:
                 call    CmdRowAt
                 ld      a,(CmdIndex)
                 call    StDir
-                ld      de,(CmdCacheP)
                 jr      c,CrsNone
+CrsCompare:
+                ld      de,(CmdCacheP)
                 ld      b,12
 CrsName:
                 ld      a,(de)
@@ -291,6 +332,7 @@ CrsName:
                 cp      a                       ; twelve cells the same
                 ret
 CrsNone:
+                ld      de,(CmdCacheP)
                 ld      a,(de)
                 or      a                       ; Z on a blank row
                 ret
@@ -443,8 +485,13 @@ CivStore:
 ; StDir, lf-1604): when it no longer says what the cache does, a file
 ; saved or deleted from another window since the page was read, the
 ; page is read again and the click selects what the row holds now,
-; nothing when it is blank, the window recomposed either way. A row
-; the directory confirms reads nothing, and a blank one is no click.
+; nothing when it is blank. A row the directory confirms reads
+; nothing, and a blank one is no click. The click paints what it
+; changes, as a key's move does (lf-1592): the row the selection left
+; and the row it took, or the page's six rows when it was read again;
+; it had the whole window recomposed over a fresh desktop, 18.2 ms
+; with the picker alone and 20.3 with a notepad behind it, a frame
+; dropped at 60 Hz, and at 50 (22.0 ms) with the notepad.
 CmdPress:
                 ld      a,(CmdBrowse)
                 or      a
@@ -469,29 +516,48 @@ CmdPress:
                 pop     af
                 call    CmdRowStale
                 jr      z,CprRow
-                call    CmdReadPane
                 ld      a,(CmdRow)              ; CmdRowAt's, kept through the read
                 sub     2
+                push    af
+                call    CmdReadPane
+                pop     af
                 call    CmdRowAt
                 ld      hl,(CmdCacheP)
                 ld      a,(hl)
                 or      a
-                jr      z,CprBack               ; blank now: nothing to select
-                jr      CprSelect
+                jr      z,CprRows               ; blank now: nothing to select
+                ld      a,(CmdIndex)
+                ld      (CmdSel0),a
+CprRows:
+                call    CmdPaintRows            ; the page as it is now
+                jp      CmdPainted
 CprRow:
                 ld      hl,(CmdCacheP)
                 ld      a,(hl)
                 or      a
-                jr      nz,CprSelect
-                ld      a,(CmdWasK)             ; blank rows cannot select a file
-                jp      StSelect
-CprSelect:
+                jp      z,CmdStill              ; blank rows cannot select a file
+                ld      a,(CmdRow)
+                sub     2
+                ld      c,a                     ; C = the row clicked
+                ld      hl,CmdSel0
                 ld      a,(CmdIndex)
-                ld      (CmdSel0),a
-CprBack:
-                ld      a,(CmdWasK)
-                call    StSelect
-                jr      CprPaint
+                cp      (hl)
+                jp      z,CmdStill              ; selected already: as it is
+                ld      b,(hl)
+                ld      (hl),a                  ; B = the selection left
+                push    bc
+                call    CmdTopAt
+                pop     bc
+                ld      a,b
+                sub     (hl)
+                cp      CMDROWS
+                jp      nc,CprOn                ; off the page: no row of it
+                ld      b,a
+                jp      CmdPaintMove            ; B = the row left, C = the one taken
+CprOn:
+                ld      a,c
+                call    CmdPaintPageRow
+                jp      CmdPainted
 CprOpen:
                 ld      a,(PtrX)
                 srl     a
@@ -503,11 +569,7 @@ CprOpen:
                 cp      6                       ; [OPEN], columns 1 through 6
                 ret     nc
                 ld      a,KEY_ENTER
-                call    CmdKey
-CprPaint:
-                ld      a,(WndCur)
-                call    WndTouch
-                jp      RowsAddLive
+                jp      CmdKey                  ; its rows marked, as a key's
 
 CmdKey:
                 ld      (CmdKeyCh),a
@@ -572,7 +634,7 @@ CmdPrinterTarget:
                 call    CmdField
                 ld      a,(hl)
                 cp      ST_PRINT
-                jp      z,CmdDone
+                jp      z,CmdStill              ; nothing changes
                 ld      a,(CmdPane)
                 xor     1
                 ld      (CmdPane),a
@@ -616,20 +678,43 @@ CmdRightPane:
 CmdTab:
                 ld      a,(CmdActive)
                 xor     1
+; A = the pane to make active. What changes is painted and marked,
+; nothing recomposed (lf-1592): the two headers and the two
+; selections swap their inversion, the help's second row says the
+; active pane's keys, and READY replaces another status. The
+; recompose was 16.2 ms at 60 Hz with a notepad behind, a frame
+; dropped. The pane it is on already: READY alone.
 CmdPaneSet:
-                ld      (CmdActive),a
+                ld      hl,CmdActive
+                cp      (hl)
+                jp      z,CmdPainted
+                ld      (hl),a
                 xor     a
-                jp      CmdResult
+                call    CmdPaintPaneSel
+                ld      a,1
+                call    CmdPaintPaneSel
+                xor     a
+                ld      (PrintInv),a
+                ld      b,10
+                ld      c,1
+                ld      a,CMDW-2
+                call    WinBlank
+                call    CmdDrawHelp2
+                ld      a,10
+                call    CmdMarkRow
+                jp      CmdPainted
 ; A move of the selection paints the rows it changes into the window's
 ; buffer and marks them, and returns 2: nothing is recomposed. A move
 ; was CmdRefresh (both panes read again) and a recompose and blit of
-; the whole window, 21 ms at 60 Hz in the picker (lf-1590).
+; the whole window, 21 ms at 60 Hz in the picker (lf-1590). A move
+; that moves nothing paints nothing (CmdStill): the recompose it had
+; was 17.4 ms with a notepad behind the picker (lf-1592).
 CmdUp:
                 call    CmdUse
                 call    CmdSelAt
                 ld      a,(hl)
                 or      a
-                jp      z,CmdDone
+                jp      z,CmdStill
                 ld      b,a                     ; the selection it leaves
                 dec     a
                 ld      (hl),a
@@ -639,7 +724,7 @@ CmdUp:
                 pop     bc
                 ld      a,c
                 cp      (hl)
-                jr      nc,CmdMoved             ; still on the page
+                jp      nc,CmdMoved             ; still on the page
                 ld      (hl),a                  ; the page scrolls up a row
                 jr      CmdPaged
 CmdDown:
@@ -647,11 +732,12 @@ CmdDown:
                 call    CmdSelAt
                 ld      a,(hl)
                 inc     a
-                jp      z,CmdDone
+                jp      z,CmdStill
                 push    af
                 call    StDir
                 pop     bc                      ; B = proposed selection
                 jr      c,CdnEnd
+                push    hl                      ; the name the directory has there
                 call    CmdSelAt
                 ld      a,(hl)
                 ld      (hl),b
@@ -663,17 +749,32 @@ CmdDown:
                 ld      a,c
                 sub     (hl)
                 cp      CMDROWS
-                jr      c,CmdMoved
+                jr      c,CdnOnPage
                 inc     (hl)                    ; the page scrolls down a row
+                pop     hl
+                jr      CmdPaged
+; Still on the page: the row it is on is checked against the name
+; StDir has just found there (CmdRowNamed, no second lookup), the row
+; it left as every move checks its rows (CmdMovedLeft).
+CdnOnPage:
+                call    CmdRows
+                pop     hl
+                ld      a,c
+                push    bc
+                call    CmdRowNamed
+                pop     bc
+                jr      nz,CmdPaged
+                jp      CmdMovedLeft
 ; The top moved: the cache described the page before it, so the pane
 ; is read again from its new top and all of its rows painted.
 CmdPaged:
                 call    CmdPaintPage
                 jr      CmdPainted
 ; The live pane read again from its top into its cache and its six
-; rows painted and marked.
+; rows painted and marked; CmdPaintRows the rows alone.
 CmdPaintPage:
                 call    CmdReadPane
+CmdPaintRows:
                 xor     a
 CpgRow:
                 push    af
@@ -712,15 +813,11 @@ CdnSelf:
                 dec     a
                 sub     c
                 call    CmdRowStale
-                jp      z,CmdDone
+                jp      z,CmdStill
                 jr      CmdPaged
-; B = the selection left, C = the one it is on, both on the page: the
-; cache still describes it, so the page is not read again and those
-; two rows alone are painted. Unless another window saved or deleted
-; a file since the page was read (lf-1593): each of the two rows is
-; checked against the directory first, and when either no longer
-; says what the cache does the move takes the page route above.
-CmdMoved:
+; B = the selection left, C = the one it is on, both on the page:
+; their rows.
+CmdRows:
                 push    bc
                 call    CmdTopAt
                 ld      a,(hl)
@@ -732,15 +829,28 @@ CmdMoved:
                 ld      a,c
                 sub     d
                 ld      c,a                     ; C = the row it is on
+                ret
+; B = the selection left, C = the one it is on, both on the page: the
+; cache still describes it, so the page is not read again and those
+; two rows alone are painted. Unless another window saved or deleted
+; a file since the page was read (lf-1593): each of the two rows is
+; checked against the directory first, and when either no longer
+; says what the cache does the move takes the page route above.
+CmdMoved:
+                call    CmdRows
+                ld      a,c
                 push    bc
                 call    CmdRowStale
                 pop     bc
                 jr      nz,CmdPaged
+CmdMovedLeft:
                 ld      a,b
                 push    bc
                 call    CmdRowStale
                 pop     bc
                 jr      nz,CmdPaged
+; B = the row left, C = the row taken: both painted and marked.
+CmdPaintMove:
                 ld      a,b
                 push    bc
                 call    CmdPaintPageRow
@@ -753,6 +863,10 @@ CmdPainted:
                 ld      a,(CmdStatus)
                 or      a
                 call    nz,CmdPaintReady
+; Nothing to paint and nothing marked: a key that moves nothing, a
+; click on the selection or on a blank row. The backend given back
+; and 2 for the dispatcher, which then recomposes nothing.
+CmdStill:
                 ld      a,(CmdWasK)
                 call    StSelect
                 ld      a,2
@@ -850,10 +964,7 @@ CpkGone:
                 call    CmdPaintPage
                 ld      a,6
                 call    CmdPaintStatus
-                ld      a,(CmdWasK)
-                call    StSelect
-                ld      a,2
-                ret
+                jp      CmdStill
 CpkFound:
                 pop     de
                 ld      (CmdSize),de
@@ -880,10 +991,7 @@ CmdDeleteAnswer:
                 ret     z
                 ld      a,(CmdActive)
                 ld      (CmdPane),a
-                call    CmdDelete
-                ld      a,(WndCur)
-                call    WndTouch
-                jp      RowsAddLive
+                jp      CmdDelete               ; CmdDone marks the rows
 
 CmdAskDelete:
                 call    CmdPicked
@@ -899,7 +1007,7 @@ CmdConfirm:
                 cp      'N'
                 jr      z,CmdCancel
                 cp      KEY_ESC
-                jp      nz,CmdDone
+                jp      nz,CmdStill             ; another key: the question stays
 CmdCancel:
                 xor     a
                 ld      (CmdPending),a
@@ -1090,12 +1198,27 @@ CopFind:
                 jr      z,CopExisting
                 inc     hl
                 djnz    CopFind
+; A fresh notepad: its load waits for the next frame (CmdLoadService),
+; the file's name set now and the notepad's device the pane's. The
+; open (the old front's state saved, three heap walks, the blank
+; document, the old front's cap flipped: 6.6 ms) and the load (the
+; read, the undo snapshot, NoteSanitise: 7.1) were one frame of 16.8
+; ms at 60 Hz from the Commander with a notepad open, one dropped
+; (lf-1592); nothing of the notepad is composed before the load.
 CopNew:
                 ld      a,APP_NOTE
                 call    WndOpen
                 ld      a,7
                 jp      c,CmdResult
-                jr      CopLoad
+                ld      a,(CmdSrcBk)
+                ld      (NoteBackend),a
+                ld      hl,CmdWork
+                call    NoteSetName
+                ld      a,(WndCur)
+                inc     a
+                ld      (CmdLoadDue),a          ; the slot, plus one
+                call    RepaintLater
+                jp      CmdStill
 CopExisting:
                 ld      a,(WndCur)
                 call    WndFocusTo
@@ -1128,6 +1251,46 @@ CopOk:
                 call    RepaintLater            ; budget (lf-1590)
                 ld      a,2
                 ret
+; The frame after CopNew's open: the file loaded into the notepad it
+; opened, under the name set there, when that notepad is still the
+; front window (a close or a focus change in between leaves it as it
+; is, blank). Then as CopOk has it, the compose and the blit from the
+; next frame on; a failed load gives the name and the device back and
+; says so, as CopLoad does. Called once a frame from the main loop,
+; before the repaint.
+CmdLoadService:
+                ld      a,(CmdLoadDue)
+                or      a
+                ret     z
+                ld      hl,CmdLoadDue
+                ld      (hl),0
+                dec     a
+                ld      hl,WndZ
+                cp      (hl)
+                ret     nz
+                call    WndSelect
+                call    NoteIsFront
+                ret     nz
+                ld      a,(NoteBackend)
+                push    af
+                ld      hl,NoteName
+                call    NoteLoadNamed
+                jr      nc,ClsOk
+                pop     af
+                ld      (NoteBackend),a
+                ld      hl,TxtNoteName          ; the name only with the file
+                call    NoteSetName
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsLiveText
+                jp      NoteLoadAlert
+ClsOk:
+                pop     af
+                call    NoteUndoBackend         ; UNDO gives that device back
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsLiveText
+                jp      RepaintLater
 ; I imports the next file on the tape into the other pane's device, A
 ; every file (upstream eb98c06, lf-1575): a tape has no directory, so
 ; this is how its files get one. The active pane must be the tape; the
@@ -1350,11 +1513,24 @@ CmdResult:
                 ld      de,CmdDeleteName
                 ld      bc,13
                 ldir
+; The window recomposed: the next frame composes it (WndComposeFront)
+; and the one after blits it, RepaintDue 4 as the open has it
+; (lf-1590). The delete, R, B, P and a copy read the directories again
+; in their frame, and the compose of 30x12 (7.3 ms) and the blit
+; (3.3) on top of that were 18 to 23 ms: a frame dropped at 60 Hz, and
+; at 50 by DELETE in the picker (lf-1592). Its rows are marked here
+; and 2 goes to the dispatcher. With no window left (the picker closed
+; for a notepad there was no room for) there is nothing to compose.
 CmdDone:
-                ld      a,(CmdWasK)
-                call    StSelect
-                ld      a,1
-                ret
+                ld      a,(WndCount)
+                or      a
+                jp      z,CmdStill
+                ld      a,(WndCur)
+                call    WndTouch
+                call    RowsLiveText
+                ld      a,4
+                ld      (RepaintDue),a
+                jp      CmdStill
 
 CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
                 defw    TxtCmdLarge, TxtCmdError, TxtCmdNone, TxtCmdNoRoom

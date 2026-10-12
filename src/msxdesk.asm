@@ -361,6 +361,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     CmdGot, 2
                 var     CmdHandle, 1
                 var     CmdSrcBk, 1
+                var     CmdLoadDue, 1   ; a fresh notepad's slot plus one: its load next frame (lf-1592)
                 var     CmdWork, 13
                 var     CmdBuf, 256
                 ; the clock
@@ -634,7 +635,8 @@ MainLoop:
                 call    FrameWatch
                 call    PtrUpdate
                 call    NtFlush
-                call    ReadInput
+                call    CmdLoadService  ; a fresh notepad's load, the frame
+                call    ReadInput       ; after its open, before this frame's input
                 call    EvPoll          ; ends in KbdPoll
                 call    EvDispatch
                 call    NoteMouseFrame

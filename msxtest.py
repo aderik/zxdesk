@@ -1629,35 +1629,44 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     # A move of the selection paints its two rows alone (lf-1590): one
     # repaint pass, its range the rows the selection left and took,
     # no slot dirty, no compose; the directory is not read again
-    # (no CmdReadPane) when it confirms the rows (lf-1593).
+    # (no CmdReadPane) when it confirms the rows (lf-1593), and the
+    # two rows' checks are its only lookups (two StDir, lf-1592: the
+    # lookup SHIFT+DOWN makes for the next file is the row's check,
+    # where it was a third one, a BDOS search on the disk).
     rc = syms["Recomposes"]
     def moves(steps):
         """`steps` between breakpoints on MarkRows (a repaint's range and
-        dirty slots), WinDraw (a compose) and CmdReadPane (a page read),
-        Recomposes noted before and after."""
+        dirty slots), WinDraw (a compose), CmdReadPane (a page read) and
+        StDir (a lookup), Recomposes noted before and after."""
         def counted(label):
             return [(10, f"note \"{label} [expr {{[debug read memory {rc}] + 256*[debug read memory {rc + 1}]}}]\"")]
         return ([(1, f"debug set_bp {syms['MarkRows']} {{}} {{note \"rows [debug read memory {syms['RowLo']}] "
                      f"[debug read memory {syms['RowHi']}] dirty [debug read memory {syms['WndDirty']}]\"}}; "
                      f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}; "
-                     f"debug set_bp {syms['CmdReadPane']} {{}} {{note \"paneread [debug read memory {syms['CmdPane']}]\"}}")]
+                     f"debug set_bp {syms['CmdReadPane']} {{}} {{note \"paneread [debug read memory {syms['CmdPane']}]\"}}; "
+                     f"debug set_bp {syms['StDir']} {{}} {{note \"lookup [reg A]\"}}")]
                 + counted("moving") + steps + counted("moved"))
     def moved(r):
-        """(Recomposes added, [(RowLo, RowHi, WndDirty)], composes, page reads) between the notes."""
+        """(Recomposes added, [(RowLo, RowHi, WndDirty)], composes, page reads, lookups) between the notes."""
         import re
         seg = r.log[r.log.index("moving "):r.log.index("moved ")]
         before, after = int(seg.split()[1]), int(r.log.split("moved ")[1].split()[0])
         return (after - before, [tuple(map(int, m)) for m in re.findall(r"rows (\d+) (\d+) dirty (\d+)", seg)],
-                seg.count("compose"), seg.count("paneread"))
+                seg.count("compose"), seg.count("paneread"), seg.count("\nlookup "))
     r = pick(moves(down), "browse-select")
     screen(r, "browse-select", [browser(left, 1)])
-    added, ranges, composes, reads = moved(r)
-    check(fails, "browse-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0,
-          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}: ALPHA's and BETA's rows alone")
-    # A click on a row the directory confirms reads nothing either (lf-1604)
+    added, ranges, composes, reads, lookups = moved(r)
+    check(fails, "browse-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0 and lookups == 2,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}, lookups {lookups}: "
+          f"ALPHA's and BETA's rows alone, checked once each")
+    # A click on a row the directory confirms reads nothing either
+    # (lf-1604), and paints the two rows as a move does (lf-1592)
     r = pick(moves(selected), "browse-mouse-reads")
     screen(r, "browse-mouse-reads", [browser(left, 1)])
-    check(fails, "browse-mouse-reads", moved(r)[3] == 0, f"page reads {moved(r)[3]}: BETA's row confirmed")
+    added, ranges, composes, reads, lookups = moved(r)
+    check(fails, "browse-mouse-reads", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0 and lookups == 1,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}, lookups {lookups}: "
+          f"BETA's row confirmed, ALPHA's and BETA's rows alone")
     r = pick(down + tap(8, 32, True), "browse-up")
     screen(r, "browse-up", [browser(left)])
     # A file saved from another window while the picker is open
@@ -1820,9 +1829,10 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     screen(r, "cmd-empty", [cmdwin([], [])])
     r = run(moves(down), "cmd-select")
     screen(r, "cmd-select", [cmdwin(left, right, selection=1)])
-    added, ranges, composes, reads = moved(r)
-    check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0,
-          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}: the left pane's two rows alone")
+    added, ranges, composes, reads, lookups = moved(r)
+    check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0 and lookups == 2,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}, lookups {lookups}: "
+          f"the left pane's two rows alone, checked once each")
     # G saved from a notepad behind the Commander (lf-1593), the route
     # of browse-saved-behind: the left pane shows G once the selection
     # moves onto its row, the right pane, on RAM, once its own does
@@ -5400,6 +5410,113 @@ def frame_checks(syms, fails):
               f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
               f"{zlib.crc32(doc):08x}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')})/{caret}, top {r.peek('NoteTop')}/{top}, "
               f"anchor {r.bytes('NoteAnchor', 4).hex()}, Dropped {m}, longest frame from the mark {longest} us")
+    # The Commander and the picker (lf-1592, dev3 on lf-1590): the
+    # routes that recomposed the whole 30x12 window in their frame,
+    # each from boot with a 16x9 notepad with HI open first and the
+    # picker (FILE > OPEN) or the Commander (VIEW) over it, four files
+    # on RAM (on the disk: there, the lookups and the delete are the
+    # BDOS's, the known exception, so Dropped is read, not asserted).
+    # Dropped before the keys and at the end, the screen against the
+    # compositor, the composes (a breakpoint on WinDraw) from the mark
+    # on and the longest frame from it. On ab93a19 at 60 Hz:
+    # - fb-click-row: a click on BETA's row, then on GAMMA's, 20.3 ms
+    #   each (18.2 with the picker alone), one dropped each, and 22.0
+    #   at 50 Hz, one dropped: the window recomposed over a fresh
+    #   desktop. Now the two rows are painted, as a key's move paints
+    #   them, 8.9 ms, no compose.
+    # - fb-click-stale: a click on the blank third row where G stands,
+    #   saved from the notepad since the page was read (lf-1604's
+    #   browse-saved-click): 21.2 ms, one dropped, 22.8 at 50 Hz, one
+    #   dropped. Now the page's six rows are painted after the read:
+    #   15.0 ms, Dropped 0 at both, at the 60 Hz limit (14.8 never
+    #   dropped, 15.2 sometimes): at 50 Hz Dropped 0 is asserted, at 60
+    #   one dropped is allowed and the frame reported, the PO's
+    #   question.
+    # - fb-move-end: SHIFT+DOWN on the last file and SHIFT+UP on the
+    #   first, which move nothing: 17.4 and 16.4 ms, one dropped each
+    #   (CmdDone's recompose). Now nothing is painted: 3.6 ms.
+    # - fb-tab: TAB in the Commander, 16.4 ms, one dropped. Now the
+    #   two headers, the two selections and the help row are painted:
+    #   11.9 ms.
+    # - fb-cmd-enter: ENTER in the Commander, a notepad already open:
+    #   the open of the fresh notepad and the load of ALPHA in one
+    #   frame, 16.8 ms, one dropped. Now the load is the next frame's
+    #   (CmdLoadService): 10.5 ms, the compose frame.
+    # - fb-delete-picker, fb-reload-picker, fb-delete-cmd,
+    #   fb-reload-cmd: DELETE (the dialogue, TAB, ENTER) and R in the
+    #   picker, D then Y and R in the Commander: 21.1 (22.9 at 50 Hz,
+    #   one dropped there too), 16.1, 18.1 and 18.5 ms, one dropped at
+    #   60 Hz (R in the picker 0, at the limit). The directories are
+    #   read again in the key's frame; the compose is now the next
+    #   frame's and the blit the one after (CmdDone, RepaintDue 4):
+    #   11.7, 8.9, 9.3 and 9.1 ms.
+    files = {name: note_width_document([name.encode()]) for name in ("ALPHA", "BETA", "GAMMA", "DELTA")}
+    two = {name: files[name] for name in ("ALPHA", "BETA")}
+    names, right = list(files), [] if EXT else list(files)
+    hi_note = note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0)
+    note = s.new + text("HI")
+    picker = s.click(88, 3) + s.click(96, 19) + [(15, "")]
+    commander = s.click(180, 3) + s.click(188, 51) + [(15, "")]
+    composes = [(1, f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose\"}}")]
+    tab, delete, dkey, ykey, rkey = tap(7, 8), tap(8, 8), tap(3, 2), tap(5, 64), tap(4, 128)
+    def slot_at(r, slot, window):
+        """`window` where the ROM put the window in `slot`."""
+        rec = syms["WndTab"] + slot * syms["WNDRECSZ"] - WORK
+        return (r.ram[rec], r.ram[rec + 1]) + window[2:]
+    def picker_win(names, selection=0, status=b"READY"):
+        lines = [(1, 1, b"DISK" if EXT else b"RAM", True), (8, 1, status, False),
+                 (9, 1, b"SHIFT+ARROWS ENTER OPEN", False), (10, 1, b"[OPEN] DELETE REMOVE R LIST", False)]
+        for i, name in enumerate(names):
+            lines += [(2 + i, 1, name.encode(), i == selection), (2 + i, 22, b"00256", i == selection)]
+        return (1, 3, 30, 12, b"COMMANDER", lines)
+    def row_click(row):
+        """A click on the picker's row `row`, the picker at (2, 4) behind the notepad."""
+        return s.click(40, (4 + 2 + row) * 8 + 2)
+    def deleted(r, name):
+        """`name` gone from the directory, the other files kept."""
+        if EXT:
+            return read_disk_image(DISK) == {k: v for k, v in files.items() if k != name}
+        return r.bytes("RamDir", 64)[15::16] == bytes(int(k != name) for k in files)
+    saved_g = (note + picker + nxt + shortcut(5, 1) + text("G") + s.enter + [(10, "")] + nxt)
+    for name, seeded, steps, windows, state, want_composes in [
+            ("fb-click-row", files, note + picker + mark("before") + row_click(1) + [(10, "")] + row_click(2) + [(10, "")],
+             lambda r: [hi_note, slot_at(r, 1, picker_win(names, 2))], lambda r: r.peek("CmdSel0") == 2, 0),
+            ("fb-click-stale", two, saved_g + mark("before") + row_click(2) + [(10, "")],
+             lambda r: [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G"), slot_at(r, 1, picker_win(["ALPHA", "BETA", "G"], 2))],
+             lambda r: r.peek("CmdSel0") == 2, 0),
+            ("fb-move-end", files, note + picker + s.down * 3 + [(10, "")] + mark("before") + s.down + [(10, "")]
+             + s.up * 3 + [(10, "")] + s.up + [(10, "")],
+             lambda r: [hi_note, slot_at(r, 1, picker_win(names, 0))], lambda r: r.peek("CmdSel0") == 0, 0),
+            ("fb-tab", files, note + commander + mark("before") + tab + [(10, "")],
+             lambda r: [hi_note, slot_at(r, 1, cmdwin(names, right, active=1))], lambda r: r.peek("CmdActive") == 1, 0),
+            ("fb-cmd-enter", files, note + commander + mark("before") + s.enter + [(15, "")],
+             lambda r: [hi_note, slot_at(r, 1, cmdwin(names, right)),
+                        slot_at(r, 2, note_win(0, 0, [b"ALPHA"] + [b""] * 15, 0, 0, title=b"ALPHA"))],
+             lambda r: r.peek("WndCount") == 3 and r.bytes("NoteBuf", 256) == files["ALPHA"]
+             and r.bytes("NoteName", 6) == b"ALPHA\0" and r.peek("NoteModified") == 0, 1),
+            ("fb-delete-picker", files, note + picker + s.down + mark("before") + delete + [(10, "")] + tab + [(10, "")]
+             + s.enter + [(15, "")],
+             lambda r: [hi_note, slot_at(r, 1, picker_win([n for n in names if n != "BETA"], status=b"DELETED"))],
+             lambda r: deleted(r, "BETA") and r.peek("DgOpenFlag") == 0, 1),
+            ("fb-reload-picker", files, note + picker + s.down + mark("before") + rkey + [(15, "")],
+             lambda r: [hi_note, slot_at(r, 1, picker_win(names))], lambda r: r.peek("CmdSel0") == 0, 1),
+            ("fb-delete-cmd", files, note + commander + mark("before") + dkey + [(10, "")] + ykey + [(15, "")],
+             lambda r: [hi_note, slot_at(r, 1, cmdwin(names[1:], [] if EXT else names[1:], status=b"DELETED"))],
+             lambda r: deleted(r, "ALPHA"), 2),
+            ("fb-reload-cmd", files, note + commander + s.down + mark("before") + rkey + [(15, "")],
+             lambda r: [hi_note, slot_at(r, 1, cmdwin(names, right))], lambda r: r.peek("CmdSel0") == 0, 1)]:
+        seed = [] if EXT else seed_ram_steps(syms, seeded)
+        r = Run(syms, timing + composes + seed + steps + mark("end"), name, files=seeded if EXT else None)
+        m = marks(r)
+        want = compose(expected_nt(), windows(r))
+        after = r.log.split("\nmark before")[-1]
+        longest = max(map(int, re.findall(r"frame us (\d+)", after)))
+        drops = m["end"] - m["before"]
+        hz50 = bool(r.bios[0x2B] & 0x80)
+        budget = True if EXT else (m["before"] == 0 and (drops == 0 if hz50 or name != "fb-click-stale" else drops <= 1))
+        check(fails, name, r.nt() == want and state(r) and after.count("\ncompose") == want_composes and budget,
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, composes {after.count(chr(10) + 'compose')}/{want_composes}, "
+              f"Dropped {m}, longest frame from the mark {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)
