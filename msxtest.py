@@ -539,7 +539,7 @@ def test_build_checks(tsyms, fails):
     ptrs = [r.peek16_at(tsyms["ThPtr"] + i * 2) for i in range(3)]
     stats = [(r.peek16_at(tsyms["ThStat"] + i * 4), r.peek16_at(tsyms["ThStat"] + i * 4 + 2)) for i in range(3)]
     blocks = heap_walk(r, base, end)
-    A, B, C = 48, 40, 32            # 166 bytes of TEST heap behind a disk ROM, with the clipboard
+    A, B, C = 48, 32, 24            # 137 bytes of TEST heap behind a disk ROM (lf-1624)
     check(fails, "heap-split", ptrs == [base + 4, base + 4 + A + 4, base + 4 + A + 4 + B + 4],
           f"blocks at {[hex(p) for p in ptrs]}")
     # The first block, owner $10, is never freed; the free by owner takes
@@ -1760,6 +1760,35 @@ def commander_checks(syms, fails, vram0, browse_only=False):
           and r.bytes("NoteBuf", 256) == hi and r.peek("NoteModified") == 0,
           f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 2)!r}, "
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(hi):08x}")
+    # A fresh notepad whose load is skipped (lf-1624): ENTER in the
+    # Commander opens it, its load waits a frame, and keys that came in
+    # the same frame (posted into the event ring when CopNew runs) send
+    # it behind (GRAPH+X) or close it and open another (GRAPH+W, N).
+    # The notepad left is NOTE, blank, never saved: GRAPH+X to it,
+    # GRAPH+S, ENTER and ESC write nothing, and ALPHA keeps its bytes.
+    def same_frame(*codes):
+        post = " ".join(f"set h [debug read memory {syms['EvHead']}]; "
+                        f"set a [expr {{{syms['EvQueue']} + 4 * $h}}]; "
+                        f"debug write memory $a 4; debug write memory [expr {{$a + 1}}] {c}; "
+                        f"debug write memory [expr {{$a + 2}}] 0; "
+                        f"debug write memory {syms['EvHead']} [expr {{($h + 1) & 15}}];" for c in codes)
+        return [(1, f"set ::posted 0; debug set_bp {syms['CopNew']} {{!$::posted}} {{set ::posted 1; {post}}}")]
+    def alpha(r):
+        if EXT:
+            return read_disk_image(DISK).get("ALPHA")
+        return next((r.bytes("RamHeap", 1024)[i * 256:(i + 1) * 256] for i in range(4)
+                     if r.bytes("RamDir", 64)[i * 16:i * 16 + 6] == b"ALPHA\0"), None)
+    blank = note_width_document([b""])
+    gsave = shortcut(5, 1) + enter + tap(7, 4)
+    for name, codes, back, windows in [("load-skipped-behind", (0x81,), shortcut(5, 0x20), 2),
+                                       ("load-skipped-closed", (0x84, 0x85), [], 2)]:
+        r = run(same_frame(*codes) + enter + [(10, "")] + back + gsave, name)
+        check(fails, name, r.peek("WndCount") == windows and r.bytes("NoteName", 5) == b"NOTE\0"
+              and r.peek("NoteSaved") == 0 and r.bytes("NoteBuf", 256) == blank
+              and r.peek("CmdLoadDue") == 0 and alpha(r) == fixtures["ALPHA"],
+              f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 6)!r}, saved {r.peek('NoteSaved')}, "
+              f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(blank):08x}, "
+              f"load due {r.peek('CmdLoadDue')}, ALPHA kept {alpha(r) == fixtures['ALPHA']}")
     if not EXT:
         # R reads the directory again: a file removed behind the picker's back
         r = pick([(5, f"debug write memory {syms['RamDir'] + 15} 0")] + tap(4, 128), "browse-reload")
