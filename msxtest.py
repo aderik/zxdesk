@@ -1628,28 +1628,36 @@ def commander_checks(syms, fails, vram0, browse_only=False):
               f"selected BETA crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
     # A move of the selection paints its two rows alone (lf-1590): one
     # repaint pass, its range the rows the selection left and took,
-    # no slot dirty, no compose; the directory is not read again.
+    # no slot dirty, no compose; the directory is not read again
+    # (no CmdReadPane) when it confirms the rows (lf-1593).
     rc = syms["Recomposes"]
     def moves(steps):
         """`steps` between breakpoints on MarkRows (a repaint's range and
-        dirty slots) and WinDraw (a compose), Recomposes noted before and after."""
+        dirty slots), WinDraw (a compose) and CmdReadPane (a page read),
+        Recomposes noted before and after."""
         def counted(label):
             return [(10, f"note \"{label} [expr {{[debug read memory {rc}] + 256*[debug read memory {rc + 1}]}}]\"")]
         return ([(1, f"debug set_bp {syms['MarkRows']} {{}} {{note \"rows [debug read memory {syms['RowLo']}] "
                      f"[debug read memory {syms['RowHi']}] dirty [debug read memory {syms['WndDirty']}]\"}}; "
-                     f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}")]
+                     f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}; "
+                     f"debug set_bp {syms['CmdReadPane']} {{}} {{note \"paneread [debug read memory {syms['CmdPane']}]\"}}")]
                 + counted("moving") + steps + counted("moved"))
     def moved(r):
-        """(Recomposes added, [(RowLo, RowHi, WndDirty)], composes) between the notes."""
+        """(Recomposes added, [(RowLo, RowHi, WndDirty)], composes, page reads) between the notes."""
         import re
         seg = r.log[r.log.index("moving "):r.log.index("moved ")]
         before, after = int(seg.split()[1]), int(r.log.split("moved ")[1].split()[0])
-        return after - before, [tuple(map(int, m)) for m in re.findall(r"rows (\d+) (\d+) dirty (\d+)", seg)], seg.count("compose")
+        return (after - before, [tuple(map(int, m)) for m in re.findall(r"rows (\d+) (\d+) dirty (\d+)", seg)],
+                seg.count("compose"), seg.count("paneread"))
     r = pick(moves(down), "browse-select")
     screen(r, "browse-select", [browser(left, 1)])
-    added, ranges, composes = moved(r)
-    check(fails, "browse-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0,
-          f"Recomposes +{added}, rows {ranges}, composes {composes}: ALPHA's and BETA's rows alone")
+    added, ranges, composes, reads = moved(r)
+    check(fails, "browse-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}: ALPHA's and BETA's rows alone")
+    # A click on a row the directory confirms reads nothing either (lf-1604)
+    r = pick(moves(selected), "browse-mouse-reads")
+    screen(r, "browse-mouse-reads", [browser(left, 1)])
+    check(fails, "browse-mouse-reads", moved(r)[3] == 0, f"page reads {moved(r)[3]}: BETA's row confirmed")
     r = pick(down + tap(8, 32, True), "browse-up")
     screen(r, "browse-up", [browser(left)])
     # A file saved from another window while the picker is open
@@ -1663,8 +1671,9 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     up = tap(8, 32, True)
     hi = note_width_document([b"HI"])
     two = {name: fixtures[name] for name in ("ALPHA", "BETA")}
-    saved = (new + tap(3, 32) + tap(3, 64) + browse + shortcut(5, 0x20) + shortcut(5, 1) + tap(3, 16) + enter
-             + [(10, "")] + shortcut(5, 0x20) + down * 2)
+    save_g = (new + tap(3, 32) + tap(3, 64) + browse + shortcut(5, 0x20) + shortcut(5, 1) + tap(3, 16) + enter
+              + [(10, "")] + shortcut(5, 0x20))
+    saved = save_g + down * 2
     def at(r, slot, window):
         """`window` where the ROM put the window in `slot`."""
         rec = syms["WndTab"] + slot * syms["WNDRECSZ"] - WORK
@@ -1684,6 +1693,42 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     r = Run(syms, seed_ram({} if EXT else two) + saved + enter + [(15, "")], "browse-saved-behind-open",
             files=two if EXT else None)
     check(fails, "browse-saved-behind-open", r.peek("WndCount") == 1 and r.bytes("NoteName", 2) == b"G\0"
+          and r.bytes("NoteBuf", 256) == hi and r.peek("NoteModified") == 0,
+          f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 2)!r}, "
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(hi):08x}")
+    # The mirror (lf-1604): G deleted from the notepad again, FILE >
+    # DELETE, while the picker's page names it on its third row. Back
+    # in the picker, SHIFT+DOWN from BETA finds no third file where the
+    # cache has G and reads the page again: ALPHA and BETA, BETA
+    # selected. ENTER on the selected G reads the page again before NO
+    # FILE SELECTED, the selection on its blank row. A click on the
+    # ghost row reads the page again and selects nothing, BETA staying
+    # selected. And a click on the blank row where a freshly saved G
+    # stands reads the page again and selects G; ENTER then loads it.
+    deleted = press(88, 3) + press(96, 51) + tab + enter
+    g_gone = shortcut(5, 0x20) + deleted + shortcut(5, 0x20)
+    note_g = note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G")
+    def has_g(r):
+        """G in the directory, as a file that is there: on RAM a used entry."""
+        if EXT:
+            return "G" in read_disk_image(DISK)
+        d = r.bytes("RamDir", 64)
+        return any(d[i * 16:i * 16 + 2] == b"G\0" and d[i * 16 + 15] for i in range(4))
+    third = mouse + mouse_click(40, 66)      # the picker's third row, the picker at (2, 4) behind the notepad
+    for name, steps, window, sel in [
+            ("browse-gone-end", saved + up + g_gone + down, browser(["ALPHA", "BETA"], 1), 1),
+            ("browse-gone-enter", saved + g_gone + enter, browser(["ALPHA", "BETA"], 2, status=b"NO FILE SELECTED"), 2),
+            ("browse-gone-click", saved + up + g_gone + third, browser(["ALPHA", "BETA"], 1), 1),
+            ("browse-saved-click", save_g + third, browser(["ALPHA", "BETA", "G"], 2), 2)]:
+        r = Run(syms, seed_ram({} if EXT else two) + steps + [(15, "")], name, files=two if EXT else None)
+        want = compose(nt0, [note_g, at(r, 1, window)])
+        stored = stored_g(r) == hi if name == "browse-saved-click" else not has_g(r)
+        check(fails, name, r.nt() == want and r.peek("CmdSel0") == sel and stored and r.peek("WndCount") == 2,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; selection {r.peek('CmdSel0')}, "
+              f"windows {r.peek('WndCount')}, G stored as expected {stored}")
+    r = Run(syms, seed_ram({} if EXT else two) + save_g + third + enter + [(15, "")],
+            "browse-saved-click-open", files=two if EXT else None)
+    check(fails, "browse-saved-click-open", r.peek("WndCount") == 1 and r.bytes("NoteName", 2) == b"G\0"
           and r.bytes("NoteBuf", 256) == hi and r.peek("NoteModified") == 0,
           f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 2)!r}, "
           f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(hi):08x}")
@@ -1775,9 +1820,9 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     screen(r, "cmd-empty", [cmdwin([], [])])
     r = run(moves(down), "cmd-select")
     screen(r, "cmd-select", [cmdwin(left, right, selection=1)])
-    added, ranges, composes = moved(r)
-    check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0,
-          f"Recomposes +{added}, rows {ranges}, composes {composes}: the left pane's two rows alone")
+    added, ranges, composes, reads = moved(r)
+    check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0 and reads == 0,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}, page reads {reads}: the left pane's two rows alone")
     # G saved from a notepad behind the Commander (lf-1593), the route
     # of browse-saved-behind: the left pane shows G once the selection
     # moves onto its row, the right pane, on RAM, once its own does

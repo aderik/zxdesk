@@ -1205,6 +1205,86 @@ one, unchanged. Padded ROM crc32: normal **bb5dd696**, TEST
 **dc7ff500**. `./test.sh`: C-BIOS_MSX1_EU 777 ok, C-BIOS_MSX1_JP 767 ok, all
 subjects pass.
 
+## The ghost row and the click against the directory (lf-1604)
+
+The mirror of lf-1593, from dev3's test report on it: there a file
+saved from another window did not appear, here one deleted from
+another window stayed. The picker over ALPHA, BETA and G, GRAPH+X to
+the notepad, G deleted with FILE > DELETE, GRAPH+X back: G still on
+the third row. SHIFT+DOWN from BETA found no third file and left the
+page as it was (`CdnEnd` checked the selection's own row alone, not
+the row `StDir` had just found nothing for); ENTER on the selected G
+said NO FILE SELECTED with G still inverted; a click on the ghost row
+selected it. And a click on the blank row where a freshly saved G now
+stood did nothing (`CmdPress` saw a blank cached row), left so by
+lf-1593.
+
+- A move past the last file (`CdnEnd`) checks the row the move was
+  for as well: when the cache names a file there, where `StDir` has
+  just found none, it takes the page route (`CmdPaintPage`, the pane
+  read again and its six rows painted and marked) with the selection
+  where it stood. No second `StDir` for that row: the one the move
+  made is the answer. The selection's own row is checked as before.
+- The lookup under ENTER, C, D and DELETE (`CmdPicked`) ends the key
+  itself when the directory runs out without the cached name
+  (`CpkGone`): the page read again, its six rows and NO FILE SELECTED
+  on the status row painted and marked, the selection on its blank
+  row, 2 for the dispatcher. Every caller would have said the same
+  through `CmdEmpty`, with a recompose of the whole window that
+  dropped a frame at 60 Hz once the read came first; so the caller's
+  return address goes and the key returns from there.
+- A click on a row of the picker (`CmdPress`) checks that row against
+  the directory first (`CmdRowStale`, one `StDir`). A row the
+  directory confirms reads nothing, as the PO asked; a blank one that
+  stays blank is no click, as before. When the row no longer says
+  what the cache does the page is read again and the click selects
+  what the row holds now, nothing when it is blank; the window is
+  recomposed either way, as a click always was.
+
+Measured with the frame probe on C-BIOS JP (`FrameWatch` to
+`MainLoop`, the longest frame of the step), RAM, `9a0a185` → now:
+
+| step | before | now |
+|---|---|---|
+| click on BETA, four files, the picker alone (a row the directory confirms) | 17.5 ms, one dropped (lf-1592 point 1) | 18.2, one dropped: the one `StDir`, nothing read |
+| click on a blank row past the files | 2.8 | 3.5, nothing read |
+| click on the ghost row (G deleted behind the picker, BETA selected) | 18.9, one dropped; G selected | 20.3, one dropped; the page read, G gone, BETA still selected |
+| click on the blank row where a freshly saved G stands | 2.8; nothing happened | 22.8, one dropped; the page read, G selected |
+| ENTER on the deleted G | 16.3, Dropped 0; NO FILE SELECTED with G inverted | 14.9, Dropped 0; the page read, G gone |
+| SHIFT+DOWN from BETA with the ghost on the third row | 16.2, Dropped 0; G stayed | 13.3, Dropped 0; the page read, G gone, BETA selected |
+| SHIFT+DOWN past the last file, four files, no ghost | 14.8, Dropped 0 | 15.0, Dropped 0: the cached row checked, nothing read |
+
+The two clicks that drop were dropping before (a click recomposes the
+whole picker: lf-1592 point 1); the click that found G costs the page
+read on top. The two ghost routes that recomposed the whole window at
+16 ms now paint six rows and come in under the budget.
+
+Subjects (`./test.sh --commander`, the browse group, all
+configurations; the first five fail on `9a0a185`):
+`browse-gone-end` SHIFT+DOWN from BETA after G's deletion from the
+notepad, the screen against the compositor (ALPHA and BETA, BETA
+inverted, the notepad behind titled G), `CmdSel0` 1, G's entry
+unused; `browse-gone-enter` ENTER on the selected G, NO FILE SELECTED
+on the status row and no row inverted, `CmdSel0` 2; `browse-gone-click`
+a click on the ghost row, G gone and BETA still selected;
+`browse-saved-click` a click on the blank third row after GRAPH+S of G
+from the notepad, G on the row and inverted, `CmdSel0` 2;
+`browse-saved-click-open` ENTER then loads G (the name, the 256 bytes,
+unmodified); `browse-mouse-reads` a click on BETA with a breakpoint on
+`CmdReadPane`: no read. `browse-move-rows` and `cmd-move-rows` count
+`CmdReadPane` too and still see none; `browse-saved-behind*`,
+`cmd-saved-behind*`, `browse-gone-*`, `browse-added-behind` and
+`fb-open` as they were.
+
+Budget against `9a0a185`: the last byte before the page pad of
+`NsanTab`, read from the ROM, **27,113 → 27,197 bytes (+84)**, TEST
+**28,867 → 28,951 (+84)**; the build line goes 27,392 → 27,648 for
+the normal ROM and 29,184 → 29,440 for TEST (the pad: `NsanTab` moved
+a page up in both); static RAM **3,997** (TEST 6,729), heap **8,291**
+without a disk ROM and **2,906** with one, unchanged; no new RAM.
+Padded ROM crc32: normal **d7ae23ff**, TEST **c3ca26dd**.
+`./test.sh --commander`: C-BIOS_MSX1_EU 58 ok, C-BIOS_MSX1_JP 58 ok.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything
