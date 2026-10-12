@@ -482,7 +482,11 @@ def test_build_checks(tsyms, fails):
     page2_size = max(0, tsyms["RomEnd"] - 0x8000)
     dump_page2 = (f'set f [open $::out/page2.bin wb]; puts -nonewline $f '
                   f'[debug read_block memory 32768 {page2_size}]; close $f')
-    r = Run(tsyms, [(60, dump_page2)], "subjects", rom=TROM)
+    # The read trap armed before boot for TestTapeHeld (lf-1576): ALPHA,
+    # BETA, ALPHA, ALPHA on the tape.
+    alpha, beta = doc("ALPHA"), doc("BETA")
+    held_tape = tape_blocks([("ALPHA", alpha), ("BETA", beta), ("ALPHA", alpha), ("ALPHA", alpha)])
+    r = Run(tsyms, [(60, dump_page2)], "subjects", rom=TROM, setup=[tape_trap_tcl(tsyms, held_tape)])
     page2 = open(os.path.join(OUT, "subjects", "page2.bin"), "rb").read()
     expected_page2 = open(TROM, "rb").read()[0x4000:0x4000 + page2_size]
     check(fails, "rom-page2", page2 == expected_page2,
@@ -495,6 +499,23 @@ def test_build_checks(tsyms, fails):
     check(fails, "tape-buffer", r.bytes("TtResults", 21) == tape_counts
           and r.bytes("NoteBuf", 256) == bytes((-i) % 256 for i in range(256)),
           "full/short writes, partial reads, EOF and invalid/closed handles; 256 pattern bytes")
+    # TestTapeHeld (lf-1576): ALPHA from the tape (two blocks), ALPHA
+    # again from the buffer (none), BETA from the tape, ALPHA from the
+    # tape (BETA was in the buffer), a scribbled buffer byte sends ALPHA
+    # to the tape, NwStartFull drops the flag and the open after it finds
+    # the tape run out: nine blocks asked for, the tape empty, the
+    # buffer's first half ALPHA's as the last read left it (the job's
+    # start wrote its scratch above the table, from TapeBuf+129), the
+    # last pair carry and STERR_NOTFOUND.
+    held = r.bytes("TthResults", 14)
+    reads = r.log.count("tape block:")
+    import re
+    left = [int(m.group(1)) for m in re.finditer(r"tape block: .*, (\d+) left", r.log)]
+    check(fails, "tape-held", held == bytes((0, 1) * 5 + (0, 0) + (1, tsyms["STERR_NOTFOUND"]))
+          and reads == 9 and left[-1:] == [0] and r.bytes("TapeBuf", 128) == alpha[:128]
+          and r.peek("TapeKeep") == 0 and r.peek("TapeMode") == 0,
+          f"pairs {held.hex()}, {reads} blocks asked for, {left[-1:]} left, buffer crc32 "
+          f"{zlib.crc32(r.bytes('TapeBuf', 128)):08x} for {zlib.crc32(alpha[:128]):08x}")
     backend = 5 if EXT else 1
     saved = bytes((0x4D, SET_VERSION, 2, 0, 1, 1, 1, 1))
     default = bytes((0x4D, SET_VERSION, 1, 0, backend, 1, 1, 1))
@@ -2736,6 +2757,7 @@ def tape_checks(syms, fails):
           f"backend {r.peek('StBackend')}, expected {expected}")
     tape_import_checks(ts, rom, fails)
     tape_copy_checks(ts, rom, fails)
+    tape_note_checks(ts, rom, fails)
     if MACHINE.startswith("C-BIOS") or EXT:
         return
 
@@ -2919,11 +2941,30 @@ def tape_blocks(files):
     return out
 
 
+def tape_trap_tcl(syms, blocks):
+    """The Tcl that arms the trap of harness/run.tcl with `blocks`, in
+    place of the BIOS cassette routines (lf-1575): a step, or a Run's
+    `setup` for the TEST build, whose subjects read before any step."""
+    return ("set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
+            f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}")
+
+
 def tape_trap_steps(syms, blocks):
-    """The trap of harness/run.tcl armed with `blocks`, in place of the
-    BIOS cassette routines (lf-1575)."""
-    return [(2, "set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
-                f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}")]
+    return [(2, tape_trap_tcl(syms, blocks))]
+
+
+def tape_reads(r):
+    """The name table at every block the read trap served, in order: the
+    screen while the tape runs (lf-1576)."""
+    import re
+    return [bytes.fromhex(m.group(1)) for m in re.finditer(r"tape block: .*, nt ([0-9a-f]+)", r.log)]
+
+
+def band(nt, text):
+    """`nt` with the status band saying `text` from the left, inverted as
+    the band is, the rest of the row blank: what TapeNotice paints."""
+    row = bytes(c | 0x80 for c in text.ljust(COLS))
+    return nt[:STATROW * COLS] + row + nt[(STATROW + 1) * COLS:]
 
 
 def tape_import_checks(ts, rom, fails):
@@ -3001,6 +3042,16 @@ def tape_import_checks(ts, rom, fails):
           f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left, "
           f"256 bytes crc32 {zlib.crc32(r.bytes('RamHeap', 256)):08x}")
     screen(r, "imp-next-screen", ["ALPHA"], b"IMPORTED")
+    # the screen while the tape runs (lf-1576): at every block the band
+    # says READING TAPE, CTRL+STOP ENDS over the Commander as it was,
+    # READY still on its status row; imp-next-screen has the band blank
+    # again after
+    reading = b"READING TAPE, CTRL+STOP ENDS"
+    _, (devs, active) = panes(b"RAM")
+    want = band(compose(nt0, [cmdwin([], [], active=active, status=b"READY", devs=devs)]), reading)
+    nts = tape_reads(r)
+    check(fails, "imp-reading", len(nts) == 2 and all(nt == want for nt in nts),
+          f"{len(nts)} blocks, crc32 {[f'{zlib.crc32(nt):08x}' for nt in nts]}, expected {zlib.crc32(want):08x}")
     # the UI round trip: the imported file opened from the RAM pane is
     # the document the tape held, owned by RAM
     r = run(i_key + tab + enter, "imp-open-ram", tape_blocks([("ALPHA", alpha)]))
@@ -3201,16 +3252,20 @@ def tape_copy_checks(ts, rom, fails):
         return read_disk_image(DISK) == {"ALPHA": alpha} if EXT else (ram_files(r) == [b"ALPHA"]
                                                                     and r.bytes("RamHeap", 256) == alpha)
 
-    def screen(nt, name, listing, status, devs=devs, active=active):
+    def screen(nt, name, listing, status, devs=devs, active=active, band_text=None):
         panes = (listing, []) if active == 0 else ([], listing)
         want = compose(nt0, [cmdwin(*panes, active=active, status=status, devs=devs)])
+        if band_text is not None:
+            want = band(want, band_text)
         check(fails, name, nt == want, f"crc32 {zlib.crc32(nt):08x}, expected {zlib.crc32(want):08x}")
 
     # C with ALPHA selected: no block read (BETA still on the tape, no
     # read in the log), the header on the long leader and the 256 bytes
     # on the short one, COPIED; the screen while the header went out
-    # says RECORDING, CTRL+STOP ENDS. On ea13d77 the existence check
-    # reads a block first.
+    # says RECORDING, CTRL+STOP ENDS on the status row and, since
+    # lf-1576, on the status band too (TapeSave's notice, which every
+    # writer gets); the band is blank again on the screen after. On
+    # ea13d77 the existence check reads a block first.
     r = run(route + c_key, "cp-tape", tape_blocks([("BETA", beta)]), **source)
     puts = tape_puts(r)
     check(fails, "cp-tape", [(leader, block) for leader, block, _ in puts] == [(1, header), (0, alpha)]
@@ -3219,7 +3274,7 @@ def tape_copy_checks(ts, rom, fails):
           f"blocks {[(leader, len(block)) for leader, block, _ in puts]}, status {r.peek('CmdStatus')}, "
           f"{reads(r)} reads, {left(r)} blocks left, 256 bytes crc32 "
           f"{zlib.crc32(puts[1][1]) if len(puts) > 1 else 0:08x}, expected {zlib.crc32(alpha):08x}")
-    screen(puts[0][2] if puts else b"", "cp-tape-recording", ["ALPHA"], recording)
+    screen(puts[0][2] if puts else b"", "cp-tape-recording", ["ALPHA"], recording, band_text=recording)
     screen(r.nt(), "cp-tape-screen", ["ALPHA"], b"COPIED")
     # CTRL+STOP during the header, carry from the BIOS: nothing
     # recorded, the payload not attempted, STORAGE ERROR and no COPIED,
@@ -3245,6 +3300,92 @@ def tape_copy_checks(ts, rom, fails):
               f"status {r.peek('CmdStatus')}, {reads(r)} reads, {left(r)} blocks left, {len(tape_puts(r))} puts, "
               f"TapeHdr kept {r.bytes('TapeHdr', 19) == pattern}, RAM {ram_files(r)}")
         screen(r.nt(), name + "-screen", [], no_target, devs=(b"TAPE", b"TAPE"), active=0)
+
+
+def tape_note_checks(ts, rom, fails):
+    """The notepad's SAVE AS and SAVE to tape and its FILE > OPEN from
+    tape through the write and read traps (lf-1576): before the header
+    goes out the status band says RECORDING, CTRL+STOP ENDS on a screen
+    with the FILE menu and the SAVE AS dialogue gone; CTRL+STOP during
+    the header is COULD NOT SAVE and the document stays modified and
+    unsaved; before a read the band says READING TAPE, CTRL+STOP ENDS;
+    the band is blank again on the screen after. On the TAPE=1 ROM a new
+    note is the boot device's: the tape on a bare machine, so the disk
+    machine, whose boot device is the disk, skips these (the Commander's
+    copy covers its recording there, cp-tape-recording)."""
+    print("tape notices, notepad:")
+    if EXT:
+        print("  skipped: the boot device is the disk, a new note is the disk's")
+        return
+
+    def press(x, y):
+        return [(5, f"debug write memory {ts['PtrX']} {x}; debug write memory {ts['PtrY']} {y}; "
+                    f"debug write memory {ts['EvLastX']} {x}; debug write memory {ts['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+    new, save, reopen = press(88, 3) + press(96, 11), press(88, 3) + press(96, 27), press(88, 3) + press(96, 19)
+    a_key = tap(2, 0x40)
+    recording, reading = b"RECORDING, CTRL+STOP ENDS", b"READING TAPE, CTRL+STOP ENDS"
+    header = b"MSXT" + b"LETTER".ljust(13, b"\0") + (256).to_bytes(2, "little")
+    blank_band = bytes([0xA0]) * COLS
+
+    def band_of(nt):
+        return nt[STATROW * COLS:(STATROW + 1) * COLS]
+
+    def no_chrome(nt, final):
+        """The FILE menu's rows and the dialogue's as on the screen after:
+        neither is on the screen at the block. Row 7 holds the first
+        document row, which the second save changes."""
+        return nt[COLS:6 * COLS] == final[COLS:6 * COLS] and nt[8 * COLS:15 * COLS] == final[8 * COLS:15 * COLS]
+
+    # FILE > NEW, A, FILE > SAVE (SAVE AS for a new note: LETTER, ENTER),
+    # A again, FILE > SAVE (by name now, no dialogue): two recordings of
+    # the header and the document, the band saying RECORDING at both
+    # headers over a screen without the menu or the dialogue, saved and
+    # unmodified after, the band blank
+    r = Run(ts, tape_put_steps(ts) + new + a_key + save + input_note_name("LETTER") + a_key + save + [(10, "")],
+            "note-tape-save", rom=rom)
+    puts = tape_puts(r)
+    blocks = [(leader, block) for leader, block, _ in puts]
+    check(fails, "note-tape-save", blocks == [(1, header), (0, doc("A")), (1, header), (0, doc("AA"))]
+          and r.peek("NoteSaved") == 1 and r.peek("NoteModified") == 0 and r.bytes("NoteName", 7) == b"LETTER\0"
+          and r.bytes("NoteBuf", 256) == doc("AA") and r.peek("DgOpenFlag") == 0 and band_of(r.nt()) == blank_band,
+          f"blocks {[(leader, len(block)) for leader, block in blocks]}, saved {r.peek('NoteSaved')}, "
+          f"modified {r.peek('NoteModified')}, name {r.bytes('NoteName', 7)}, band after {band_of(r.nt())[:4].hex()}")
+    for name, i in (("note-tape-saveas-recording", 0), ("note-tape-save-recording", 2)):
+        nt = puts[i][2] if len(puts) > i else b""
+        check(fails, name, len(nt) == COLS * ROWS and band_of(nt) == bytes(c | 0x80 for c in recording.ljust(COLS))
+              and no_chrome(nt, r.nt()),
+              f"band {bytes(c & 0x7F for c in band_of(nt)).rstrip()!r}, menu and dialogue gone "
+              f"{no_chrome(nt, r.nt()) if nt else None}")
+    # CTRL+STOP during the header: nothing recorded, the payload not
+    # attempted, COULD NOT SAVE, the document modified and not saved
+    r = Run(ts, tape_put_steps(ts, fail=True) + new + a_key + save + input_note_name("LETTER") + [(10, "")],
+            "note-tape-stop", rom=rom)
+    puts = tape_puts(r)
+    check(fails, "note-tape-stop", [(leader, block) for leader, block, _ in puts] == [(1, b"")]
+          and r.peek("NoteModified") == 1 and r.peek("NoteSaved") == 0 and r.peek("DgOpenFlag") == 1
+          and r.nt()[9 * COLS + 7:9 * COLS + 21] == b"COULD NOT SAVE" and r.bytes("NoteBuf", 256) == doc("A"),
+          f"blocks {[(leader, len(block)) for leader, block, _ in puts]}, modified {r.peek('NoteModified')}, "
+          f"saved {r.peek('NoteSaved')}, alert {r.peek('DgOpenFlag')} {r.nt()[9 * COLS + 7:9 * COLS + 21]}")
+    # FILE > OPEN on a new note of the tape's: the next file, LETTER,
+    # the band saying READING TAPE at both blocks with the menu gone, the
+    # document and its name in after, the band blank
+    letter = doc("HELLO")
+    r = Run(ts, tape_trap_steps(ts, tape_blocks([("LETTER", letter)])) + new + reopen + [(10, "")],
+            "note-tape-read", rom=rom)
+    nts = tape_reads(r)
+    check(fails, "note-tape-read", r.bytes("NoteBuf", 256) == letter and r.bytes("NoteName", 7) == b"LETTER\0"
+          and r.peek("NoteResult") == 0 and r.peek("DgOpenFlag") == 0 and band_of(r.nt()) == blank_band
+          and len(nts) == 2,
+          f"name {r.bytes('NoteName', 7)}, crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x} for {zlib.crc32(letter):08x}, "
+          f"{len(nts)} blocks, band after {band_of(r.nt())[:4].hex()}")
+    check(fails, "note-tape-reading", len(nts) == 2
+          and all(band_of(nt) == bytes(c | 0x80 for c in reading.ljust(COLS)) and nt[COLS:6 * COLS] == r.nt()[COLS:6 * COLS]
+                  for nt in nts),
+          f"bands {[bytes(c & 0x7F for c in band_of(nt)).rstrip() for nt in nts]!r}")
 
 
 def note_width_document(lines):
@@ -5594,12 +5735,14 @@ def main():
     if sys.argv[1:] == ["--tape"]:
         tape_checks(syms, fails)
         return bool(fails)
-    if sys.argv[1:] in (["--tape-import"], ["--tape-copy"]):
+    if sys.argv[1:] in (["--tape-import"], ["--tape-copy"], ["--tape-note"]):
         rom = os.path.join(BUILD, "msxtape.rom")
         ts = assemble(rom, os.path.join(BUILD, "msxtape.sym"), ["TAPE=1"])
         if sys.argv[1:] == ["--tape-import"]:
             tape_import_checks(ts, rom, fails)
-        tape_copy_checks(ts, rom, fails)
+        if sys.argv[1:] != ["--tape-note"]:
+            tape_copy_checks(ts, rom, fails)
+        tape_note_checks(ts, rom, fails)
         return bool(fails)
     if sys.argv[1:] == ["--arrange-only"]:
         arrange_checks(syms, fails)

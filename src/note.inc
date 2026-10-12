@@ -146,6 +146,7 @@ NsBelowTop:
 ; the rows a selection's end moved over for NoteDrawRows.
 NoteDraw:
                 xor     a
+                ld      (TapeKeep),a            ; the painters' scratch is TapeBuf (lf-1576)
                 ld      (NdRowLo),a
                 ld      (NdRowsOnly),a
                 dec     a
@@ -1231,6 +1232,7 @@ NhFirst:
 NoteKey:
                 ld      (NoteChar),a
                 xor     a
+                ld      (TapeKeep),a            ; the key's scratch is TapeBuf (lf-1576)
                 ld      (NoteEdited),a
                 ld      (NwJoined),a            ; the lines NbHard joins this key
                 ld      (NwSplit),a             ; and the one NoteEnter splits
@@ -2753,6 +2755,7 @@ NwStartFull:
                 ld      (NwJobEnd),a
 NwStartJob:
                 xor     a
+                ld      (TapeKeep),a            ; the table takes the tape buffer (lf-1576)
                 ld      (NwTopOK),a             ; the table changes under the painter
                 ld      (NwDrvOK),a             ; and under the caret
                 ld      hl,NwGen
@@ -4828,6 +4831,8 @@ NlsOn:
                 ld      a,(WndCount)
                 or      a
                 jp      z,NlsNoWindow
+                xor     a
+                ld      (TapeKeep),a            ; the service's scratch is TapeBuf (lf-1576)
                 ld      a,(WndCur)
                 ld      (NlsLive),a
                 ld      (NlsSlot),a

@@ -18,6 +18,7 @@ TestRun:
                 call    TestDiskNames
                 call    TestSettings
                 call    TestTapeBuffer
+                call    TestTapeHeld
                 ld      a,1
                 ld      (TestDone),a
                 ret
@@ -94,6 +95,64 @@ TtRecord:
                 ld      (de),a
                 ret
 TtName:         defb    "BUFFER",0
+
+; The file in the buffer served again (lf-1576), through the harness's
+; tape trap armed before boot with ALPHA, BETA, ALPHA, ALPHA: ALPHA
+; read from the tape; ALPHA asked for again comes from the buffer, no
+; block read; BETA goes to the tape; ALPHA after it too, BETA being
+; what the buffer holds; a byte of the buffer changed by a path that
+; drops no flag (a painter's scribble) sends ALPHA to the tape, the sum
+; differing; NwStartFull, the notepad's wrap job taking the buffer,
+; drops the flag, and the open after it reads a tape that has run out:
+; NOTFOUND. Record: seven pairs of carry and TapeKeep, the sixth after
+; NwStartFull alone, the seventh carry and the error.
+TthResults      equ     CmdBuf+221      ; after TtResults' 21 bytes
+TestTapeHeld:
+                ld      de,TthResults
+                ld      hl,TthAlpha
+                call    TthOpen                 ; 0: from the tape
+                ld      hl,TthAlpha
+                call    TthOpen                 ; 1: from the buffer
+                ld      hl,TthBeta
+                call    TthOpen                 ; 2: the tape
+                ld      hl,TthAlpha
+                call    TthOpen                 ; 3: the tape again
+                ld      a,(TapeBuf+150)
+                cpl
+                ld      (TapeBuf+150),a         ; a scribble that drops no flag
+                ld      hl,TthAlpha
+                call    TthOpen                 ; 4: the sum differs: the tape
+                call    NwStartFull             ; the wrap job takes the buffer
+                ld      a,(TapeKeep)
+                or      a                       ; carry clear
+                call    TthRecord               ; 5: 0 and the flag, dropped
+                ld      hl,TthAlpha
+                jp      TthOpen                 ; 6: the tape, run out
+; HL = a name: TapeOpen for reading and the close. DE = the record,
+; carry and TapeKeep after the close, or carry and the error.
+TthOpen:
+                push    de
+                ld      b,FA_READ
+                call    TapeOpen
+                pop     de
+                jr      c,TthRecord
+                push    af
+                ld      a,1
+                call    TapeClose
+                pop     af
+                ld      a,(TapeKeep)
+TthRecord:
+                push    af
+                ld      a,0
+                adc     a,0
+                ld      (de),a
+                inc     de
+                pop     af
+                ld      (de),a
+                inc     de
+                ret
+TthAlpha:       defb    "ALPHA",0
+TthBeta:        defb    "BETA",0
 
 ; Settings round trip, rejected headers and payload clamping. Each
 ; snapshot is carry (0/1) followed by the eight record bytes before
