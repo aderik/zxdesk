@@ -2593,10 +2593,9 @@ I never has a name there. ROM 26,150 → 26,149 bytes (-1), TEST
 27,904 → 27,903, TAPE=1 26,168 → 26,167; RAM 3,997 and the heap
 unchanged. Confirmed unchanged by inspection: FILE > OPEN on tape
 (`TapeOpen` untouched, the `tape-*` subjects), and the normal build's
-ring (`IF TAPE` around the fourth entry). Seen and left as it was: a
-COPY towards a tape pane, which the TAPE=1 ring can now show on a disk
-machine, opens the tape for reading first (the existence check) and so
-waits for a leader, as a notepad OPEN without a cassette does. With
+ring (`IF TAPE` around the fourth entry). Seen then and fixed in
+lf-1603 below: a COPY towards a tape pane, which the TAPE=1 ring can
+show on a disk machine, opened the tape for reading first. With
 the fix `./test.sh` is 766 ok on C-BIOS_MSX1_EU and 756 ok on
 C-BIOS_MSX1_JP (`--tape-import` 20); crc32 of the padded ROMs: normal
 **c07b1605**, TEST **550efb04**, TAPE=1 **c7cde283**.
@@ -2616,3 +2615,64 @@ free as the name field is while no tape file is open. `imp-note-twice`
 and `imp-same-tail` assert both halves; on `0850c2d`'s source both
 fail on EU and JP (one NOTE, two blocks left; ALPHA rewritten). ROM
 +7 bytes in each build, RAM and the heap unchanged.
+
+**A tape as the target (lf-1603).** Two observations from lf-1598.
+dev3, on Roms_MSX1 + Roms_Disk with the right pane on TAPE: C on a
+disk file hung the machine until CTRL+STOP and then said `COPIED`
+with nothing recorded. `CmdCopy` checked whether the target existed
+with an open for reading, which on the tape is `TapeOpen` waiting for
+a leader. dev4, by reading: with a tape in both panes I and A made
+the tape itself the target, so the open for writing took `TapeHdr`
+(the magic and the name, and A's first name in it) and the close
+recorded over the tape being read.
+
+- A tape has no directory, so for `ST_TAPE` there is no existence
+  check to make: `CmdCopy` goes from the source's read straight to the
+  write (`CmdTapeCopy`, `CcpWrite`), which `TapeSave` records at the
+  close. Before a byte goes out the status row says `RECORDING,
+  CTRL+STOP ENDS`, on the screen now rather than at the frame's end
+  (`CmdNotice`: the row into the window's buffer, `WinRedraw` as the
+  frame's end would do it, `NtFlush` with the address pair under
+  `SetWrt`'s DI), since the BIOS holds the frame for the recording as
+  it does for a SAVE to tape. A recording that went through is
+  `COPIED`; CTRL+STOP or a failed block is carry from the close,
+  `STORAGE ERROR` and no `COPIED` (the delete of the half file is the
+  tape's `StNoDelete`, nothing). PRN keeps its own route.
+- I and A with the tape in the other pane: `TAPE IS NO TARGET` (status
+  16, the PRN route with its own text) before a block is read.
+  `TapeHdr` is not touched.
+
+The harness has the tape trap's other half, a **write trap**
+(`tape_put_trap` in `harness/run.tcl`): a breakpoint on `TapePutBlock`
+keeps every block the ROM would record in `::taped` and returns in its
+place, carry clear, or carry with `::tape_put_fail` set, the BIOS's
+CTRL+STOP during the block; the name table as it stands at that moment
+goes into the log with the block, the screen the user sees while the
+tape runs. `tape_copy_checks` (`./test.sh --tape-copy`, and in
+`--tape-import`, `--tape` and the default suite, on the TAPE=1 ROM)
+asserts, each from boot, with BETA on the read trap's tape and ALPHA
+on the source (RAM in the right pane on a bare machine, TAB; the disk
+in the left pane on the disk machine, B B B for TAPE on the right,
+dev3's route):
+
+| subject | asserts |
+|---|---|
+| cp-tape, cp-tape-recording, cp-tape-screen | C: no read in the log and BETA still on the tape, the header on the long leader and the 256 bytes on the short one, byte for byte; status COPIED, the source as it was; the name table at the header's write is the Commander with `RECORDING, CTRL+STOP ENDS` on its status row, against the compositor; the screen after, `COPIED` |
+| cp-tape-stop, cp-tape-stop-screen | carry on the header: no block kept, the payload not attempted, `STORAGE ERROR`, no alert, the source as it was |
+| imp-both-tape, imp-both-tape-all, and -screen | B round to TAPE in the other pane (on the disk machine both panes round), a pattern in `TapeHdr`, then I or A: status 16, no read, no write, the pattern still there, RAM empty; the screen with `TAPE` over both panes and `TAPE IS NO TARGET` |
+| cp-tape-wav (`--tape`, Roms_MSX1) | the real BIOS: ALPHA on RAM, `cassetteplayer new`, TAB, C; the WAV decoded in Python is the 19 byte header and the 256 bytes, status COPIED. No cassette plays, so a read before the write would wait for a leader and the run would time out |
+
+On `ea13d77`'s source cp-tape fails on EU (one read, one block
+left), cp-tape-recording fails (no notice), and imp-both-tape and
+imp-both-tape-all fail (status IMPORTED, two and three reads, two
+blocks recorded, `TapeHdr` rewritten). With the change: `--tape-copy`
+9 ok on C-BIOS_MSX1_EU and JP; `--tape` 54 ok on Roms_MSX1 (cp-tape-wav
+among them, the 256 bytes at crc32 7dcac7b5 in the WAV); `--tape-import`
+35 ok on Roms_MSX1 + Roms_Disk; `--commander` 51 ok on EU and JP
+(`CmdPaintReady` is now the nought of `CmdPaintStatus`).
+
+Base `ea13d77` → this change (code before the `NsanTab` alignment):
+normal ROM **26,191 → 26,270 bytes (+79)**, TEST ROM **27,945 →
+28,024 (+79)**, TAPE=1 ROM **26,209 → 26,288 (+79)**; static RAM
+**3,997 (+0)**, heap **8,291 / 2,906** unchanged. crc32 of the padded
+ROMs: normal **c6efd7ca**, TEST **0c70c71e**, TAPE=1 **63e875b7**.

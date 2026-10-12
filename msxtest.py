@@ -2690,6 +2690,7 @@ def tape_checks(syms, fails):
     check(fails, "tape-select", r.peek("StBackend") == expected,
           f"backend {r.peek('StBackend')}, expected {expected}")
     tape_import_checks(ts, rom, fails)
+    tape_copy_checks(ts, rom, fails)
     if MACHINE.startswith("C-BIOS") or EXT:
         return
 
@@ -2843,6 +2844,20 @@ def tape_checks(syms, fails):
               and blocks[1] == rr.bytes("NoteBuf", 256),
               f"name {rr.bytes('NoteName', 13)}, saved header {blocks[:1]}, "
               f"256 bytes crc32 {zlib.crc32(rr.bytes('NoteBuf', 256)):08x}")
+
+    # Commander's C towards the tape pane with the real BIOS recording
+    # (lf-1603): ALPHA on RAM in the right pane, the tape the left; TAB
+    # and C. No cassette is playing, so a read before the write would
+    # wait for a leader and the run would time out. The WAV decoded in
+    # Python is the header and the 256 bytes; COPIED.
+    alpha = doc("ALPHA")
+    rr = Run(ts, seed_ram_steps(ts, {"ALPHA": alpha}) + record + press(180, 3) + press(188, 51)
+             + tap(7, 8) + tap(3, 1) + [(10, "cassetteplayer eject")], "cp-tape-wav", rom=rom)
+    blocks = read_tape_wav(os.path.join(OUT, "cp-tape-wav", "note.wav"))
+    check(fails, "cp-tape-wav", blocks == [b"MSXT" + b"ALPHA".ljust(13, b"\0") + b"\0\1", alpha]
+          and rr.peek("CmdStatus") == 1 and rr.peek("DgOpenFlag") == 0,
+          f"Python decoded blocks {[len(b) for b in blocks]}, status {rr.peek('CmdStatus')}, "
+          f"256 bytes crc32 {zlib.crc32(blocks[1]) if len(blocks) > 1 else 0:08x}, expected {zlib.crc32(alpha):08x}")
 
 
 def tape_blocks(files):
@@ -3063,6 +3078,128 @@ def tape_import_checks(ts, rom, fails):
     check(fails, "imp-disk-full", alert(r, b"ALPHA") and read_disk_image(DISK) == full_disk
           and r.peek("CmdStatus") == 0 and left(r) == 0,
           f"alert {r.peek('DgOpenFlag')}, disk {list(read_disk_image(DISK))}, status {r.peek('CmdStatus')}")
+
+
+def tape_put_steps(syms, fail=False):
+    """The write trap of harness/run.tcl armed (lf-1603): every block
+    TapePutBlock would record is kept instead, or refused with carry
+    when `fail` is set, the BIOS's CTRL+STOP during the block."""
+    return [(2, f"set ::taped {{}}; set ::tape_put_fail {int(fail)}; "
+                f"debug set_bp {syms['TapePutBlock']} {{}} {{tape_put_trap}}")]
+
+
+def tape_puts(r):
+    """What the write trap saw, in order: (leader, block, name table at
+    the time), the block empty for a refused one."""
+    import re
+    return [(int(m.group(1)), bytes.fromhex(m.group(3)), bytes.fromhex(m.group(2)))
+            for m in re.finditer(r"tape put: leader (\d+), asked \d+, carry \d, nt ([0-9a-f]+), block ([0-9a-f]*)", r.log)]
+
+
+def tape_copy_checks(ts, rom, fails):
+    """A tape as the target of Commander's C (lf-1603), through the read
+    trap and the write trap: the copy reads nothing from the tape,
+    records the header and the file, says RECORDING on the status row
+    while the tape runs and COPIED after; CTRL+STOP during the block is
+    STORAGE ERROR and no COPIED. I and A with a tape in both panes are
+    refused as PRN is, before a block is read, TapeHdr as it was."""
+    print("tape target:")
+    nt0 = expected_nt()
+
+    def press(x, y):
+        return [(5, f"debug write memory {ts['PtrX']} {x}; debug write memory {ts['PtrY']} {y}; "
+                    f"debug write memory {ts['EvLastX']} {x}; debug write memory {ts['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+    open_cmd = press(180, 3) + press(188, 51)
+    i_key, a_key, b_key, c_key, tab = tap(3, 0x40), tap(2, 0x40), tap(2, 0x80), tap(3, 1), tap(7, 8)
+    alpha, beta = doc("ALPHA"), doc("BETA")
+    header = b"MSXT" + b"ALPHA".ljust(13, b"\0") + (256).to_bytes(2, "little")
+    recording, no_target = b"RECORDING, CTRL+STOP ENDS", b"TAPE IS NO TARGET"
+
+    def presses(device, target):
+        """B presses that take a pane from `device` round the ring to `target`."""
+        n = 0
+        while device != target:
+            device, n = ring_step(device, tape=True), n + 1
+        return n
+    to_tape = presses(ts["ST_RAM"], ts["ST_TAPE"])
+    # The source pane with ALPHA active and TAPE in the other: on a bare
+    # machine the tape is the boot device in the left pane and RAM the
+    # right, so TAB; on the disk machine the left pane is the disk and B
+    # takes the right one round the ring to TAPE, dev3's route (lf-1598).
+    if EXT:
+        route, devs, active, source = b_key * to_tape, (b"DISK", b"TAPE"), 0, dict(files={"ALPHA": alpha})
+        both = b_key * to_tape + tab + b_key * presses(ts["ST_DISK"], ts["ST_TAPE"]) + tab
+    else:
+        route, devs, active, source = tab, (b"TAPE", b"RAM"), 1, dict(ram={"ALPHA": alpha})
+        both = b_key * to_tape
+
+    def run(steps, name, blocks, fail=False, ram=None, files=None):
+        return Run(ts, (seed_ram_steps(ts, ram) if ram else []) + tape_trap_steps(ts, blocks)
+                   + tape_put_steps(ts, fail) + open_cmd + steps
+                   + [(10, 'note "tape left [llength $::tape]"'), (5, "")], name, rom=rom, files=files)
+
+    def left(r):
+        return int(r.log.rsplit("\ntape left ", 1)[1].split()[0])
+
+    def reads(r):
+        return r.log.count("tape block:")
+
+    def ram_files(r):
+        directory = r.bytes("RamDir", 64)
+        return [directory[i * 16:i * 16 + 13].split(b"\0")[0] for i in range(4) if directory[i * 16 + 15]]
+
+    def source_kept(r):
+        return read_disk_image(DISK) == {"ALPHA": alpha} if EXT else (ram_files(r) == [b"ALPHA"]
+                                                                    and r.bytes("RamHeap", 256) == alpha)
+
+    def screen(nt, name, listing, status, devs=devs, active=active):
+        panes = (listing, []) if active == 0 else ([], listing)
+        want = compose(nt0, [cmdwin(*panes, active=active, status=status, devs=devs)])
+        check(fails, name, nt == want, f"crc32 {zlib.crc32(nt):08x}, expected {zlib.crc32(want):08x}")
+
+    # C with ALPHA selected: no block read (BETA still on the tape, no
+    # read in the log), the header on the long leader and the 256 bytes
+    # on the short one, COPIED; the screen while the header went out
+    # says RECORDING, CTRL+STOP ENDS. On ea13d77 the existence check
+    # reads a block first.
+    r = run(route + c_key, "cp-tape", tape_blocks([("BETA", beta)]), **source)
+    puts = tape_puts(r)
+    check(fails, "cp-tape", [(leader, block) for leader, block, _ in puts] == [(1, header), (0, alpha)]
+          and r.peek("CmdStatus") == 1 and reads(r) == 0 and left(r) == 2 and r.peek("DgOpenFlag") == 0
+          and source_kept(r),
+          f"blocks {[(leader, len(block)) for leader, block, _ in puts]}, status {r.peek('CmdStatus')}, "
+          f"{reads(r)} reads, {left(r)} blocks left, 256 bytes crc32 "
+          f"{zlib.crc32(puts[1][1]) if len(puts) > 1 else 0:08x}, expected {zlib.crc32(alpha):08x}")
+    screen(puts[0][2] if puts else b"", "cp-tape-recording", ["ALPHA"], recording)
+    screen(r.nt(), "cp-tape-screen", ["ALPHA"], b"COPIED")
+    # CTRL+STOP during the header, carry from the BIOS: nothing
+    # recorded, the payload not attempted, STORAGE ERROR and no COPIED,
+    # the source as it was
+    r = run(route + c_key, "cp-tape-stop", tape_blocks([("BETA", beta)]), fail=True, **source)
+    puts = tape_puts(r)
+    check(fails, "cp-tape-stop", [(leader, block) for leader, block, _ in puts] == [(1, b"")]
+          and r.peek("CmdStatus") == 5 and reads(r) == 0 and left(r) == 2 and r.peek("DgOpenFlag") == 0
+          and source_kept(r),
+          f"blocks {[(leader, len(block)) for leader, block, _ in puts]}, status {r.peek('CmdStatus')}, "
+          f"{reads(r)} reads, source kept {source_kept(r)}")
+    screen(r.nt(), "cp-tape-stop-screen", ["ALPHA"], b"STORAGE ERROR")
+    # I and A with the tape in both panes: TAPE IS NO TARGET before a
+    # block is read, nothing recorded, TapeHdr (which the open for
+    # writing takes) as it was, nothing written to RAM
+    pattern = bytes(range(0x41, 0x41 + 19))
+    seeded = [(5, f"debug write_block memory {ts['TapeHdr']} [binary format H* {pattern.hex()}]")]
+    for key, name in ((i_key, "imp-both-tape"), (a_key, "imp-both-tape-all")):
+        r = run(both + seeded + key, name, tape_blocks([("ALPHA", alpha)]))
+        check(fails, name, r.peek("CmdStatus") == 16 and reads(r) == 0 and left(r) == 2
+              and tape_puts(r) == [] and r.bytes("TapeHdr", 19) == pattern and ram_files(r) == []
+              and r.peek("DgOpenFlag") == 0,
+              f"status {r.peek('CmdStatus')}, {reads(r)} reads, {left(r)} blocks left, {len(tape_puts(r))} puts, "
+              f"TapeHdr kept {r.bytes('TapeHdr', 19) == pattern}, RAM {ram_files(r)}")
+        screen(r.nt(), name + "-screen", [], no_target, devs=(b"TAPE", b"TAPE"), active=0)
 
 
 def note_width_document(lines):
@@ -5334,9 +5471,12 @@ def main():
     if sys.argv[1:] == ["--tape"]:
         tape_checks(syms, fails)
         return bool(fails)
-    if sys.argv[1:] == ["--tape-import"]:
+    if sys.argv[1:] in (["--tape-import"], ["--tape-copy"]):
         rom = os.path.join(BUILD, "msxtape.rom")
-        tape_import_checks(assemble(rom, os.path.join(BUILD, "msxtape.sym"), ["TAPE=1"]), rom, fails)
+        ts = assemble(rom, os.path.join(BUILD, "msxtape.sym"), ["TAPE=1"])
+        if sys.argv[1:] == ["--tape-import"]:
+            tape_import_checks(ts, rom, fails)
+        tape_copy_checks(ts, rom, fails)
         return bool(fails)
     if sys.argv[1:] == ["--arrange-only"]:
         arrange_checks(syms, fails)
