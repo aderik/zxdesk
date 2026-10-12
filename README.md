@@ -1373,6 +1373,122 @@ without a disk ROM and **2,906** with one, unchanged; no new RAM.
 Padded ROM crc32: normal **d7ae23ff**, TEST **c3ca26dd**.
 `./test.sh --commander`: C-BIOS_MSX1_EU 58 ok, C-BIOS_MSX1_JP 58 ok.
 
+## The click, TAB and the keys that recomposed the Commander (lf-1592)
+
+dev3's findings on lf-1590, lf-1593 and lf-1604: the picker's and the
+Commander's routes that still recomposed the whole 30x12 window in
+their frame. Measured with the frame probe on C-BIOS JP (`FrameWatch`
+to `MainLoop`, the longest frame of the step; the same lengths at 50
+Hz, where the budget is 20 ms), a 16x9 notepad with HI behind the
+picker (FILE > OPEN) or the Commander (VIEW), four files on RAM,
+`ab93a19` → now:
+
+| step | `ab93a19` | now |
+|---|---|---|
+| a click on a picker row the directory confirms (BETA, then GAMMA) | 20.3 ms, one dropped; 18.2 with the picker alone, one dropped; 22.0 at 50 Hz, one dropped | 8.9: the two rows painted, nothing composed |
+| a click on the blank row where G stands, saved from the notepad since the page was read (lf-1604) | 21.2, one dropped; 22.8 at 50 Hz, one dropped | 15.0, Dropped 0 at both: the page read again and its six rows painted |
+| a click on the ghost row, G deleted from the notepad since (lf-1604) | 20.3, one dropped; 21.9 at 50 Hz, one dropped | 14.1, Dropped 0 at both |
+| SHIFT+DOWN on the last file, SHIFT+UP on the first: nothing moves | 17.4 and 16.4, one dropped each (15.3 with the picker alone, lf-1593) | 3.6 and 2.6: nothing painted |
+| SHIFT+DOWN within the page | three `StDir`: the next file's existence, then each of the two rows checked | two: the lookup is the row's check |
+| TAB in the Commander | 16.4, one dropped; 14.2 with the Commander alone | 11.9 and 9.8: the headers, the selections and the help row painted |
+| ENTER in the Commander, the notepad open | 16.8, one dropped; 15.9 with the Commander alone | 10.5 and 9.1: the open in its frame, the load in the next |
+| DELETE in the picker: the dialogue, TAB, ENTER | 21.1, one dropped; 22.9 at 50 Hz, one dropped | 11.7 |
+| R in the picker | 16.1, Dropped 0 | 8.9 |
+| D then Y in the Commander | 18.1, one dropped | 9.3 |
+| R in the Commander | 18.5, one dropped | 9.1 |
+
+What changed, all of it in `commander.inc` but for one byte and one
+call:
+
+- **A click paints what it changes** (`CmdPress`). A row the
+  directory confirms: the row the selection left and the row it took,
+  as a key's move paints them (`CmdPaintMove`, the tail of
+  `CmdMoved`); a row that no longer says what the cache does: the
+  page read again and its six rows painted (`CmdPaintRows`, the rows
+  of `CmdPaintPage`), the selection on what the row holds now. A
+  click on the selection or on a blank row paints nothing. It had the
+  window recomposed over a fresh desktop (`WndTouch`, `RowsAddLive`).
+  [OPEN] goes to `CmdKey` as before; its rows are the key's.
+- **A key that moves nothing paints nothing** (`CmdStill`): SHIFT+UP
+  on the first file, SHIFT+DOWN on the last (the selection's row
+  checked first, as lf-1593 has it), P from a PRN pane, a key other
+  than Y, N or ESC while the delete asks. They returned 1 and the
+  dispatcher recomposed the window.
+- **SHIFT+DOWN's lookup is the row's check** (`CmdRowNamed`): the
+  name `StDir` finds for the next index is compared with the cached
+  row it lands on, where `CmdRowStale` looked it up again. On the
+  disk that was a BDOS search for every move within the page.
+- **TAB paints the rows it changes** (`CmdPaneSet`): each pane's
+  header and its selection's row (`CmdPaintPaneSel`), the help's
+  second row (`CmdDrawHelp2`, the active pane's keys) and READY, the
+  window not recomposed. SHIFT+LEFT or RIGHT onto the pane that is
+  active already paints READY alone.
+- **A fresh notepad loads in the frame after its open** (`CopNew`,
+  `CmdLoadService`). The open was 6.6 ms (the old front's state saved,
+  three heap walks, the blank document, the old front's cap flipped)
+  and the load 7.1 (the read, the undo snapshot, `NoteSanitise`): one
+  frame of 16.8 ms. Now `CopNew` opens the notepad, sets its name and
+  device and `CmdLoadDue` (its slot plus one, 1 byte of RAM), and
+  `RepaintLater` keeps the blank notepad from being composed; the main
+  loop calls `CmdLoadService` before the frame's input, which loads
+  the file into the front window when it is still that notepad, then
+  `WndTouch`, `RowsLiveText` and `RepaintLater` as `CopOk` has them,
+  or gives the name and the device back and says COULD NOT LOAD as
+  `CopLoad` did. The picker's ENTER into an existing notepad
+  (`CopExisting`) is as it was, 13.7 ms.
+- **The keys that read the directories again compose next frame and
+  blit the one after** (`CmdDone`, `RepaintDue` 4 as the open has it
+  since lf-1590): the delete, R, B, P, a copy and the statuses mark
+  the window's rows and return 2; the frame after composes the front
+  window (`WndComposeFront`), the one after blits. The compose of
+  30x12 is 7.3 ms and the blit 3.3; with the reads in the key's frame
+  the routes were 16 to 23 ms. The dialogue's close before the delete
+  restores its save-under into the shadow and leaves `RepaintDue`
+  alone, so the split holds there too. With no window left (the
+  picker closed for a notepad there was no room for) nothing is
+  composed.
+
+**The question for the PO.** The click on a stale row is 15.0 ms at 60
+Hz: Dropped 0 in the subject on both machines, but at the limit (14.8
+never dropped, 15.2 sometimes). The frame is the one `StDir` of the
+check, the page's four in `CmdReadPane` (2.2 ms on RAM) and the six
+rows painted (0.6 ms a blank row, 1.2 a named one: the blank, the
+name, the size, the mark). `fb-click-stale` asserts Dropped 0 at 50
+Hz and allows one at 60, where it reports the frame.
+
+Subjects (`./test.sh --frames`, all configurations; each from boot
+with the notepad and the picker or the Commander over it, Dropped read
+before the keys and at the end and both 0 on RAM, the screen against
+the compositor, the composes counted on a breakpoint at `WinDraw` and
+the longest frame from the mark in the detail; on the disk the
+lookups and the delete are the BDOS's, the known exception, so Dropped
+is reported there and not asserted): `fb-click-row` the two clicks,
+GAMMA selected, no compose; `fb-click-stale` the click on G's row
+after GRAPH+S from the notepad, G selected, no compose;
+`fb-move-end` SHIFT+DOWN on DELTA and SHIFT+UP on ALPHA around three
+moves up, no compose; `fb-tab` the right pane active, no compose;
+`fb-cmd-enter` ALPHA loaded into a third window, one compose;
+`fb-delete-picker` BETA gone and DELETED, one compose;
+`fb-reload-picker` the page again from ALPHA, one compose;
+`fb-delete-cmd` ALPHA gone and DELETED, two composes (the question
+and the answer); `fb-reload-cmd` one. On `ab93a19`'s sources with this
+harness nine of them fail at 60 Hz and seven at 50 (`fb-cmd-enter`
+and `fb-reload-picker` dropped at 60 Hz alone). `browse-move-rows`
+and `cmd-move-rows` count the lookups of a move as well: two;
+`browse-mouse-reads` one lookup, the two rows and no compose.
+`browse-gone-*`, `browse-saved-click*`, `fb-open` and the rest of the
+commander group as they were.
+
+Budget against `ab93a19`: the last byte before the page pad of
+`NsanTab`, read from the ROM, **27,212 → 27,453 bytes (+241)**, TEST
+**28,966 → 29,207 (+241)**, TAPE=1 **27,230 → 27,471 (+241)**; the
+build line goes 27,648 → 27,904 for the normal ROM and 29,440 → 29,696
+for TEST (the pad: `NsanTab` moved a page up in both); static RAM
+**3,997 → 3,998 (+1: `CmdLoadDue`)**, TEST **6,729 → 6,730**; heap
+**8,291 → 8,290** without a disk ROM and **2,906 → 2,905** with one.
+Padded ROM crc32: normal **64663f39**, TEST **da7b99ce**, TAPE=1
+**a755d74a**.
+
 ## Real BIOS ROMs
 
 C-BIOS has no cassette and no BASIC, so the tape backend and anything

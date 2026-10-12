@@ -1425,6 +1425,7 @@ WndInit:
                 ld      (NoteLayOK),a           ; no job, nothing toggled
                 ld      (NwBusy),a
                 ld      (NwToggled),a
+                ld      (CmdLoadDue),a          ; no load waiting on a frame
                 ld      a,WINBOTTOM
                 ld      (RowLo),a
                 ld      a,WINTOP
