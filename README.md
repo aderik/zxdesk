@@ -2326,3 +2326,86 @@ TEST ROM **26,329 → 26,428 (+99)**; static RAM 4,018 and heap 8,270 /
 2,885 unchanged (0 bytes). `./test.sh --edit-dim` 15 ok, `--frames` 8
 ok, `--clipboard` 22 ok and `--undo` 44 ok on C-BIOS_MSX1_EU and JP.
 crc32 of the padded ROM: normal 655ed564, TEST 879ef520.
+
+## Commander: import from tape (lf-1575)
+
+After upstream ZX Desk's eb98c06 "Commander: import files from tape"
+(MIT). A tape has no directory, so on a machine with a cassette alone
+a file could only be opened from tape through the notepad; in
+Commander the tape was no source. With a tape pane active, **I** reads
+the **next** file on the tape and writes it under its header's name to
+the device of the **other** pane (RAM, DISK or BANK), and **A** reads
+them **all**, stopping when the first name comes round again, the tape
+ends (TAPION finds no leader, or CTRL+STOP) or ESC or SPACE is held
+between two files (the printer's convention, lf-1546; within a block
+the BIOS's CTRL+STOP is the way out). After that they are ordinary
+files in the listing: copy, delete, open. Upstream's keys are R and A;
+R is LIST here, so I and A.
+
+- The tape pane's one row says `I NEXT A ALL`, its header `TAPE`, and
+  with it active the second help row is `I IMPORT NEXT A IMPORT ALL`
+  (28 columns): ENTER, C and D have no file to act on there. I and A
+  on any other pane mean nothing.
+- `TapeNext` reads header blocks into `TapeIn` until one carries the
+  MSXT magic, passing over the others (another format's header, a
+  payload left behind by a refused file) and blocks shorter than a
+  header; carry with nothing read is the tape's end. FILE > OPEN keeps
+  its own seek, which fails on a wrong block rather than wait for a
+  leader that is not coming. `TapeBlock` reads a block with the PSG and
+  the interrupt mask the BIOS's, as `TapeOpen` does.
+- The file is read whole into `CmdBuf` and written under its header's
+  name; a name SAVE AS on the **target** would refuse becomes `NOTE`
+  (lf-1551: `NoteNameValidFor` takes the device, so twelve characters
+  without a dot stay a name on RAM and are NOTE on the disk). A file of
+  the name already there is replaced, as upstream does, so importing a
+  tape again brings its versions.
+- One that does not fit is refused whole with the alert `DOES NOT FIT`
+  over its name and no half file left: a header past 256 bytes (left
+  unread), `STERR_FULL` from the open (four files on RAM, a full
+  directory), or a short write (a disk without free clusters), after
+  which the entry is deleted. The files before it keep their
+  `IMPORTED` status under the alert.
+- PRN in the other pane: `PRN IS NO TARGET`, nothing read. The empty
+  tape: `NO FILE ON TAPE`. A stopped by a key: `IMPORT STOPPED`.
+- In a TAPE=1 build the ring of B and SETTINGS > BACKEND is RAM, BANK,
+  DISK, TAPE (`StRingStep`, `StAvail`), so a pane on a disk machine can
+  be the tape; the normal build's ring is as it was.
+
+The harness has a **tape trap** (`tape_trap` in `harness/run.tcl`, the
+way emulators trap the ZX's LD_BYTES): a breakpoint on the ROM's
+`TapeGetBlock` delivers the next block of a Tcl list in place of the
+BIOS cassette routines, with carry and the unread count as the BIOS
+leaves them, so the import runs headlessly on C-BIOS too.
+`tape_import_checks` (`./test.sh --tape-import`, and in `--tape` and
+the default suite, on the TAPE=1 ROM) asserts, each from boot:
+
+| subject | asserts |
+|---|---|
+| imp-next, imp-next-screen | I with ALPHA and BETA on the tape: ALPHA in RAM byte for byte, status IMPORTED, two blocks left; the screen against the compositor with the tape pane's hint and help row |
+| imp-open-ram | the UI round trip: I, TAB, ENTER opens the imported file in a notepad, the 256 bytes the tape held, name ALPHA, owned by RAM |
+| imp-all, imp-all-end | A over ALPHA, BETA, ALPHA, BETA: both once, the repeated header and its payload read, two blocks left; A over ALPHA, BETA to the tape's end: both, none left |
+| imp-none, imp-none-all | I and A on an empty tape: NO FILE ON TAPE, no alert |
+| imp-skip | a block of 19 `$FF` and one of five bytes before ALPHA are passed over |
+| imp-big | a header of 300 bytes: the alert, nothing written, the payload unread |
+| imp-full, imp-full-after | four files on RAM: the alert, the store as it was; two files and a tape of three: ALPHA and BETA in, GAMMA's alert over status IMPORTED |
+| imp-replace | ALPHA on RAM with other bytes: replaced by the tape's |
+| imp-abort-esc, imp-abort-space | ESC or SPACE held while A runs: ALPHA imported, BETA not read, IMPORT STOPPED |
+| imp-prn | P then I: PRN IS NO TARGET, nothing read, the PRN header |
+| imp-name-space, imp-name-long | `MY FILE` arrives as NOTE, `ABCDEFGHIJKL` as itself on RAM |
+| imp-not-tape | I and A on the RAM pane: nothing |
+| imp-open-disk, imp-disk-screen, imp-name-long-disk, imp-disk-full (Roms_MSX1 + Roms_Disk) | B B B TAB puts the right pane on TAPE; I writes ALPHA to the FAT12 image and TAB, ENTER opens it from the disk pane, owned by the disk; the screen; the twelve-character name is NOTE on the disk; a disk without free clusters: the alert, the image as it was |
+
+Run on this change: `--tape-import` 19 ok on C-BIOS_MSX1_EU and JP, 23
+ok on Roms_MSX1 + Roms_Disk; `--tape` 43 ok on Roms_MSX1 (the existing
+cassette subjects on the real BIOS included); `--commander` 41,
+`--print` 27 and `--bank` 30 ok on C-BIOS_MSX1_EU. The import reads
+the tape with interrupts masked, as the notepad's tape load does, and
+is outside the zero-drop frame budget.
+
+Base `5264508` → this change (code before the `NsanTab` alignment):
+normal ROM **25,486 → 26,061 bytes (+575)**, TEST ROM **27,240 →
+27,815 (+575)**, TAPE=1 ROM **25,494 → 26,079 (+585)**; static RAM
+**3,997 (+0)**, TEST 6,729; heap **8,291 / 2,906** unchanged. The
+first name of an import lives in `TapeHdr`'s name field, free while
+no tape file is open; no new allocation. crc32 of the padded ROMs:
+normal **b4c269ad**, TEST **7d46248f**, TAPE=1 **a7a73d17**.

@@ -2419,6 +2419,11 @@ NoteNameValid:
                 ; Common safe filename characters; disk additionally limits
                 ; the two components to 8 and 3. A trailing dot is a valid
                 ; editing prefix, but is rejected on submission below.
+                ld      a,(NoteBackend)
+; A = the device the name is for: Commander's import names a file for
+; the pane it goes to, not for the notepad's device (lf-1575).
+NoteNameValidFor:
+                ld      d,a
                 ld      b,0
                 ld      c,0
 NnvLoop:
@@ -2442,7 +2447,7 @@ NnvPunct:
                 jr      nz,NnvBad
 NnvChar:
                 inc     b
-                ld      a,(NoteBackend)
+                ld      a,d
                 cp      ST_DISK
                 jr      nz,NnvNext
                 ld      a,c

@@ -159,7 +159,16 @@ CmdDraw:
                 ld      hl,TxtCmdHelp1
                 ld      bc,$0901
                 call    WinPrint
+                ld      a,(CmdActive)           ; a tape pane has no file to
+                ld      (CmdPane),a             ; open, copy or delete: its
+                ld      hl,CmdBk0               ; keys import (lf-1575)
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_TAPE
+                ld      hl,TxtCmdHelpTape
+                jr      z,CdHelp2
                 ld      hl,TxtCmdHelp2
+CdHelp2:
                 ld      bc,$0A01
                 call    WinPrint
                 jr      CdStatus
@@ -198,6 +207,9 @@ CmdDrawPane:
                 jr      z,CdpHeader
                 cp      ST_BANK
                 ld      hl,TxtCmdBank
+                jr      z,CdpHeader
+                cp      ST_TAPE
+                ld      hl,TxtCmdTape
                 jr      z,CdpHeader
                 ld      hl,TxtCmdRam
 CdpHeader:
@@ -256,8 +268,9 @@ CraDone:
                 ret
 ; The row CmdRow from its cached entry: inverted when it is the
 ; active pane's selection, (EMPTY) on the first row of a pane with
-; no files, nothing on a blank row (WinDraw left the interior blank),
-; in the picker the size too.
+; no files (the keys that read from it on a tape's, which has no
+; directory), nothing on a blank row (WinDraw left the interior
+; blank), in the picker the size too.
 CmdPaintRow:
                 xor     a
                 ld      (PrintInv),a
@@ -272,6 +285,12 @@ CmdPaintRow:
                 ld      a,(CmdRow)
                 cp      2
                 ret     nz
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_TAPE
+                ld      hl,TxtCmdTapeHint
+                jr      z,CprText
                 ld      hl,TxtCmdEmpty
 CprText:
                 ld      a,(CmdCol)
@@ -489,6 +508,10 @@ CkTransfer:
                 jp      z,CmdAskDelete
                 cp      KEY_ENTER
                 jp      z,CmdOpen
+                cp      'I'
+                jp      z,CmdImport
+                cp      'A'
+                jp      z,CmdImport
                 xor     a
                 ret
 ; P toggles the opposite pane between PRN and the device it showed
@@ -961,6 +984,194 @@ CopOk:
                 call    RepaintLater            ; budget (lf-1590)
                 ld      a,2
                 ret
+; I imports the next file on the tape into the other pane's device, A
+; every file (upstream eb98c06, lf-1575): a tape has no directory, so
+; this is how its files get one. The active pane must be the tape; the
+; keys mean nothing elsewhere. PRN is no target. A file is read whole
+; into CmdBuf and written under its header's name, NOTE when SAVE AS
+; on the target would refuse that name (lf-1551); a file of the name
+; already there is replaced, so importing a tape again replaces its
+; files. One that does not fit (a header past 256 bytes, a full device,
+; a short write) is refused whole with an alert, no half file left.
+; A stops when the first name comes round again, the tape ends, or
+; ESC or SPACE is held between files; within a block the BIOS's own
+; CTRL+STOP ends the transfer. The first name is kept in TapeHdr's
+; name field, which is free while no tape file is open.
+CmdImport:
+                ld      hl,CmdBk0
+                call    CmdField                ; CmdPane is the active pane
+                ld      a,(hl)
+                cp      ST_TAPE
+                jr      z,CimTarget
+                xor     a
+                ret
+CimTarget:
+                ld      a,(CmdPane)
+                xor     1
+                ld      (CmdPane),a             ; the target pane from here on
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                cp      ST_PRINT
+                ld      a,13
+                jp      z,CmdResult
+                xor     a
+                ld      (TapeHdr+4),a           ; no first name yet
+CimNext:
+                call    TapeNext
+                jp      c,CimEnd
+                call    CmdImportName
+                ld      hl,(TapeIn+17)
+                ld      de,257
+                or      a
+                sbc     hl,de
+                jp      nc,CimRefuse            ; longer than any file here: unread
+                ld      bc,(TapeIn+17)
+                ld      (CmdSize),bc
+                ld      hl,CmdBuf
+                call    TapeBlock
+                jp      c,CimError
+                ld      a,(CmdKeyCh)
+                cp      'A'
+                jr      nz,CimWrite
+                ld      a,(TapeHdr+4)
+                or      a
+                jr      z,CimFirst
+                ld      hl,CmdWork
+                ld      de,TapeHdr+4
+                ld      b,13
+CimSame:
+                ld      a,(de)
+                cp      (hl)
+                jr      nz,CimWrite
+                inc     hl
+                inc     de
+                djnz    CimSame
+                jp      CimEnd                  ; the first name again: the tape came round
+CimFirst:
+                ld      hl,CmdWork
+                ld      de,TapeHdr+4
+                ld      bc,13
+                ldir
+CimWrite:
+                call    CmdUse
+                ld      hl,CmdWork
+                ld      b,FA_OVERWRITE
+                call    StOpen
+                jr      c,CimNoOpen
+                ld      (CmdHandle),a
+                ld      hl,CmdBuf
+                ld      bc,(CmdSize)
+                call    StWrite
+                ld      (CmdGot),bc
+                push    af
+                ld      a,(CmdHandle)
+                call    StClose
+                jr      nc,CimClosed
+                pop     af
+                jr      CimBroken
+CimClosed:
+                pop     af
+                jr      c,CimBroken
+                ld      hl,(CmdGot)
+                ld      de,(CmdSize)
+                or      a
+                sbc     hl,de
+                jr      nz,CimNoRoom            ; a short write: it did not fit
+                ld      a,(CmdKeyCh)
+                cp      'A'
+                jr      nz,CimDone
+                call    CmdHeld
+                jp      nz,CimNext
+                ld      a,14                    ; IMPORT STOPPED
+                jr      CimStatus
+CimEnd:
+                ld      a,(TapeHdr+4)
+                or      a
+                ld      a,12                    ; NO FILE ON TAPE
+                jr      z,CimStatus
+CimDone:
+                ld      a,11                    ; IMPORTED
+CimStatus:
+                push    af
+                call    CmdRefresh
+                pop     af
+                jp      CmdResult
+CimNoOpen:
+                cp      STERR_FULL
+                jr      z,CimRefuse             ; no room for another file
+CimError:
+                call    CmdRefresh
+                jp      CmdIoError
+; The half file goes: the target did not have it before.
+CimBroken:
+                ld      hl,CmdWork
+                call    StDelete
+                jr      CimError
+CimNoRoom:
+                ld      hl,CmdWork
+                call    StDelete
+; Refused whole, with an alert over the status the files before it earned.
+CimRefuse:
+                ld      a,(TapeHdr+4)
+                or      a
+                ld      a,0
+                jr      z,CimRefused
+                ld      a,11
+CimRefused:
+                push    af
+                call    CmdRefresh
+                pop     af
+                call    CmdResult
+                ld      hl,TxtCmdNoFit
+                ld      de,CmdWork
+                call    DlgAlert
+                ld      a,1
+                ret
+; The header's name into CmdWork, as it is when SAVE AS on the target
+; device would accept it, NOTE otherwise (lf-1551): a FILE > SAVE of
+; the file opened from there writes it back without a dialogue.
+CmdImportName:
+                ld      hl,TapeIn+4
+                ld      de,CmdWork
+                ld      bc,12
+                ldir
+                xor     a
+                ld      (de),a                  ; a terminator whatever the header holds
+                ld      hl,CmdWork
+                ld      a,(hl)
+                or      a
+                jr      z,CinNote
+                ld      hl,CmdBk0
+                call    CmdField
+                ld      a,(hl)
+                ld      hl,CmdWork
+                call    NoteNameValidFor        ; HL ends on the terminator
+                jr      c,CinNote
+                dec     hl
+                ld      a,(hl)
+                cp      '.'
+                ret     nz
+CinNote:
+                ld      hl,TxtNoteName
+                ld      de,CmdWork
+                ld      bc,5
+                ldir
+                ret
+; Z while ESC or SPACE (row 8, bit 0) is held: the way out of an
+; import of a whole tape, between its files.
+CmdHeld:
+                call    PrintEsc
+                ret     z
+                di
+                in      a,(PPIC)
+                and     $F0
+                or      8
+                out     (PPIC),a
+                in      a,(PPIB)
+                ei
+                bit     0,a
+                ret
 CmdBadNote:
                 ld      a,10
                 jr      CmdResult
@@ -989,14 +1200,23 @@ CmdDone:
 CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
                 defw    TxtCmdLarge, TxtCmdError, TxtCmdNone, TxtCmdNoRoom
                 defw    TxtCmdSame, TxtCmdDeleted, TxtCmdNotNote
+                defw    TxtCmdImported, TxtCmdNoTape, TxtCmdNoPrn, TxtCmdStopped
 TxtCmdTitle:    defb    "COMMANDER",0
 TxtCmdPrn:      defb    "PRN",0
 TxtCmdBank:     defb    "BANK",0
 TxtCmdRam:      defb    "RAM",0
 TxtCmdDisk:     defb    "DISK",0
+TxtCmdTape:     defb    "TAPE",0
 TxtCmdEmpty:    defb    "(EMPTY)",0
+TxtCmdTapeHint: defb    "I NEXT A ALL",0
 TxtCmdHelp1:    defb    "TAB PANE P PRN B BANK R LIST",0
 TxtCmdHelp2:    defb    "ENTER OPEN C COPY D DELETE",0
+TxtCmdHelpTape: defb    "I IMPORT NEXT A IMPORT ALL",0
+TxtCmdImported: defb    "IMPORTED",0
+TxtCmdNoTape:   defb    "NO FILE ON TAPE",0
+TxtCmdNoPrn:    defb    "PRN IS NO TARGET",0
+TxtCmdStopped:  defb    "IMPORT STOPPED",0
+TxtCmdNoFit:    defb    "DOES NOT FIT",0
 TxtCmdReady:    defb    "READY",0
 TxtCmdCopied:   defb    "COPIED",0
 TxtCmdConfirm:  defb    "DELETE SELECTED FILE? Y/N",0

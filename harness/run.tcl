@@ -31,6 +31,38 @@ proc key_up {row mask} { keymatrixup $row $mask }
 # joystick-port nibbles. The pointer has to be inside the window first.
 proc mouse_move {dx dy} { exec xdotool mousemove_relative -- $dx $dy }
 
+# The tape trap (lf-1575), the way emulators trap LD_BYTES: a
+# breakpoint on the ROM's TapeGetBlock (HL = buffer, BC = count)
+# delivers the next block of ::tape, a list of hex strings, and returns
+# to the caller in its place. A block at least as long as asked arrives
+# whole and carry is clear; a shorter one delivers what it has and sets
+# carry, as the BIOS does when a block runs out; an empty list is the
+# tape's end, carry with nothing read. BC is what was not read, which
+# is what the real loop leaves. No BIOS cassette code runs, so C-BIOS
+# reads tapes this way too.
+set tape {}
+proc tape_trap {} {
+    set hl [reg HL]
+    set bc [reg BC]
+    set left $bc
+    set carry 1
+    if {[llength $::tape]} {
+        set data [binary format H* [lindex $::tape 0]]
+        set ::tape [lrange $::tape 1 end]
+        set n [string length $data]
+        if {$n > $bc} { set n $bc }
+        if {$n > 0} { debug write_block memory $hl [string range $data 0 [expr {$n - 1}]] }
+        set left [expr {$bc - $n}]
+        if {$left == 0} { set carry 0 }
+    }
+    reg BC $left
+    reg F [expr {([reg F] & 0xFE) | $carry}]
+    set sp [reg SP]
+    reg PC [expr {[debug read memory $sp] | ([debug read memory [expr {$sp + 1}]] << 8)}]
+    reg SP [expr {$sp + 2}]
+    note "tape block: asked $bc, unread $left, carry $carry, [llength $::tape] left"
+}
+
 proc dump {} {
     set f [open $::out/vram.bin wb]
     puts -nonewline $f [debug read_block VRAM 0 16384]
