@@ -716,7 +716,11 @@ CmdPainted:
                 ret
 CmdPaintReady:
                 xor     a
+; A = a status: into CmdStatus and onto the status row of the live
+; window's buffer, the row marked for the blit.
+CmdPaintStatus:
                 ld      (CmdStatus),a
+                xor     a
                 ld      (PrintInv),a
                 ld      b,8
                 ld      c,1
@@ -902,6 +906,8 @@ CcpSourceClosed:
                 call    StIdent
                 cp      ST_PRINT
                 jr      z,CmdPrintCopy
+                cp      ST_TAPE
+                jp      z,CmdTapeCopy
                 ld      hl,CmdWork
                 ld      b,FA_READ
                 call    StOpen
@@ -912,6 +918,7 @@ CcpSourceClosed:
 CcpCreate:
                 cp      STERR_NOTFOUND
                 jp      nz,CmdIoError
+CcpWrite:
                 ld      hl,CmdWork
                 ld      b,FA_OVERWRITE
                 call    StOpen
@@ -965,6 +972,26 @@ CpcError:
                 call    PrintAlert
                 ld      a,1
                 ret
+; A tape as the target (lf-1603): it has no directory, so there is no
+; existence check to make, and opening it for reading would wait for
+; a leader that is not coming. The copy goes straight to the write,
+; which TapeSave records at the close. Before a byte goes out the
+; status row says so and how to stop it, on the screen now: the BIOS
+; keeps the frame for the recording, as a SAVE to tape does. CTRL+STOP
+; or a failed block is carry from the close, STORAGE ERROR and no
+; COPIED; the delete of the half file is the tape's StNoDelete.
+CmdTapeCopy:
+                ld      a,15
+                call    CmdNotice
+                jp      CcpWrite
+; A = a status: on the status row of the live window and on the
+; screen now rather than at the frame's end. WinRedraw blits the row
+; as the frame's end would; NtFlush puts it out, its address pair
+; under SetWrt's DI.
+CmdNotice:
+                call    CmdPaintStatus
+                call    WinRedraw
+                jp      NtFlush
 CmdAbortCopy:
                 ; The destination did not exist before this copy. Remove a
                 ; partial new file, never an existing target or the source.
@@ -1044,7 +1071,8 @@ CopOk:
 ; I imports the next file on the tape into the other pane's device, A
 ; every file (upstream eb98c06, lf-1575): a tape has no directory, so
 ; this is how its files get one. The active pane must be the tape; the
-; keys mean nothing elsewhere. PRN is no target. A file is read whole
+; keys mean nothing elsewhere. PRN is no target, nor a tape in the
+; other pane (lf-1603), refused before a block is read. A file is read whole
 ; into CmdBuf and written under its header's name, NOTE when SAVE AS
 ; on the target would refuse that name (lf-1551); a file of the name
 ; already there is replaced, so importing a tape again replaces its
@@ -1078,6 +1106,10 @@ CimTarget:
                 cp      ST_PRINT
                 ld      a,13
                 jp      z,CmdResult
+                ld      a,(hl)                  ; a tape in both panes (lf-1603):
+                cp      ST_TAPE                 ; the open for writing would take
+                ld      a,16                    ; TapeHdr and the close record
+                jp      z,CmdResult             ; over the tape being read
                 xor     a
                 ld      (TapeHdr+17),a          ; no first name yet
 CimNext:
@@ -1268,6 +1300,7 @@ CmdMessages:    defw    TxtCmdReady, TxtCmdCopied, TxtCmdConfirm, TxtCmdExists
                 defw    TxtCmdLarge, TxtCmdError, TxtCmdNone, TxtCmdNoRoom
                 defw    TxtCmdSame, TxtCmdDeleted, TxtCmdNotNote
                 defw    TxtCmdImported, TxtCmdNoTape, TxtCmdNoPrn, TxtCmdStopped
+                defw    TxtCmdRecording, TxtCmdNoTapeTarget
 TxtCmdTitle:    defb    "COMMANDER",0
 TxtCmdPrn:      defb    "PRN",0
 TxtCmdBank:     defb    "BANK",0
@@ -1284,6 +1317,8 @@ TxtCmdNoTape:   defb    "NO FILE ON TAPE",0
 TxtCmdNoPrn:    defb    "PRN IS NO TARGET",0
 TxtCmdStopped:  defb    "IMPORT STOPPED",0
 TxtCmdNoFit:    defb    "DOES NOT FIT",0
+TxtCmdRecording: defb   "RECORDING, CTRL+STOP ENDS",0
+TxtCmdNoTapeTarget: defb "TAPE IS NO TARGET",0
 TxtCmdReady:    defb    "READY",0
 TxtCmdCopied:   defb    "COPIED",0
 TxtCmdConfirm:  defb    "DELETE SELECTED FILE? Y/N",0

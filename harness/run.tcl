@@ -63,6 +63,34 @@ proc tape_trap {} {
     note "tape block: asked $bc, unread $left, carry $carry, [llength $::tape] left"
 }
 
+# The write trap (lf-1603), the tape trap's other half: a breakpoint
+# on the ROM's TapePutBlock (A = 1 for the long leader, HL = buffer,
+# BC = count) keeps the block in ::taped as a hex string and returns
+# in its place, carry clear, with BC nought as the real loop leaves
+# it; with ::tape_put_fail set it returns carry and keeps nothing, the
+# BIOS's CTRL+STOP during the block. The name table as it stands goes
+# into the note with the block: the screen the user sees while the
+# tape runs, which the dumps at the end cannot show.
+set taped {}
+set tape_put_fail 0
+proc tape_put_trap {} {
+    set hl [reg HL]
+    set bc [reg BC]
+    set carry $::tape_put_fail
+    set hex ""
+    if {!$carry && $bc > 0} {
+        binary scan [debug read_block memory $hl $bc] H* hex
+        lappend ::taped $hex
+    }
+    binary scan [debug read_block VRAM 0x1800 768] H* nt
+    reg BC 0
+    reg F [expr {([reg F] & 0xFE) | ($carry ? 1 : 0)}]
+    set sp [reg SP]
+    reg PC [expr {[debug read memory $sp] | ([debug read memory [expr {$sp + 1}]] << 8)}]
+    reg SP [expr {$sp + 2}]
+    note "tape put: leader [reg A], asked $bc, carry $carry, nt $nt, block $hex"
+}
+
 proc dump {} {
     set f [open $::out/vram.bin wb]
     puts -nonewline $f [debug read_block VRAM 0 16384]
