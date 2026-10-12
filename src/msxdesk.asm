@@ -415,6 +415,7 @@ CMDSTSZ         equ     _ram-CmdState
                 var     DskSetRow, 1    ; the DESKTOP window's focus, per window
 IFDEF TEST
                 var     TestDone, 1
+                var     TthResults, 14  ; TestTapeHeld's seven pairs (lf-1576)
                 var     ThPtr, 6
                 var     ThStat, 12
                 var     TcMonths, CALYEARS*12*2

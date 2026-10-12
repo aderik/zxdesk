@@ -3058,8 +3058,11 @@ pad, read from the ROM): normal ROM **27,212 → 27,443 bytes (+231)**,
 TEST **28,966 → 29,297 (+331)**, TAPE=1 **27,230 → 27,461 (+231)**;
 build line 27,648 → 27,904 and 29,440 → 29,696 (the pad: `NsanTab` a
 page up); static RAM **3,997 → 4,001 (+4)**: `TapeKeep` 1, `TapeSum`
-2, `TapeShown` 1; heap **8,291 → 8,287 / 2,906 → 2,902**, no heap
-allocation. Per frame: `TapeBandIdle` is a load, a test and a return,
-45 cycles. crc32 of the padded ROMs: normal **6ad150f4**, TEST
-**9f54580d**, TAPE=1 **f8ff14f1** (base dd9db94c / b5928469 /
-814e16cf, the same three from `git archive ab93a19`).
+2, `TapeShown` 1; the TEST build 14 more for `TthResults` (`CmdBuf`
+is taken: `TbResults`, the bank subject's record, sits at
+`CmdBuf+221`, and the first cut of this record over it failed bank-rw
+in the full suite), **6,729 → 6,747**; heap **8,291 → 8,287 / 2,906 →
+2,902**, no heap allocation. Per frame: `TapeBandIdle` is a load, a
+test and a return, 45 cycles. crc32 of the padded ROMs: normal
+**6ad150f4**, TEST **c8db8a70**, TAPE=1 **f8ff14f1** (base dd9db94c /
+b5928469 / 814e16cf, the same three from `git archive ab93a19`).

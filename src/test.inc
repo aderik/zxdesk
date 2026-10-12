@@ -105,8 +105,9 @@ TtName:         defb    "BUFFER",0
 ; differing; NwStartFull, the notepad's wrap job taking the buffer,
 ; drops the flag, and the open after it reads a tape that has run out:
 ; NOTFOUND. Record: seven pairs of carry and TapeKeep, the sixth after
-; NwStartFull alone, the seventh carry and the error.
-TthResults      equ     CmdBuf+221      ; after TtResults' 21 bytes
+; NwStartFull alone, the seventh carry and the error. The record is
+; a TEST build var (msxdesk.asm): CmdBuf is taken, TbResults holds
+; the bank subject's record at CmdBuf+221.
 TestTapeHeld:
                 ld      de,TthResults
                 ld      hl,TthAlpha
