@@ -995,8 +995,11 @@ CopOk:
 ; a short write) is refused whole with an alert, no half file left.
 ; A stops when the first name comes round again, the tape ends, or
 ; ESC or SPACE is held between files; within a block the BIOS's own
-; CTRL+STOP ends the transfer. The first name is kept in TapeHdr's
-; name field, which is free while no tape file is open.
+; CTRL+STOP ends the transfer. The first name written is kept in
+; TapeHdr's name field, free while no tape file is open: A stops when
+; it comes round, and it says whether anything went in at all, so A
+; refused on its first file reads READY under the alert, as I does
+; (lf-1598).
 CmdImport:
                 ld      hl,CmdBk0
                 call    CmdField                ; CmdPane is the active pane
@@ -1031,12 +1034,9 @@ CimNext:
                 ld      hl,CmdBuf
                 call    TapeBlock
                 jp      c,CimError
-                ld      a,(CmdKeyCh)
-                cp      'A'
-                jr      nz,CimWrite
                 ld      a,(TapeHdr+4)
                 or      a
-                jr      z,CimFirst
+                jr      z,CimWrite              ; nothing written yet: no name to meet
                 ld      hl,CmdWork
                 ld      de,TapeHdr+4
                 ld      b,13
@@ -1048,11 +1048,6 @@ CimSame:
                 inc     de
                 djnz    CimSame
                 jp      CimEnd                  ; the first name again: the tape came round
-CimFirst:
-                ld      hl,CmdWork
-                ld      de,TapeHdr+4
-                ld      bc,13
-                ldir
 CimWrite:
                 call    CmdUse
                 ld      hl,CmdWork
@@ -1078,6 +1073,14 @@ CimClosed:
                 or      a
                 sbc     hl,de
                 jr      nz,CimNoRoom            ; a short write: it did not fit
+                ld      a,(TapeHdr+4)
+                or      a
+                jr      nz,CimKept
+                ld      hl,CmdWork              ; the first file in: its name
+                ld      de,TapeHdr+4
+                ld      bc,13
+                ldir
+CimKept:
                 ld      a,(CmdKeyCh)
                 cp      'A'
                 jr      nz,CimDone

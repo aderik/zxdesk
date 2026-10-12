@@ -2430,7 +2430,9 @@ R is LIST here, so I and A.
   unread), `STERR_FULL` from the open (four files on RAM, a full
   directory), or a short write (a disk without free clusters), after
   which the entry is deleted. The files before it keep their
-  `IMPORTED` status under the alert.
+  `IMPORTED` status under the alert; A refused on its very first file
+  reads `READY` under it, as I does, since the first name is kept only
+  once a file went in (lf-1598).
 - PRN in the other pane: `PRN IS NO TARGET`, nothing read. The empty
   tape: `NO FILE ON TAPE`. A stopped by a key: `IMPORT STOPPED`.
 - In a TAPE=1 build the ring of B and SETTINGS > BACKEND is RAM, BANK,
@@ -2453,7 +2455,7 @@ the default suite, on the TAPE=1 ROM) asserts, each from boot:
 | imp-none, imp-none-all | I and A on an empty tape: NO FILE ON TAPE, no alert |
 | imp-skip | a block of 19 `$FF` and one of five bytes before ALPHA are passed over |
 | imp-big | a header of 300 bytes: the alert, nothing written, the payload unread |
-| imp-full, imp-full-after | four files on RAM: the alert, the store as it was; two files and a tape of three: ALPHA and BETA in, GAMMA's alert over status IMPORTED |
+| imp-full, imp-full-all, imp-full-after | four files on RAM: I and A, the alert, the store as it was, status READY (A read ALPHA's payload, two blocks left); two files and a tape of three: ALPHA and BETA in, GAMMA's alert over status IMPORTED |
 | imp-replace | ALPHA on RAM with other bytes: replaced by the tape's |
 | imp-abort-esc, imp-abort-space | ESC or SPACE held while A runs: ALPHA imported, BETA not read, IMPORT STOPPED |
 | imp-prn | P then I: PRN IS NO TARGET, nothing read, the PRN header |
@@ -2475,3 +2477,24 @@ normal ROM **25,486 → 26,061 bytes (+575)**, TEST ROM **27,240 →
 first name of an import lives in `TapeHdr`'s name field, free while
 no tape file is open; no new allocation. crc32 of the padded ROMs:
 normal **b4c269ad**, TEST **7d46248f**, TAPE=1 **a7a73d17**.
+
+**Review of the change (lf-1598).** PR #60 went through the pipeline
+without a test or a review (an OAuth failure in both steps), so this
+pass checked it against lf-1575's points and ran the whole suite. On
+main `12e61ad` as merged, `./test.sh` is 765 ok on C-BIOS_MSX1_EU and
+755 ok on C-BIOS_MSX1_JP, nothing red. One deviation: `CmdImport` kept
+the first name before the first file's write, so A on a full target
+reported `IMPORTED` under the `DOES NOT FIT` alert with nothing
+imported (`imp-full-all`, status 11 on 12e61ad). The name is now kept
+once a file went in, which also drops the key test before the compare:
+I never has a name there. ROM 26,150 → 26,149 bytes (-1), TEST
+27,904 → 27,903, TAPE=1 26,168 → 26,167; RAM 3,997 and the heap
+unchanged. Confirmed unchanged by inspection: FILE > OPEN on tape
+(`TapeOpen` untouched, the `tape-*` subjects), and the normal build's
+ring (`IF TAPE` around the fourth entry). Seen and left as it was: a
+COPY towards a tape pane, which the TAPE=1 ring can now show on a disk
+machine, opens the tape for reading first (the existence check) and so
+waits for a leader, as a notepad OPEN without a cassette does. With
+the fix `./test.sh` is 766 ok on C-BIOS_MSX1_EU and 756 ok on
+C-BIOS_MSX1_JP (`--tape-import` 20); crc32 of the padded ROMs: normal
+**c07b1605**, TEST **550efb04**, TAPE=1 **c7cde283**.
