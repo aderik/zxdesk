@@ -306,13 +306,16 @@ WoFirst:
                 cp      2
                 jr      c,WoNoOld
                 ld      a,(WndZ+1)              ; the old front loses its cap
-                call    WndTouchCap
-                ld      a,(WndZ+1)
-                call    RowsAddSlot
+                call    WndCapRows
 WoNoOld:
+                ; Nothing moved: the shadow under the new window is as it
+                ; was, so its rows are blitted over it without the desktop.
+                ; The desktop and icons under the picker's 12 rows were 3.3
+                ; ms of its open, and the 24x17 notepad behind the clock was
+                ; blitted whole over them (lf-1590).
                 ld      a,(WndCur)
                 call    WndTouch
-                call    RowsAddLive
+                call    RowsLiveText
                 or      a
                 ret
 WndNoRoom:
@@ -393,8 +396,7 @@ WcShifted:
                 ld      a,(WndZ)
                 call    WndSelect
                 ld      a,(WndZ)                ; the new front gets the cap
-                call    WndTouchCap
-                jp      RowsAddLive
+                jp      WndCapRows
 
 ; A = slot: raise, focus and repaint. Nothing moves, so the desktop
 ; under the two windows stays as it is: their rows are blitted again
@@ -408,9 +410,7 @@ WndFocusTo:
                 jp      z,WndSelect
                 push    af
                 ld      a,(WndZ)                ; the old front loses its cap
-                call    WndTouchCap
-                ld      a,(WndZ)
-                call    RowsAddSlotText
+                call    WndCapRows
                 pop     af
                 call    WndRaise
                 ld      a,(WndZ)
@@ -614,23 +614,82 @@ WdFullReady:
                 or      a
                 jr      nz,WdEdgesOnly
 WdBody:
-                push    bc
-                ld      (hl),T_LEFT
-                inc     hl
-                ld      (hl),' '                ; the blank spreads itself by
-                ld      d,h                     ; LDIR, 21 cycles a cell
-                ld      e,l
-                inc     de
+                ; The body blanked at once by PUSH, 6 T a cell against the
+                ; 23 of an LDIR a row (2.0 ms of the 30x12 picker's compose,
+                ; lf-1590), then the edges. The stack is borrowed with
+                ; interrupts off, as DrawDesktopRows has it; sixteen
+                ; pushes a turn, the first turn entered part way for the
+                ; remainder. An odd body leaves its last cell, the edge.
+                push    hl
+                pop     ix                      ; IX = row 1's first cell
+                ld      hl,0
+WdSize:
+                add     hl,de
+                djnz    WdSize                  ; HL = the body's cells
+                srl     h
+                rr      l                       ; the pushes
+                ld      a,l
+                and     15
+                ld      c,a                     ; the first turn's, 0 = sixteen
+                ld      a,l
+                rrca
+                rrca
+                rrca
+                rrca
+                and     15
+                ld      b,a
+                ld      a,h
+                add     a,a
+                add     a,a
+                add     a,a
+                add     a,a
+                or      b
+                ld      b,a                     ; the full turns
+                ld      a,c
+                or      a
+                jr      z,WdTurns
+                inc     b                       ; and the part one
+WdTurns:
+                add     hl,hl                   ; the cells pushed
+                push    ix
+                pop     de
+                add     hl,de                   ; HL = their end
+                ld      (SpSave),sp
+                di
+                ld      sp,hl
+                ld      hl,WdPush16
+                ld      a,16
+                sub     c
+                and     15
+                add     a,l
+                ld      l,a
+                jr      nc,WdGo
+                inc     h
+WdGo:
+                ld      de,' '*257
+                jp      (hl)
+WdPush16:
+                rept    16
+                push    de
+                endm
+                djnz    WdPush16
+                ld      sp,(SpSave)
+                ei
+                push    ix
+                pop     hl                      ; row 1 again
+                ld      a,(WinH)
+                sub     2
+                ld      b,a
                 ld      a,(WinW)
-                sub     3
-                ld      c,a
-                ld      b,0
-                ldir
-                ex      de,hl
+                dec     a
+                ld      e,a
+                ld      d,0
+WdEdge:
+                ld      (hl),T_LEFT
+                add     hl,de
                 ld      (hl),T_RIGHT
                 inc     hl
-                pop     bc
-                djnz    WdBody
+                djnz    WdEdge
                 jr      WdBottomRow
 WdEdgesOnly:
                 ; the application writes every interior cell itself
@@ -730,6 +789,24 @@ WpLoop:
                 inc     hl
                 inc     de
                 djnz    WpLoop
+                ret
+
+; B = row, C = column, A = cells (at least one): spaces, for an
+; application that paints a row of its own again (the commander's
+; selection rows, lf-1590).
+WinBlank:
+                push    af
+                call    WinCell
+                pop     af
+                ld      (hl),' '
+                dec     a
+                ret     z
+                ld      d,h
+                ld      e,l
+                inc     de
+                ld      c,a
+                ld      b,0
+                ldir
                 ret
 
 ; A = a slot: its buffer into the shadow as WinBlit does, from its
@@ -995,6 +1072,26 @@ WtcNone:
                 or      1
                 ret
 
+; A = slot: its title row changes hands (WndTouchCap), and the rows
+; to blit again are added: the title row alone when it was flipped in
+; place, all of its rows when that had the window recomposed. The
+; desktop under it is as it was. The clock opened over a 24x17
+; notepad from the VIEW menu blitted the notepad's 17 rows over a
+; fresh desktop, 17.4 ms with the menu's flush at 60 Hz (lf-1590).
+WndCapRows:
+                push    af
+                call    WndTouchCap
+                pop     af
+                push    af
+                call    WndSlotBit
+                ld      hl,WndDirty
+                and     (hl)
+                pop     af
+                jp      nz,RowsAddSlotText
+                call    RowsSlot
+                ld      c,1
+                jp      RowsAddText
+
 ; Slot A's rows, from the table; RowsAddSlotText for its content alone.
 RowsAddSlot:
                 call    RowsSlot
@@ -1038,7 +1135,20 @@ WinRedraw:
                 ret     nz                      ; keep the save-under stable
                 ld      a,(RepaintDue)
                 cp      2
+                jr      c,WrdNow
                 jr      z,WrdLater              ; a heavy frame: paint the next
+                cp      3
+                jr      nz,WrdLater             ; 4: nothing yet, 3 next frame
+                ; 3: the front window composed now, everything blitted
+                ; next frame. The commander's open (lf-1590): the frame
+                ; of the press has the menu's close and the open, the
+                ; next the flush of the menu's rows and this compose,
+                ; the third the blits.
+                call    WndComposeFront
+                ld      a,1
+                ld      (RepaintDue),a
+                ret
+WrdNow:
                 ld      a,(Resizing)            ; the resized window is the live
                 cp      2                       ; one for its layout and compose,
                 ld      a,(RszSlot)             ; even after GRAPH+X in the frame
@@ -1339,21 +1449,24 @@ WndInit:
 WndOpenLater:
                 call    WndOpen
                 ret     c
+                call    WndComposeFront
+                ld      a,2
+                ld      (RepaintDue),a
+                or      a                       ; the open succeeded
+                ret
+
+; The front window, live, composed, and its dirty bit cleared: the
+; repaint to come blits it as it is.
+WndComposeFront:
+                ld      a,(WndZ)
+                call    WndSelect
                 call    WinDraw
                 ld      a,(WndCur)
-                ld      b,a
-                inc     b
-                ld      a,$80
-WolBit:
-                rlca
-                djnz    WolBit
+                call    WndSlotBit
                 cpl
                 ld      hl,WndDirty
                 and     (hl)
                 ld      (hl),a                  ; the new buffer is composed
-                ld      a,2
-                ld      (RepaintDue),a
-                or      a                       ; the open succeeded
                 ret
 
 ; The menu actions that open windows.

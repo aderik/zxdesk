@@ -333,7 +333,6 @@ NOTESTSZ        equ     _ram-NoteState
                 var     NwBusy, 1       ; a layout job is under way
                 var     NwToggled, 1    ; WRAP changed: every notepad composed again, one a frame
                 ; Commander: cached visible names belong to each instance.
-                var     CmdNumber, 6
                 var     CmdState, 0
                 var     CmdBrowse, 1
                 var     CmdBk0, 1
@@ -1202,7 +1201,9 @@ FillRow:
 ; Measured: 22 rows at 47 cycles a cell, plus a recompose, plus a
 ; second recompose from a key in the same frame, dropped 7 frames
 ; of a 115 frame drag; at 30 with one recompose a frame it drops
-; none.
+; none. The bits are walked by shifting each byte once, 37 T a clean
+; row: rebuilding the byte and bit from the row number was 1.5 ms a
+; flush before any row went out (lf-1590).
 NtFlush:
                 ld      a,(DirtyRows)
                 ld      hl,(DirtyRows+1)
@@ -1210,33 +1211,19 @@ NtFlush:
                 or      l
                 ret     z
                 ld      c,0                     ; the row
-NfRow:
-                ld      a,c
-                rrca
-                rrca
-                rrca
-                and     3
                 ld      hl,DirtyRows
-                add     a,l
-                ld      l,a
-                jr      nc,NfNoCy
-                inc     h
-NfNoCy:
-                ld      a,c
-                and     7
-                ld      b,a
-                ld      a,$01
-                jr      z,NfBit
-NfShift:
-                add     a,a
-                djnz    NfShift
+NfByte:
+                ld      a,(hl)
+                ld      (hl),0
+                inc     hl
+                ld      b,8
 NfBit:
-                and     (hl)
-                jr      z,NfNext
+                srl     a
+                jr      nc,NfNext
+                push    af
                 push    bc
                 push    hl
                 ld      b,c
-                ld      c,0
                 call    ShadowRow               ; HL = the shadow row
                 push    hl
                 ld      l,b
@@ -1258,15 +1245,42 @@ NfOut:
                 jp      nz,NfOut                ; display: 16+4+10 = 30
                 pop     hl
                 pop     bc
+                pop     af
 NfNext:
                 inc     c
+                djnz    NfBit
                 ld      a,c
                 cp      SCRROWS
-                jr      c,NfRow
-                xor     a
-                ld      (DirtyRows),a
-                ld      (DirtyRows+1),a
-                ld      (DirtyRows+2),a
+                jr      c,NfByte
+                ret
+
+; HL to DE, BC bytes (one at least): as LDIR leaves them, at 18 T a
+; byte against its 23. Sixteen LDIs a turn, the first turn entered
+; part way for the remainder, so BC reaches nought at the end of a
+; turn. The four copies of a notepad's load from the picker (its
+; state, the read, the snapshot, the document) are 1,080 bytes of
+; the ENTER frame at 60 Hz (lf-1590).
+CopyFast:
+                ld      a,c
+                and     15
+                jr      z,CfLdi16
+                sub     16
+                neg                             ; the LDIs the first turn skips
+                add     a,a                     ; two bytes each
+                push    hl
+                ld      hl,CfLdi16
+                add     a,l
+                ld      l,a
+                jr      nc,CfEntry
+                inc     h
+CfEntry:
+                ex      (sp),hl                 ; the source back, the entry under it
+                ret
+CfLdi16:
+                rept    16
+                ldi
+                endm
+                jp      pe,CfLdi16
                 ret
 
 ; B = row. Returns HL = its shadow row, without marking. Everything
@@ -1532,6 +1546,19 @@ SatInit:        defb    89,120,0,C_POINTER      ; y-1, x, pattern, colour
                 include "desktop.inc"
                 include "dsksetup.inc"
                 include "test.inc"
+
+; NoteSanitise's table, indexed by the low byte alone: 32 to 127 are
+; themselves, every other byte a space. Last, on a page of its own,
+; so the alignment pads the least (lf-1590).
+                defs    (256-($ and 255)) and 255,$FF
+NsanTab:
+                defs    32,' '
+_c              defl    32
+                rept    96
+                defb    _c
+_c              defl    _c+1
+                endm
+                defs    128,' '
 
 RomEnd:
                 defs    $C000-RomEnd,$FF

@@ -498,7 +498,7 @@ RdN:
                 add     hl,de                   ; HL = source
                 ld      de,(RamBuf)
                 push    bc
-                ldir
+                call    CopyFast
                 pop     bc
                 ld      hl,(RamPos)
                 add     hl,bc
@@ -538,7 +538,7 @@ WrN:
                 ex      de,hl                   ; DE = destination
                 ld      hl,(RamBuf)
                 push    bc
-                ldir
+                call    CopyFast
                 pop     bc
                 ld      hl,(RamPos)
                 add     hl,bc

@@ -1620,10 +1620,45 @@ def commander_checks(syms, fails, vram0, browse_only=False):
         check(fails, "browse-mouse-" + action, r.peek("WndCount") == 1
               and r.bytes("NoteBuf", 256) == fixtures["BETA"],
               f"selected BETA crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
-    r = pick(down, "browse-select")
+    # A move of the selection paints its two rows alone (lf-1590): one
+    # repaint pass, its range the rows the selection left and took,
+    # no slot dirty, no compose; the directory is not read again.
+    rc = syms["Recomposes"]
+    def moves(steps):
+        """`steps` between breakpoints on MarkRows (a repaint's range and
+        dirty slots) and WinDraw (a compose), Recomposes noted before and after."""
+        def counted(label):
+            return [(10, f"note \"{label} [expr {{[debug read memory {rc}] + 256*[debug read memory {rc + 1}]}}]\"")]
+        return ([(1, f"debug set_bp {syms['MarkRows']} {{}} {{note \"rows [debug read memory {syms['RowLo']}] "
+                     f"[debug read memory {syms['RowHi']}] dirty [debug read memory {syms['WndDirty']}]\"}}; "
+                     f"debug set_bp {syms['WinDraw']} {{}} {{note \"compose [debug read memory {syms['WndCur']}]\"}}")]
+                + counted("moving") + steps + counted("moved"))
+    def moved(r):
+        """(Recomposes added, [(RowLo, RowHi, WndDirty)], composes) between the notes."""
+        import re
+        seg = r.log[r.log.index("moving "):r.log.index("moved ")]
+        before, after = int(seg.split()[1]), int(r.log.split("moved ")[1].split()[0])
+        return after - before, [tuple(map(int, m)) for m in re.findall(r"rows (\d+) (\d+) dirty (\d+)", seg)], seg.count("compose")
+    r = pick(moves(down), "browse-select")
     screen(r, "browse-select", [browser(left, 1)])
+    added, ranges, composes = moved(r)
+    check(fails, "browse-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}: ALPHA's and BETA's rows alone")
     r = pick(down + tap(8, 32, True), "browse-up")
     screen(r, "browse-up", [browser(left)])
+    if not EXT:
+        # R reads the directory again: a file removed behind the picker's back
+        r = pick([(5, f"debug write memory {syms['RamDir'] + 15} 0")] + tap(4, 128), "browse-reload")
+        screen(r, "browse-reload", [browser(left[1:])])
+    if EXT:
+        # the page turns: the pane is read again from its new top, the
+        # first file of the page on the first row, the selection on the last
+        many = {f"FILE{i}": doc(f"FILE{i}") for i in range(8)}
+        up = tap(8, 32, True)
+        r = pick(down * 6, "browse-scroll", files=many)
+        screen(r, "browse-scroll", [browser(list(many)[1:7], 5)])
+        r = pick(down * 6 + up * 6, "browse-scroll-back", files=many)
+        screen(r, "browse-scroll-back", [browser(list(many)[:6])])
     # Existing frontmost notepad is reused; the earlier document is retained.
     prefix = new + tap(3, 32) + new + tap(3, 64)
     r = pick(down + enter, "browse-load", prefix)
@@ -1676,8 +1711,11 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     screen(r, "cmd-list", [cmdwin(left, right)])
     r = run([], "cmd-empty", files={})
     screen(r, "cmd-empty", [cmdwin([], [])])
-    r = run(down, "cmd-select")
+    r = run(moves(down), "cmd-select")
     screen(r, "cmd-select", [cmdwin(left, right, selection=1)])
+    added, ranges, composes = moved(r)
+    check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0,
+          f"Recomposes +{added}, rows {ranges}, composes {composes}: the left pane's two rows alone")
     r = run(tab, "cmd-pane")
     screen(r, "cmd-pane", [cmdwin(left, right, active=1)])
     r = run(delete, "cmd-confirm")
@@ -4565,9 +4603,10 @@ def frame_checks(syms, fails):
     to their result. The suite runs them at 50 and at 60 Hz. Typing and
     ENTER (WRAP on and off), the join, the WRAP-off grip and the
     preamble of sel-scroll are asserted in the wrap, resize and
-    selection groups, which no longer zero Dropped. FILE > OPEN and disk
-    I/O are the known exceptions (README, "Frame budget at 60 Hz"):
-    fb-open asserts that its drops stay within the picker and the load."""
+    selection groups, which no longer zero Dropped. Disk I/O is the known
+    exception (README, "Frame budget at 60 Hz"): on the disk fb-open
+    asserts that its drops stay within the load and the save; on RAM the
+    whole route, the picker included, drops nothing (lf-1590)."""
     print("frames:")
     import re
     s = wrap_steps(syms)
@@ -4613,6 +4652,18 @@ def frame_checks(syms, fails):
           and r.peek("Dropped", 2) == 0,
           f"front {r.peek('WndZ')}, live {r.peek('WndCur')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
           f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # the clock opened from the VIEW menu over the 24x17 notepad (lf-1590):
+    # the menu's close, the open and the compose in the frame of the press,
+    # the flush of the menu's rows and the blits of the clock and of the
+    # notepad's title row in the next; 17.4 ms and one frame dropped at 60
+    # Hz when the notepad's 17 rows were blitted over a fresh desktop
+    r = Run(syms, timing + big + s.click(180, 3) + s.click(188, 11) + [(10, "")], "fb-view-clock", files={})
+    clk = clock_win(r.ram[rec], r.ram[rec + 1], r.peek("ClkH"), r.peek("ClkM"))
+    want = compose(expected_nt(), [first, clk])
+    check(fails, "fb-view-clock", r.peek("WndZ") == 1 and r.peek("WndCur") == 1 and r.peek("MenuOpen") == 0
+          and r.nt() == want and r.peek("Dropped", 2) == 0,
+          f"front {r.peek('WndZ')}, live {r.peek('WndCur')}, screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
+          f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
     # EDIT opened over the 24x17 notepad (lf-1549): the drop with all
     # four items grey (nothing typed, no selection, an empty clipboard)
     # in the frame of the press, no frame dropped
@@ -4652,22 +4703,25 @@ def frame_checks(syms, fails):
               f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(joined):08x}, "
               f"caret ({r.peek('NoteCX')}, {r.peek('NoteCY')}), screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, "
               f"Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
-    # FILE > OPEN, SAVE and UNDO (lf-1562): the picker's frames and the
-    # load drop frames (the known exception); before them and from the
-    # frame after the load on, nothing is dropped, on RAM the save too.
+    # FILE > OPEN, SAVE and UNDO (lf-1562). On RAM the whole route drops
+    # nothing: the picker's open, the SHIFT+DOWN and the load with ENTER
+    # each fit a frame since lf-1590. On the disk the load and the save
+    # are the known exception: nothing is dropped before the OPEN, from
+    # the frame after the load on, and from the frame after the save on.
     beta = note_width_document([b"BETA"])
     files = {"ALPHA": note_width_document([b"ALPHA"]), "BETA": beta}
     seed = [] if EXT else seed_ram_steps(syms, files)
-    picker = s.click(88, 3) + s.click(96, 19) + [(15, "")] + s.down
+    picker = s.click(88, 3) + s.click(96, 19) + [(15, "")] + mark("picker") + s.down + [(10, "")] + mark("down")
     steps = (seed + s.init + new + text("HI") + mark("open") + picker + s.enter + mark("loaded") + [(10, "")]
              + mark("save") + shortcut(5, 1) + mark("saved") + [(10, "")] + mark("undo") + shortcut(5, 4)
              + [(10, "")] + mark("end"))
     r = Run(syms, timing + steps, "fb-open", files=files if EXT else None)
     m = marks(r)
-    after = m["end"] - m["undo"] == 0 and (EXT or m["end"] - m["loaded"] == 0)
-    check(fails, "fb-open", m["open"] == 0 and after and r.bytes("NoteBuf", 256) == note_width_document([b"HI"])
+    budget = m["end"] == 0 if not EXT else m["open"] == 0 and m["end"] - m["undo"] == 0
+    check(fails, "fb-open", budget and r.bytes("NoteBuf", 256) == note_width_document([b"HI"])
           and r.bytes("NoteName", 5) == b"NOTE\0",
-          f"Dropped at {m}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, name {r.bytes('NoteName', 5)!r}")
+          f"Dropped at {m}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, name {r.bytes('NoteName', 5)!r}, "
+          f"max frame {frames(r)} us")
     # SELECT and SHIFT+arrows in the 24x17 notepad (lf-1591): HELLO
     # WORLD, SELECT, five SHIFT+LEFT, two SHIFT+DOWN and two SHIFT+UP.
     # With WRAP on the rows below are the empty lines, so DOWN and UP
