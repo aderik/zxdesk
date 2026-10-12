@@ -1005,7 +1005,10 @@ NfChar:
 
 ; Reclaim empty continuation chunks after deleting/splitting. Hard
 ; blank lines remain intact. A caret on a reclaimed chunk becomes the
-; end-of-chunk caret in its predecessor.
+; end-of-chunk caret in its predecessor. The chunks go together, the
+; rows below moved up once (lf-1611): a chunk at a time, a move and a
+; walk to the line's end again each, two of them were 2.9 ms of the
+; frame of a CUT over three lines.
 NoteTrimTail:
                 ld      a,(NoteCY)
                 ld      (NoteRowIx),a
@@ -1020,32 +1023,77 @@ NttFind:
                 jr      NttFind
 NttTail:
                 ld      a,(NoteRowIx)
+                ld      c,a
+                ld      b,0                     ; the blank chunks at the line's end
+NttBack:
+                ld      a,c
                 or      a
-                ret     z
+                jr      z,NttClose
                 dec     a
                 call    NoteLinkAddr
                 ld      a,(hl)
                 or      a
-                ret     z                       ; a hard line, keep it
-                ld      a,(NoteRowIx)
+                jr      z,NttClose              ; a hard line, keep it
+                ld      a,c
+                push    bc
                 call    NoteLineLen
+                pop     bc
                 or      a
-                ret     nz
-                ld      a,(NoteRowIx)
-                call    NoteCloseRow
-                ld      a,(NoteRowIx)
-                ld      hl,NoteCY
-                cp      (hl)
-                jr      nz,NttUnlink
-                dec     (hl)
-                ld      a,NOTECOLS
-                ld      (NoteCX),a
-NttUnlink:
-                ld      a,(NoteRowIx)
-                dec     a
+                jr      nz,NttClose
+                inc     b
+                dec     c
+                jr      NttBack
+NttClose:
+                ; B chunks after chunk C go: the rows below them up, as
+                ; many blank at the end
+                ld      a,b
+                or      a
+                ret     z
+                ld      a,c
                 call    NoteLinkAddr
                 ld      (hl),0
-                jr      NoteTrimTail
+                ld      a,(NoteCY)
+                cp      c
+                jr      z,NttMove
+                jr      c,NttMove
+                ld      a,c
+                ld      (NoteCY),a
+                ld      a,NOTECOLS
+                ld      (NoteCX),a
+NttMove:
+                ld      a,c
+                inc     a
+                ld      (NoteRowIx),a           ; the first to go
+                add     a,b
+                ld      (NoteJoinAt),a          ; the first to stay
+                neg
+                add     a,NOTEROWS              ; the rows that move up
+                jr      z,NttBlank
+                push    bc
+                call    NoteRowBytes
+                push    bc
+                ld      a,(NoteJoinAt)
+                call    NoteRowAddr
+                push    hl
+                ld      a,(NoteRowIx)
+                call    NoteRowAddr
+                ex      de,hl
+                pop     hl
+                pop     bc
+                ldir
+                pop     bc
+NttBlank:
+                ld      a,NOTEROWS
+                sub     b
+NttBlankRow:
+                push    af
+                push    bc
+                call    NoteBlankRow
+                pop     bc
+                pop     af
+                inc     a
+                djnz    NttBlankRow
+                ret
 
 ; Split a logical line. The remaining chunks retain their continuation
 ; marks; remove the prefix from the new line without dropping its tail.
@@ -1236,6 +1284,7 @@ NoteKey:
                 ld      (NoteEdited),a
                 ld      (NwJoined),a            ; the lines NbHard joins this key
                 ld      (NwSplit),a             ; and the one NoteEnter splits
+                ld      (NkSpanLong),a          ; its span job may run here
                 inc     a
                 ld      (NwKeyed),a             ; the job's budget this frame
                 call    NwLinksSave             ; for NkEdited, whatever the key
@@ -1850,26 +1899,113 @@ NoteMenuCut:
                 ret     nz
                 call    NoteClipCopy
                 ret     c                       ; nothing copied, nothing cut
+                call    NoteMenuEdit
                 call    NoteUndoTake            ; a group of its own
                 call    NoteEraseSelection
-                jp      NoteRefresh
+                ld      a,(SetWrap)
+                or      a
+                jp      z,NoteRefresh
+                ; WRAP on (lf-1611): the erase as a BS over the selection
+                ; has it (lf-1608), and the lines it joined laid out again
+                ; by the span job and composed the split way (lf-1597).
+                ; Through NoteRefresh the whole table was laid out again
+                ; in the frame of the cut, 17.1 ms at 60 Hz over three
+                ; lines at 24x17, a frame dropped.
+                call    NkEditSpan
+; Carry: the span job ran (NkEditSpan, NkEditSpanAt). Its rows are
+; painted, or the window composed next frame and blitted the one after;
+; otherwise the service lays the table out and the window is composed
+; when it is done, as after a key.
+NoteEditDone:
+                jr      nc,NedView
+                call    NoteEditRows
+                cp      2
+                ret     z
+                jp      NoteRecomposeSplit
+NedView:
+                call    NoteScroll
+                ld      a,(WndCur)
+                call    WndTouch
+                jp      RowsLiveText
 
-; The clipboard goes in at the caret, through NoteInsert and NoteEnter
-; as if typed, over a selection if there is one. Everything that could
-; change is saved first, and a byte that does not fit puts it all back
-; and says so: no half pasted text.
+; CUT and PASTE with WRAP on: what NoteKey keeps before an edit for the
+; span job and the rows painted after it (NkEditSpan, NoteEditRows).
+NoteMenuEdit:
+                ld      a,(SetWrap)
+                or      a
+                ret     z
+                xor     a
+                ld      (TapeKeep),a            ; the scratch is TapeBuf (lf-1576)
+                ld      (NwJoined),a
+                ld      (NwSplit),a
+                ld      (NkSpanLong),a
+                ld      a,2
+                ld      (NwKeyed),a             ; an edit: the repaint waits a frame
+                call    NwLinksSave
+                call    NoteEndRowSave
+                ld      a,(NoteRows)
+                ld      (NkRowsOld),a
+                ret
+
+; The clipboard goes in at the caret, over a selection if there is one,
+; the document after it as the erase and NoteInsert and NoteEnter a
+; byte at a time would leave it, built in one pass (NotePasteBuild).
+; That was the way until lf-1611: 0.35 ms a character and a row moved
+; for each line end, 24 to 32 ms for three lines at 24x17 and the whole
+; table laid out again after it (NoteRefresh), one or two frames
+; dropped at both machines. When the empty lines at the document's end
+; are too few for it, the bytes still go in one at a time: everything
+; that could change is saved first, and a byte that does not fit puts
+; it all back and says so: no half pasted text.
 NoteMenuPaste:
                 call    NoteIsFront
                 ret     nz
                 ld      a,(ClipLen)
                 or      a
                 ret     z
+                call    NotePasteBuild          ; nothing changed yet
+                jr      c,NpaBytes
+                call    NoteMenuEdit
+                call    NoteUndoTake            ; a group of its own, the state the rollback copy had
+                call    NotePastePut
+                call    NoteMarkEdited
+                ld      a,(SetWrap)
+                or      a
+                jp      z,NoteRefresh
+                ; WRAP on: the span job over the lines the erase joined,
+                ; laid out again as the line and the clipboard's made them;
+                ; more than NKSPANMAX chunks of them are the service's,
+                ; a budget a frame, as a long line typed is: 223 bytes
+                ; into an empty notepad were 11.8 ms of job in the paste's
+                ; frame, 29.5 ms with the pass
+                ld      a,(PsN)
+                ld      hl,PsNc
+                add     a,(hl)
+                cp      NKSPANMAX+1
+                sbc     a,a
+                inc     a
+                ld      (NkSpanLong),a
+                ld      a,(NwJoined)
+                inc     a
+                ld      d,a
+                ld      a,(PsK)
+                inc     a
+                ld      e,a
+                ld      a,(PsL0)
+                call    NkEditSpanAt
+                jr      nc,NedView
+                ; composed next frame and blitted the one after: the
+                ; rows painted and blitted in the frame of the paste were
+                ; 19.5 ms at 60 Hz for three lines typed over three
+                call    NoteScroll
+                jp      NoteRecomposeSplit
+NpaBytes:
                 ld      hl,NoteBuf
                 ld      de,CmdBuf               ; free: no dialogue is open
                 ld      bc,NOTESIZE
                 ldir
                 ld      hl,NoteCX
-                ld      de,CmdWork              ; 13 bytes, NOTECURSZ of them
+                ld      de,CmdWork              ; NOTECURSZ bytes of it
                 ld      bc,NOTECURSZ
                 ldir
                 call    NoteEraseSelection
@@ -1932,6 +2068,818 @@ NoteRefresh:
 NrPlain:
                 call    RowsAddLive
                 jp      NoteComposeLater
+
+; ---- PASTE in one pass (lf-1611): the document as NoteEraseSelection
+; and then NoteInsert and NoteEnter a byte at a time would leave it,
+; worked out first and built in CmdBuf (NotePasteBuild), then put in
+; (NotePastePut). The state is in CmdWork, which the rollback of the
+; byte-at-a-time route takes when this one does not, and in scratch.
+PsOut           equ     CmdWork         ; the next byte of the lines built
+PsN             equ     CmdWork+2       ; the chunks of the lines before the last
+PsNc            equ     CmdWork+3       ; the line being built: its chunks
+PsSrc           equ     CmdWork+4       ; cells left in the source's chunk
+PsCnt           equ     CmdWork+5       ; cells still to copy; the chunks wanted
+PsL0            equ     CmdWork+6       ; the span's lines: the first chunk
+PsLn            equ     CmdWork+7       ; and their chunks, which the lines built replace
+PsK             equ     CmdWork+8       ; the clipboard's line ends
+PsMove          equ     CmdWork+9       ; the chunks between the span and the empty lines after it
+PsJoined        equ     CmdWork+10      ; the line ends the erase joins (NwJoined)
+PsCX            equ     CmdWork+11      ; the caret: after the erase, then after the paste
+PsCY            equ     CmdWork+12
+; NotePasteBuild's alone, in the edit routines' scratch and NoteGot,
+; which it does not touch (CmdWork stays 13 bytes: the TEST build's
+; heap on a disk machine has no room for more)
+PsQ             equ     NoteRowIx       ; the line being built: its cells before the caret
+PsRs            equ     NoteJoinAt      ; the text after the span: up to its last cell that is not a space
+PsJ1            equ     NoteExtendRow   ; nothing typed on the line yet: its chunks to the caret's, else 0
+PsLeft          equ     NoteOldLink     ; cells left in the chunk being built
+PsPeak          equ     NoteDeleteCount ; the most chunks the lines had at any byte
+PsRsN           equ     NoteChar        ; the chunks the text after the span fills, one at least
+PsUx            equ     NoteGot         ; the selection's upper bound, where the text
+PsUc            equ     NoteGot+1       ; after the span resumes
+
+; The lines from the selection's lower bound's to its upper bound's
+; (or the caret's line) are their cells, one after the other. The
+; erase leaves the cells before the lower bound, at q, and the text
+; from the upper bound on, rs cells to its last that is not a space,
+; with the lines ending between the bounds joined (lf-1608: a lower
+; bound among the spaces after its line's text back to the text's
+; end, a bound of 14 the end-of-chunk caret), then NoteTrimTail gives
+; the blank chunks after the text back, a caret on them going to the
+; end of the last chunk kept. A byte typed adds a chunk when the
+; line's text fills its chunks (q + rs is all of them: the last cell
+; is not a space, or the caret is at the end), so a run of bytes
+; leaves the line with chunks enough for q + rs, or as many as it had.
+; A line end splits the line at the caret: the line keeps its chunks
+; to the caret's (with nothing typed on it, the chunk the caret was
+; on), the new one is the text after the span in the chunks it fills,
+; one at least (NoteEnter's NoteExtend adds one, NoteTrimTail gives
+; the blank ones back). The chunks the lines take beyond the span's
+; come from the empty lines at the document's end (NoteExtend's room:
+; a blank chunk 15 each time), at the most the lines ever had (PsPeak);
+; carry when there are not that many, and nothing has changed. Three
+; lines over three typed at 24x17, a byte at a time: the erase 4 ms,
+; the bytes 6.8 and 5 ms of rows moved at the two line ends.
+NotePasteBuild:
+                call    NoteSelectionBounds
+                push    af                      ; NZ: an erase, and NoteTrimTail after it
+                jr      nz,NpbBounds
+                ld      hl,(NoteCX)
+                call    NotePack
+                ld      b,a
+                ld      c,a
+NpbBounds:
+                ld      a,c
+                and     $0F
+                ld      (PsUx),a
+                ld      a,c
+                call    NoteUnpackRow
+                ld      (PsUc),a
+                ld      a,b
+                and     $0F
+                ld      (PsCX),a
+                ld      a,b
+                call    NoteUnpackRow
+                ld      (PsCY),a
+                ; the line ends between the bounds: joined, and the
+                ; lower bound back to its line's text when it lies past it
+                xor     a
+                ld      (PsJoined),a
+                ld      a,(PsCY)
+                ld      c,a
+NpbJoin:
+                ld      a,(PsUc)
+                cp      c
+                jr      z,NpbFirst
+                ld      a,c
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      nz,NpbJoinNext
+                ld      hl,PsJoined
+                inc     (hl)
+                ld      a,(PsCY)
+                cp      c
+                jr      nz,NpbJoinNext
+                push    bc
+                call    NoteLineLen
+                pop     bc
+                ld      hl,PsCX
+                cp      (hl)
+                jr      nc,NpbJoinNext
+                ld      (hl),a
+NpbJoinNext:
+                inc     c
+                jr      NpbJoin
+NpbFirst:
+                ld      a,(PsCY)
+NpbBack:
+                ld      (PsL0),a
+                or      a
+                jr      z,NpbTail
+                dec     a
+                call    NoteLinkAddr
+                ld      a,(hl)
+                or      a
+                jr      z,NpbTail
+                ld      a,(PsL0)
+                dec     a
+                jr      NpbBack
+NpbTail:
+                ld      a,(PsUc)
+                ld      c,a
+                call    NoteLinkAddr
+                ld      de,NOTESTRIDE
+NpbNext:
+                ld      a,(hl)                  ; chunk 15 never links on
+                or      a
+                jr      z,NpbChunks
+                inc     c
+                add     hl,de
+                jr      NpbNext
+NpbChunks:
+                ld      a,c
+                ld      (PsMove),a              ; the last chunk, for the room
+                ld      hl,PsL0
+                sub     (hl)
+                inc     a
+                ld      (PsLn),a
+NpbEnd:
+                ; the text's end: the last chunk with text in it (a space
+                ; typed at a chunk's end can leave a blank one after it)
+                ld      a,c
+                push    bc
+                call    NoteLineLen
+                pop     bc
+                or      a
+                jr      nz,NpbEndAt
+                ld      a,(PsL0)
+                cp      c
+                ld      a,0
+                jr      z,NpbEndAt              ; the first chunk: no text
+                dec     c
+                jr      NpbEnd
+NpbEndAt:
+                ld      b,a
+                ld      a,c
+                ld      hl,PsL0
+                sub     (hl)
+                call    NoteCellsOf
+                add     a,b
+                ld      c,a                     ; the text's end, in cells
+                ld      a,(PsUc)
+                sub     (hl)
+                call    NoteCellsOf
+                ld      b,a
+                ld      a,(PsUx)
+                add     a,b                     ; the upper bound's cell
+                ld      b,a
+                ld      a,c
+                sub     b
+                jr      nc,NpbRs
+                xor     a
+NpbRs:
+                ld      (PsRs),a
+                call    NoteChunksOf
+                or      a
+                jr      nz,NpbRsN
+                inc     a
+NpbRsN:
+                ld      (PsRsN),a               ; a line end's new line: its chunks
+                ld      a,(PsCY)
+                sub     (hl)
+                call    NoteCellsOf
+                ld      b,a
+                ld      a,(PsCX)
+                add     a,b
+                ld      (PsQ),a                 ; the caret's cell
+                pop     af
+                ld      a,(PsLn)
+                jr      z,NpbLimit              ; no erase, nothing given back
+                ld      a,(PsRs)
+                or      a
+                jr      z,NpbBefore
+                ld      hl,PsQ
+                add     a,(hl)
+                jr      NpbKeep
+NpbBefore:
+                call    NpbTextBefore
+NpbKeep:
+                call    NoteChunksOf
+                or      a
+                jr      nz,NpbKept
+                inc     a
+NpbKept:
+                ld      c,a                     ; the chunks NoteTrimTail keeps
+                ld      a,(PsCY)
+                ld      hl,PsL0
+                sub     (hl)
+                cp      c
+                ld      a,c
+                jr      c,NpbLimit
+                dec     a                       ; the caret's chunk given back
+                add     a,(hl)
+                ld      (PsCY),a
+                ld      a,NOTECOLS
+                ld      (PsCX),a
+                ld      a,c
+                call    NoteCellsOf
+                ld      (PsQ),a
+                ld      a,c
+NpbLimit:
+                ld      (PsNc),a                ; the line's chunks
+                ld      a,(PsCY)
+                ld      hl,PsL0
+                sub     (hl)
+                inc     a
+                ld      (PsJ1),a
+                xor     a
+                ld      (ClipIx),a
+                ld      (PsK),a
+                ld      (PsN),a
+                ld      (PsPeak),a
+                ld      a,NOTECOLS
+                ld      (PsLeft),a
+                ld      (PsSrc),a
+                ld      hl,CmdBuf
+                ld      (PsOut),hl
+                ld      a,(PsL0)
+                call    NoteRowAddr
+                ld      a,(PsQ)
+                call    PsCopy                  ; the cells before the caret
+NpbRun:
+                ; the bytes up to the next line end, or the last
+                ld      a,(ClipIx)
+                ld      c,a
+                ld      a,(ClipLen)
+                sub     c
+                jp      z,NpbLast
+                ld      b,0
+                ld      hl,ClipBuf
+                add     hl,bc
+                ld      c,a
+                push    hl
+                ld      a,CLIP_CR
+                cpir
+                pop     de                      ; the run's first byte
+                push    af                      ; Z: a line end ends it
+                jr      nz,NpbRunLen
+                dec     hl
+NpbRunLen:
+                or      a
+                sbc     hl,de
+                ld      a,(ClipIx)
+                add     a,l
+                ld      (ClipIx),a
+                ld      a,l
+                or      a
+                jr      z,NpbRunIn
+                ld      b,a
+                ld      a,(PsQ)
+                add     a,b
+                ld      (PsQ),a
+                ld      hl,PsRs
+                add     a,(hl)
+                call    NoteChunksOf            ; the chunks the text fills
+                ld      hl,PsNc
+                cp      (hl)
+                jr      c,NpbLim
+                ld      (hl),a
+NpbLim:
+                ld      a,(PsNc)
+                call    PsFits
+                jr      nc,NpbTyped
+                pop     af
+                scf
+                ret                             ; more than the document holds
+NpbTyped:
+                xor     a
+                ld      (PsJ1),a                ; typed on
+                ex      de,hl
+                ld      a,b
+                call    PsClip
+NpbRunIn:
+                pop     af
+                jr      nz,NpbRun               ; the clipboard's end
+                ld      hl,ClipIx
+                inc     (hl)                    ; past the line end
+                ld      hl,PsK
+                inc     (hl)
+                ld      a,(PsN)
+                ld      hl,PsNc
+                add     a,(hl)
+                inc     a                       ; NoteEnter's chunk, before the blank ones go
+                call    PsPeakAt
+                ld      a,(PsJ1)
+                or      a
+                jr      nz,NpbSplit
+                ld      a,(PsQ)
+                call    NoteChunksOf            ; to the chunk the last byte went in
+NpbSplit:
+                push    af
+                call    PsFits
+                jr      nc,NpbFits
+                pop     af
+                scf
+                ret
+NpbFits:
+                pop     af
+                push    af
+                call    NoteCellsOf
+                ld      hl,PsQ
+                sub     (hl)
+                call    PsLineEnd
+                pop     af
+                ld      hl,PsN
+                add     a,(hl)
+                ld      (hl),a                  ; the lines before the next
+                xor     a
+                ld      (PsQ),a
+                inc     a
+                ld      (PsJ1),a
+                ld      a,(PsRsN)
+                ld      (PsNc),a
+                jp      NpbRun
+NpbLast:
+                ld      a,(PsNc)
+                call    PsFits
+                ret     c
+                ld      a,(PsUc)                ; the text after the span
+                call    NoteRowAddr
+                ld      a,(PsUx)
+                ld      c,a
+                ld      b,0
+                add     hl,bc
+                ld      a,NOTECOLS
+                sub     c
+                ld      (PsSrc),a
+                ld      a,(PsRs)
+                call    PsCopy
+                ld      a,(PsRs)
+                ld      hl,PsQ
+                add     a,(hl)
+                ld      b,a
+                ld      a,(PsNc)
+                call    NoteCellsOf
+                sub     b
+                call    PsLineEnd
+                ; the caret: after the last byte, at the start of the
+                ; line after a line end (the first line, with nothing
+                ; typed on it, is never the last: the clipboard has a byte)
+                ld      bc,0
+                ld      a,(PsJ1)
+                or      a
+                jr      nz,NpbCaret
+                ld      a,(PsQ)
+                call    NoteChunksOf
+                dec     a
+                ld      b,a                     ; its chunk
+                call    NoteCellsOf
+                ld      c,a
+                ld      a,(PsQ)
+                sub     c
+                ld      c,a                     ; and its cell, 1 to 14
+NpbCaret:
+                ld      a,c
+                ld      (PsCX),a
+                ld      a,(PsL0)
+                ld      hl,PsN
+                add     a,(hl)
+                add     a,b
+                ld      (PsCY),a
+                ; the room: the chunks wanted beyond the span's, and the
+                ; chunks after it that move when their count changes
+                ld      a,(PsN)
+                ld      hl,PsNc
+                add     a,(hl)                  ; all the lines'
+                call    PsPeakAt
+                ld      hl,PsLn
+                sub     (hl)
+                ld      c,a                     ; the chunks added (or given back)
+                ld      a,(PsPeak)
+                sub     (hl)
+                jr      nc,NpbWanted
+                xor     a
+NpbWanted:
+                ld      (PsCnt),a
+                or      c
+                ret     z                       ; nothing wanted, nothing moves
+                ; the empty lines from the document's end back to the
+                ; span, blank and linked to nothing (two cells ORed are
+                ; a space only when both are, as NoteLineLen has it)
+                ld      a,(PsMove)
+                ld      c,a                     ; the span's last chunk
+                ld      hl,NoteBuf+NOTESIZE-1   ; chunk 15's link
+                ld      b,0
+                ld      e,NOTELASTROW
+NpbEmpty:
+                ld      a,e
+                cp      c
+                jr      z,NpbRoom               ; back to the span
+                ld      a,(PsCnt)
+                or      a
+                jr      z,NpbScan               ; none wanted: all of them, the chunks move up
+                cp      b
+                jr      z,NpbRoom               ; enough
+NpbScan:
+                ld      a,(hl)
+                or      a
+                jr      nz,NpbLinked
+                dec     hl
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                dec     hl
+                or      (hl)
+                cp      ' '
+                jr      nz,NpbText
+                dec     hl                      ; the chunk before: its link
+                inc     b
+                dec     e
+                jr      NpbEmpty
+NpbText:
+                push    de
+                ld      de,NOTESTRIDE-1
+                add     hl,de
+                pop     de
+                ld      a,(hl)
+                or      a
+                jr      z,NpbRoom
+NpbLinked:
+                ; the chunk that stopped it links on: the first counted
+                ; is the end of its line, not an empty line, and moves
+                inc     b
+                dec     b
+                jr      z,NpbRoom
+                dec     b
+                inc     e
+NpbRoom:
+                ld      a,e
+                sub     c
+                ld      (PsMove),a
+                ld      a,b
+                ld      hl,PsCnt
+                cp      (hl)
+                ret                             ; carry: too few
+
+; A = the line's cells before the caret (PsCY, PsCX) to its last that
+; is not a space; PsQ = all of them.
+NpbTextBefore:
+                ld      a,(PsCY)
+                call    NoteRowAddr
+                ld      a,(PsCX)
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      a,(PsQ)
+                ld      c,a
+                ld      b,e
+NptbBack:
+                ld      a,c
+                or      a
+                ret     z
+                inc     b
+                dec     b
+                jr      nz,NptbCell
+                dec     hl                      ; the chunk before: past its link and end
+                dec     hl
+                ld      b,NOTECOLS
+NptbCell:
+                dec     hl
+                dec     b
+                dec     c
+                ld      a,(hl)
+                cp      ' '
+                jr      z,NptbBack
+                ld      a,c
+                inc     a
+                ret
+
+; A = the chunks of the line being built: carry when with the lines
+; built before it (PsN) they are more than the document holds from the
+; span's first chunk, and than CmdBuf: a paste that cannot fit stops
+; there. BC and DE are kept.
+PsFits:
+                ld      hl,PsN
+                add     a,(hl)
+                ld      hl,PsL0
+                add     a,(hl)
+                cp      NOTEROWS+1
+                ccf
+                ret
+
+; A = chunks: PsPeak the most of it and of A. A is kept.
+PsPeakAt:
+                ld      hl,PsPeak
+                cp      (hl)
+                ret     c
+                ld      (hl),a
+                ret
+
+; After the undo snapshot: the lines built go in. The erase's caret
+; and NwJoined, the selection gone; the chunks between the span and
+; the empty lines after it down by the chunks the lines added, the
+; empty lines alike, so those the moved chunks land on are the ones
+; the bytes one at a time pushed off the end; or up by the chunks the
+; lines gave back, as many blank rows after them as NoteCloseRow
+; leaves at the end.
+NotePastePut:
+                call    NoteClearSelection
+                ld      a,(PsJoined)
+                ld      (NwJoined),a
+                ld      hl,(PsCX)
+                ld      (NoteCX),hl
+                ld      hl,(PsOut)
+                call    PsChunksBuilt
+                ld      hl,PsLn
+                sub     (hl)
+                jr      z,NppPut
+                jr      c,NppUp
+                ld      c,a                     ; the chunks added
+                ld      a,(PsMove)
+                or      a
+                jr      z,NppLink
+                push    bc
+                call    NoteRowBytes
+                push    bc                      ; their bytes
+                ld      a,(PsL0)
+                ld      hl,PsLn
+                add     a,(hl)
+                ld      hl,PsMove
+                add     a,(hl)
+                call    NoteRowAddr
+                dec     hl                      ; the last byte that moves
+                pop     bc
+                pop     de
+                ld      a,e
+                add     a,a
+                add     a,a
+                add     a,a
+                add     a,a
+                ld      e,a
+                ld      d,0
+                ex      de,hl
+                add     hl,de
+                ex      de,hl
+                lddr
+NppLink:
+                xor     a
+                ld      (NoteBuf+NOTESIZE-1),a  ; never linked beyond the buffer
+                jr      NppPut
+NppUp:
+                neg
+                ld      c,a                     ; the chunks given back
+                ld      a,(PsMove)
+                or      a
+                jr      z,NppBlanks
+                push    bc
+                call    NoteRowBytes
+                push    bc
+                ld      a,(PsL0)
+                ld      hl,PsLn
+                add     a,(hl)
+                call    NoteRowAddr             ; the first that moves
+                pop     bc
+                pop     de
+                push    de
+                ld      a,e
+                add     a,a
+                add     a,a
+                add     a,a
+                add     a,a
+                ld      e,a
+                ld      d,0
+                push    hl
+                or      a
+                sbc     hl,de
+                ex      de,hl                   ; and its place
+                pop     hl
+                ldir
+                pop     bc
+NppBlanks:
+                ld      a,(PsL0)
+                ld      hl,PsLn
+                add     a,(hl)
+                ld      hl,PsMove
+                add     a,(hl)
+                sub     c                       ; the first row left behind
+                ld      b,c
+NppBlank:
+                push    af
+                push    bc
+                call    NoteBlankRow
+                pop     bc
+                pop     af
+                inc     a
+                djnz    NppBlank
+NppPut:
+                ld      a,(PsL0)
+                call    NoteRowAddr
+                ex      de,hl
+                ld      hl,(PsOut)
+                ld      bc,CmdBuf
+                or      a
+                sbc     hl,bc
+                ld      b,h
+                ld      c,l
+                ld      hl,CmdBuf
+                jp      CopyFast
+
+; HL = the next byte built: A = the chunks built in CmdBuf.
+PsChunksBuilt:
+                ld      de,CmdBuf
+                or      a
+                sbc     hl,de
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                add     hl,hl
+                ld      a,h
+                ret
+
+; A cells from HL to the lines built: PsSrc cells are left in the
+; source's chunk, whose end is stepped over, PsLeft in the one being
+; built, whose end gets a link of 1 (the line goes on).
+PsCopy:
+                or      a
+                ret     z
+                ld      (PsCnt),a
+                ld      de,(PsOut)
+PscLoop:
+                ld      a,(PsLeft)
+                or      a
+                jr      nz,PscDst
+                ld      (de),a                  ; the chunk's end
+                inc     de
+                inc     a
+                ld      (de),a                  ; and its link
+                inc     de
+                ld      a,NOTECOLS
+                ld      (PsLeft),a
+PscDst:
+                ld      c,a
+                ld      a,(PsSrc)
+                or      a
+                jr      nz,PscSrc
+                inc     hl                      ; the source's end and link
+                inc     hl
+                ld      a,NOTECOLS
+                ld      (PsSrc),a
+PscSrc:
+                cp      c
+                jr      nc,PscLeft
+                ld      c,a
+PscLeft:
+                ld      a,(PsCnt)
+                cp      c
+                jr      nc,PscRun
+                ld      c,a
+PscRun:
+                ld      b,0
+                sub     c
+                ld      (PsCnt),a
+                ld      a,(PsLeft)
+                sub     c
+                ld      (PsLeft),a
+                ld      a,(PsSrc)
+                sub     c
+                ld      (PsSrc),a
+                ldir
+                ld      a,(PsCnt)
+                or      a
+                jr      nz,PscLoop
+                ld      (PsOut),de
+                ret
+
+; A bytes of the clipboard from HL to the lines built, a chunk's end
+; with a link of 1 between (the line goes on).
+PsClip:
+                or      a
+                ret     z
+                ld      (PsCnt),a
+                ld      de,(PsOut)
+PsclLoop:
+                ld      a,(PsLeft)
+                or      a
+                jr      nz,PsclRoom
+                ld      (de),a                  ; the chunk's end
+                inc     de
+                inc     a
+                ld      (de),a                  ; and its link
+                inc     de
+                ld      a,NOTECOLS
+PsclRoom:
+                ld      b,a
+                ld      a,(PsCnt)
+                cp      b
+                jr      c,PsclLast
+                sub     b
+                ld      (PsCnt),a
+                xor     a
+                ld      (PsLeft),a              ; the chunk filled
+                ld      c,b
+                ld      b,a
+                ldir
+                ld      a,(PsCnt)
+                or      a
+                jr      nz,PsclLoop
+                ld      (PsOut),de
+                ret
+PsclLast:
+                ld      c,a
+                ld      a,b
+                sub     c
+                ld      (PsLeft),a
+                ld      b,0
+                ldir
+                ld      (PsOut),de
+                ret
+
+; A spaces, then the chunk's end with a link of 0: the line built ends.
+PsLineEnd:
+                ld      de,(PsOut)
+                or      a
+                jr      z,PleEnd
+                ld      b,a
+                ld      a,(PsLeft)
+                ld      c,a
+PleSpace:
+                inc     c
+                dec     c
+                jr      nz,PleCell
+                xor     a
+                ld      (de),a
+                inc     de
+                inc     a
+                ld      (de),a
+                inc     de
+                ld      c,NOTECOLS
+PleCell:
+                ld      a,' '
+                ld      (de),a
+                inc     de
+                dec     c
+                djnz    PleSpace
+PleEnd:
+                xor     a
+                ld      (de),a
+                inc     de
+                ld      (de),a
+                inc     de
+                ld      (PsOut),de
+                ld      a,NOTECOLS
+                ld      (PsLeft),a
+                ret
+
+; A = cells: A = the chunks they fill. BC is kept.
+NoteChunksOf:
+                push    bc
+                ld      c,0
+NcoLoop:
+                or      a
+                jr      z,NcoDone
+                inc     c
+                sub     NOTECOLS
+                jr      nc,NcoLoop
+NcoDone:
+                ld      a,c
+                pop     bc
+                ret
+
+; A = chunks: A = their cells. BC and HL are kept.
+NoteCellsOf:
+                push    bc
+                ld      b,a
+                add     a,a
+                add     a,a
+                add     a,a
+                sub     b
+                add     a,a
+                pop     bc
+                ret
 
 ;------------------------------------------------------------
 ;  UNDO, one level a notepad (lf-1530). The snapshot is a heap block
@@ -2690,6 +3638,7 @@ NkOldN          equ     TapeBuf+211     ; and the lines they replace (NkNewN fir
 NkAdj           equ     TapeBuf+212     ; and the blank lines that came (+) or went (-) at the document's end
 NwRoLo          equ     TapeBuf+213     ; NwRowsOf: the cells looked for
 NwRoHi          equ     TapeBuf+214
+NkSpanLong      equ     TapeBuf+215     ; 1: a paste's span job is the service's, however few the old rows (lf-1611)
 
 ; NZ when the table is not the live window's at its width.
 NwStale:
@@ -4436,20 +5385,28 @@ NroDone:
 ; span lost. A job under way has the text as it was: everything again
 ; (as NwEditLine); another window's table serves it still.
 NkEditSpan:
-                ld      a,(NwBusy)
-                or      a
-                jr      nz,NesBusy
-                call    NwStale
-                jr      nz,NesNo
                 ld      a,(NwJoined)
                 inc     a
                 ld      d,a                     ; the old lines
                 ld      e,1                     ; the new
                 ld      a,(NwSplit)
                 or      a
-                jr      z,NesLines
+                ld      a,(NoteCY)
+                jr      z,NkEditSpanAt
                 inc     e
-NesLines:
+                dec     a                       ; split: the chunk before the caret's
+; A = a chunk of the span's first line, D = its old lines and E = the
+; new: a paste makes one line as many as its line ends and one
+; (lf-1611).
+NkEditSpanAt:
+                push    af
+                ld      a,(NwBusy)
+                or      a
+                jr      nz,NesBusyAt
+                push    de
+                call    NwStale
+                pop     de
+                jr      nz,NesNoAt
                 push    de
                 ld      hl,NwLinks
                 ld      b,NOTEROWS
@@ -4469,12 +5426,7 @@ NesNew:
                 add     a,d
                 sub     e
                 ld      c,a                     ; the tail's blank lines, more or fewer
-                ld      a,(NoteCY)
-                dec     e
-                jr      z,NesChunk
-                dec     a                       ; split: the chunk before the caret's
-NesChunk:
-                inc     e
+                pop     af
                 call    NwEditSpan
                 ld      a,(NwBusy)              ; or everything again
                 or      a
@@ -4499,13 +5451,21 @@ NesChunk:
                 sub     (hl)                    ; the old lines' rows (HL = NkEnt0)
                 cp      NKSPANMAX+1
                 jr      nc,NesNo
+                ld      a,(NkSpanLong)
+                or      a
+                jr      nz,NesNo
 NesRun:
                 call    NwStep
                 jr      nz,NesRun
                 scf
                 ret
-NesBusy:
+NesBusyAt:
+                pop     af
                 call    NwInvalidate
+                or      a
+                ret
+NesNoAt:
+                pop     af
 NesNo:
                 or      a
                 ret

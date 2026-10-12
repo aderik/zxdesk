@@ -5573,6 +5573,46 @@ def frame_checks(syms, fails):
               f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
               f"{zlib.crc32(doc):08x}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')})/{caret}, top {r.peek('NoteTop')}/{top}, "
               f"anchor {r.bytes('NoteAnchor', 4).hex()}, Dropped {m}, longest frame from the mark {longest} us")
+    # CUT and PASTE over a selection that crosses line ends (lf-1611, the
+    # PO on lf-1608): the three lines and the full document of the
+    # subjects above, SELECT and two (three) SHIFT+UP, then GRAPH+E, and
+    # GRAPH+P on the caret after it, over the selection after GRAPH+Y,
+    # by the EDIT menu, and UNDO after the paste. On fa73d9d's route
+    # (NoteRefresh: the whole table laid out again in the frame) at 60
+    # Hz the cut was 17.1 ms and the paste 24 to 32 ms, a byte at a time,
+    # one or two frames dropped, the paste at 50 Hz as well. Now the cut
+    # is the erase of lf-1608 and the span job, the paste one pass
+    # (NotePasteBuild, NotePastePut) and the span job over the lines it
+    # makes, both composed the split way. Each with Dropped before the
+    # keys and at the end both 0, the screen against wrap_win, the
+    # document, the caret, the top, no selection and the clipboard.
+    cut, copy, paste, undo = shortcut(3, 4), shortcut(5, 0x40), shortcut(4, 0x20), shortcut(5, 4)
+    edit = lambda y: s.click(132, 3) + s.click(140, y)
+    sel3 = three + tap(7, 64) + shifted(32) * 2
+    sel8 = eight + tap(7, 64) + shifted(32) * 3
+    lines3 = [b"HELLO WORLD", b"FOO BAR", b"BAZ"]
+    clip3, clip8 = b"LO WORLD\rFOO BAR\rBAZ", b"FGHIJKLMNOPQRSTU VWXYZ\rABCDEFGHIJKLMNOPQRSTU VWXYZ"
+    wait = [(10, "")]
+    for name, steps, lines, caret, top, clip in [
+            ("fb-cut-lines-24", sel3 + cut, [b"HEL"], (3, 0), 0, clip3),
+            ("fb-paste-lines-24", sel3 + cut + wait + paste, lines3, (3, 2), 0, clip3),
+            ("fb-paste-sel-24", sel3 + copy + wait + paste, lines3, (3, 2), 0, clip3),
+            ("fb-paste-lines-24-menu", sel3 + edit(11) + wait + edit(27), lines3, (3, 2), 0, clip3),
+            ("fb-paste-lines-24-undo", sel3 + cut + wait + paste + wait + undo, [b"HEL"], (3, 0), 0, clip3),
+            ("fb-cut-lines-24-full", sel8 + cut, [full] * 6 + [b"ABCDE"], (5, 12), 1, clip8),
+            ("fb-paste-lines-24-full", sel8 + cut + wait + paste, [full] * 8, (13, 15), 1, clip8)]:
+        r = Run(syms, timing + steps + [(10, "")] + mark("end"), name, files={})
+        m = marks(r)
+        doc = note_width_document(lines)
+        want = compose(expected_nt(), [wrap_win(doc, caret[0], caret[1], top, w=24, h=17)[0]])
+        longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("\nmark before")[-1])))
+        got_clip = r.bytes("ClipBuf", r.peek("ClipLen"))
+        check(fails, name, r.nt() == want and r.bytes("NoteBuf", 256) == doc and (r.peek("NoteCX"), r.peek("NoteCY")) == caret
+              and r.peek("NoteTop") == top and r.peek("NoteAnchor", 2) >> 8 == 0xFF and got_clip == clip
+              and m["before"] == 0 and m["end"] == 0,
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
+              f"{zlib.crc32(doc):08x}, caret ({r.peek('NoteCX')}, {r.peek('NoteCY')})/{caret}, top {r.peek('NoteTop')}/{top}, "
+              f"clipboard {got_clip!r}, Dropped {m}, longest frame from the mark {longest} us")
     # The Commander and the picker (lf-1592, dev3 on lf-1590): the
     # routes that recomposed the whole 30x12 window in their frame,
     # each from boot with a 16x9 notepad with HI open first and the
