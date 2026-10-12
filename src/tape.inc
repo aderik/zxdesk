@@ -92,6 +92,52 @@ TapeLoadFail:
                 ret
 TapeMagic:      defb    "MSXT"
 
+; Commander's import (lf-1575). A tape has no directory, so the next
+; file is whatever header comes by: TapeNext reads header blocks into
+; TapeIn until one carries the MSXT magic and passes over the others
+; (another format's header, the payload a refused file left behind).
+; Carry when the tape ends: TAPION found no leader, or CTRL+STOP, so
+; nothing of the block was read (BC is what TapeGetBlock did not read).
+; A block shorter than a header is passed over too. TapeOpen keeps its
+; own seek: FILE > OPEN by name fails on the first wrong block rather
+; than wait for a leader that is not coming.
+TapeNext:
+                ld      hl,TapeIn
+                ld      bc,19
+                call    TapeBlock
+                jr      nc,TnMagic
+                ld      a,c
+                cp      19
+                jr      nz,TapeNext             ; a short block: the next one
+                scf
+                ret
+TnMagic:
+                ld      hl,TapeIn
+                ld      de,TapeMagic
+                ld      b,4
+TnCompare:
+                ld      a,(de)
+                cp      (hl)
+                jr      nz,TapeNext
+                inc     hl
+                inc     de
+                djnz    TnCompare
+                or      a
+                ret
+; HL = buffer, BC = count: a block read, the PSG and the interrupt
+; mask the BIOS's meanwhile, as in TapeOpen. Carry from the BIOS.
+TapeBlock:
+                ld      a,1
+                ld      (TapeBusy),a
+                di
+                call    TapeGetBlock
+                push    af
+                xor     a
+                ld      (TapeBusy),a
+                pop     af
+                ei
+                ret
+
 ; A=handle, E=required mode. Invalid operations transfer zero bytes.
 TapeValid:
                 cp      1

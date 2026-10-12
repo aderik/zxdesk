@@ -1099,6 +1099,9 @@ def open_ui_checks(syms, fails):
 
 
 CMD_HELP1, CMD_HELP2 = b"TAB PANE P PRN B BANK R LIST", b"ENTER OPEN C COPY D DELETE"
+# a tape pane (lf-1575): its one row says which keys read from it, and
+# with it active the second help row is the import's
+CMD_HELP_TAPE, CMD_TAPE_HINT = b"I IMPORT NEXT A IMPORT ALL", b"I NEXT A ALL"
 
 
 def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, devs=None):
@@ -1106,12 +1109,14 @@ def cmdwin(left, right, active=0, selection=0, status=b"READY", top=0, devs=None
     (the boot backend and RAM unless said otherwise), the listings, the
     status and the two help rows."""
     devs = devs or (b"DISK" if EXT else b"RAM", b"RAM")
+    help2 = CMD_HELP_TAPE if devs[active] == b"TAPE" else CMD_HELP2
     lines = [(1, 1, devs[0], active == 0), (1, 16, devs[1], active == 1), (8, 1, status, False),
-             (9, 1, CMD_HELP1, False), (10, 1, CMD_HELP2, False)]
+             (9, 1, CMD_HELP1, False), (10, 1, help2, False)]
     for pane, names in enumerate((left, right)):
         start = top if pane == active else 0
         names = names[start:start + 6]
-        for i, name in enumerate(names or ["(EMPTY)"]):
+        empty = CMD_TAPE_HINT.decode() if devs[pane] == b"TAPE" else "(EMPTY)"
+        for i, name in enumerate(names or [empty]):
             lines.append((2 + i, 1 if pane == 0 else 16, name.encode(),
                           pane == active and i + start == selection))
     return (1, 3, 30, 12, b"COMMANDER", lines)
@@ -1141,11 +1146,12 @@ def bank_kb(r):
     return (r.peek("BkBlocks", 2) + 3) // 4
 
 
-def ring_step(device, back=False):
+def ring_step(device, back=False, tape=False):
     """SETTINGS > BACKEND and Commander's B go round RAM, BANK and DISK,
-    those that are there. Every machine in the matrix hides at least 48K
-    behind the BIOS and the cartridge, so BANK always is."""
-    ring = [1, 4] + ([5] if EXT else [])
+    those that are there, and TAPE in a TAPE=1 build (lf-1575). Every
+    machine in the matrix hides at least 48K behind the BIOS and the
+    cartridge, so BANK always is."""
+    ring = [1, 4] + ([5] if EXT else []) + ([2] if tape else [])
     return ring[(ring.index(device) + (-1 if back else 1)) % len(ring)]
 
 
@@ -2609,6 +2615,7 @@ def tape_checks(syms, fails):
     expected = ts["ST_DISK"] if EXT else ts["ST_TAPE"]
     check(fails, "tape-select", r.peek("StBackend") == expected,
           f"backend {r.peek('StBackend')}, expected {expected}")
+    tape_import_checks(ts, rom, fails)
     if MACHINE.startswith("C-BIOS") or EXT:
         return
 
@@ -2762,6 +2769,202 @@ def tape_checks(syms, fails):
               and blocks[1] == rr.bytes("NoteBuf", 256),
               f"name {rr.bytes('NoteName', 13)}, saved header {blocks[:1]}, "
               f"256 bytes crc32 {zlib.crc32(rr.bytes('NoteBuf', 256)):08x}")
+
+
+def tape_blocks(files):
+    """Blocks for the tape trap: a 19 byte MSXT header and the payload for
+    every (name, bytes) pair, and a bare bytes item as a block of its own
+    (another format's header, a payload left behind)."""
+    out = []
+    for item in files:
+        if isinstance(item, bytes):
+            out.append(item)
+            continue
+        name, data = item
+        out += [b"MSXT" + name.encode().ljust(13, b"\0") + len(data).to_bytes(2, "little"), data]
+    return out
+
+
+def tape_trap_steps(syms, blocks):
+    """The trap of harness/run.tcl armed with `blocks`, in place of the
+    BIOS cassette routines (lf-1575)."""
+    return [(2, "set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
+                f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}")]
+
+
+def tape_import_checks(ts, rom, fails):
+    """Commander's I and A on a tape pane import its files into the other
+    pane's device (lf-1575), through the tape trap: every machine, C-BIOS
+    too, and on the disk machine the disk as the target as well."""
+    print("tape import:")
+    nt0 = expected_nt()
+
+    def press(x, y):
+        return [(5, f"debug write memory {ts['PtrX']} {x}; debug write memory {ts['PtrY']} {y}; "
+                    f"debug write memory {ts['EvLastX']} {x}; debug write memory {ts['EvLastY']} {y}"),
+                (5, "key_down 6 0x02"), (5, "key_up 6 0x02")]
+
+    def tap(row, mask):
+        return [(3, f"key_down {row} {mask}"), (3, f"key_up {row} {mask}")]
+
+    def held(row, mask, steps):
+        return [(3, f"key_down {row} {mask}")] + steps + [(3, f"key_up {row} {mask}")]
+    open_cmd = press(180, 3) + press(188, 51)
+    i_key, a_key, b_key, p_key = tap(3, 0x40), tap(2, 0x40), tap(2, 0x80), tap(4, 0x20)
+    tab, enter = tap(7, 8), tap(7, 128)
+    esc, space = (7, 4), (8, 1)
+    alpha, beta, gamma = doc("ALPHA"), doc("BETA"), doc("GAMMA")
+    other = doc("KEEP ME")
+
+    # The tape pane: on a bare machine the boot device, in the left pane
+    # with RAM on the right. On the disk machine the boot device is the
+    # disk, and B takes the other pane round the ring to TAPE: for a RAM
+    # target the left pane (DISK is one step from TAPE), for the disk the
+    # right one, from RAM through BANK and DISK.
+    def panes(target):
+        """Steps that leave a tape pane active with `target` in the other,
+        and (devs, active) for the oracle."""
+        if not EXT:
+            return [], ((b"TAPE", b"RAM"), 0)
+        if target == b"RAM":
+            return tab + b_key + tab, ((b"TAPE", b"RAM"), 0)
+        presses, device = 0, ts["ST_RAM"]
+        while device != ts["ST_TAPE"]:
+            device, presses = ring_step(device, tape=True), presses + 1
+        return b_key * presses + tab, ((b"DISK", b"TAPE"), 1)
+
+    def run(steps, name, blocks, target=b"RAM", ram=None, files=None, tail=()):
+        route, _ = panes(target)
+        return Run(ts, (seed_ram_steps(ts, ram) if ram else []) + tape_trap_steps(ts, blocks)
+                   + open_cmd + route + steps + list(tail)
+                   + [(10, 'note "tape left [llength $::tape]"'), (5, "")], name, rom=rom, files=files)
+
+    def left(r):
+        return int(r.log.rsplit("\ntape left ", 1)[1].split()[0])   # the step's echo has no newline before it
+
+    def ram_files(r):
+        directory = r.bytes("RamDir", 64)
+        return [directory[i * 16:i * 16 + 13].split(b"\0")[0] for i in range(4) if directory[i * 16 + 15]]
+
+    def screen(r, name, listing, status, target=b"RAM"):
+        _, (devs, active) = panes(target)
+        panes_ = ([], listing) if active == 0 else (listing, [])
+        want = compose(nt0, [cmdwin(*panes_, active=active, status=status, devs=devs)])
+        check(fails, name, r.nt() == want,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}")
+
+    def alert(r, name):
+        return (r.peek("DgOpenFlag") == 1 and r.peek("DgCount") == 1
+                and r.nt()[9 * 32 + 7:9 * 32 + 19] == b"DOES NOT FIT"
+                and r.nt()[10 * 32 + 7:10 * 32 + 7 + len(name)] == name)
+
+    # I: the next file, named after its header, into RAM; the tape is
+    # left at the file after it. The listing, the status and the tape
+    # pane's hint as composed.
+    r = run(i_key, "imp-next", tape_blocks([("ALPHA", alpha), ("BETA", beta)]))
+    check(fails, "imp-next", ram_files(r) == [b"ALPHA"] and r.bytes("RamHeap", 256) == alpha
+          and r.peek("CmdStatus") == 11 and left(r) == 2,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left, "
+          f"256 bytes crc32 {zlib.crc32(r.bytes('RamHeap', 256)):08x}")
+    screen(r, "imp-next-screen", ["ALPHA"], b"IMPORTED")
+    # the UI round trip: the imported file opened from the RAM pane is
+    # the document the tape held, owned by RAM
+    r = run(i_key + tab + enter, "imp-open-ram", tape_blocks([("ALPHA", alpha)]))
+    check(fails, "imp-open-ram", r.peek("WndCount") == 2 and r.bytes("NoteBuf", 256) == alpha
+          and r.bytes("NoteName", 6) == b"ALPHA\0" and r.peek("NoteBackend") == ts["ST_RAM"],
+          f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 6)}, backend {r.peek('NoteBackend')}, "
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
+    # A: every file, stopping when the first name comes round (its
+    # payload read, so the tape stands at the next header) or the tape ends
+    r = run(a_key, "imp-all", tape_blocks([("ALPHA", alpha), ("BETA", beta), ("ALPHA", alpha), ("BETA", beta)]))
+    check(fails, "imp-all", ram_files(r) == [b"ALPHA", b"BETA"] and r.bytes("RamHeap", 512) == alpha + beta
+          and r.peek("CmdStatus") == 11 and left(r) == 2,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    screen(r, "imp-all-screen", ["ALPHA", "BETA"], b"IMPORTED")
+    r = run(a_key, "imp-all-end", tape_blocks([("ALPHA", alpha), ("BETA", beta)]))
+    check(fails, "imp-all-end", ram_files(r) == [b"ALPHA", b"BETA"] and r.peek("CmdStatus") == 11
+          and left(r) == 0, f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    for key, name in ((i_key, "imp-none"), (a_key, "imp-none-all")):
+        r = run(key, name, [])
+        check(fails, name, ram_files(r) == [] and r.peek("CmdStatus") == 12 and r.peek("DgOpenFlag") == 0,
+              f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}: NO FILE ON TAPE, no alert")
+    # the seek passes over a block that is not an MSXT header and one
+    # shorter than a header
+    r = run(i_key, "imp-skip", tape_blocks([b"\xff" * 19, b"short", ("ALPHA", alpha)]))
+    check(fails, "imp-skip", ram_files(r) == [b"ALPHA"] and r.bytes("RamHeap", 256) == alpha
+          and r.peek("CmdStatus") == 11 and left(r) == 0,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    # too big for any file here: refused whole with the alert, the
+    # payload unread, nothing written
+    r = run(i_key, "imp-big", tape_blocks([("BIG", b"Z" * 300)]))
+    check(fails, "imp-big", alert(r, b"BIG") and ram_files(r) == [] and r.peek("CmdStatus") == 0 and left(r) == 1,
+          f"alert {r.peek('DgOpenFlag')} {r.nt()[9 * 32 + 7:9 * 32 + 19]}, RAM {ram_files(r)}, "
+          f"status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    # a full RAM store: the open fails with STERR_FULL, the alert, the
+    # store as it was; after two files went in, their status stays
+    full = {f"RAM{i}": other for i in range(4)}
+    r = run(i_key, "imp-full", tape_blocks([("ALPHA", alpha)]), ram=full)
+    check(fails, "imp-full", alert(r, b"ALPHA") and r.bytes("RamHeap", 1024) == other * 4
+          and ram_files(r) == [n.encode() for n in full] and r.peek("CmdStatus") == 0 and left(r) == 0,
+          f"alert {r.peek('DgOpenFlag')}, RAM {ram_files(r)}, status {r.peek('CmdStatus')}")
+    r = run(a_key, "imp-full-after", tape_blocks([("ALPHA", alpha), ("BETA", beta), ("GAMMA", gamma)]),
+            ram={"ONE": other, "TWO": other})
+    check(fails, "imp-full-after", alert(r, b"GAMMA") and ram_files(r) == [b"ONE", b"TWO", b"ALPHA", b"BETA"]
+          and r.bytes("RamHeap", 1024) == other * 2 + alpha + beta and r.peek("CmdStatus") == 11 and left(r) == 0,
+          f"alert {r.peek('DgOpenFlag')}, RAM {ram_files(r)}, status {r.peek('CmdStatus')}")
+    # a file of the name is replaced: importing a tape again brings its versions
+    r = run(i_key, "imp-replace", tape_blocks([("ALPHA", alpha)]), ram={"ALPHA": other})
+    check(fails, "imp-replace", ram_files(r) == [b"ALPHA"] and r.bytes("RamHeap", 256) == alpha
+          and r.peek("CmdStatus") == 11, f"RAM {ram_files(r)}, crc32 {zlib.crc32(r.bytes('RamHeap', 256)):08x}")
+    # ESC or SPACE held while A runs: the file under way is finished,
+    # the next is not read
+    for name, key in (("imp-abort-esc", esc), ("imp-abort-space", space)):
+        r = run(held(*key, a_key), name, tape_blocks([("ALPHA", alpha), ("BETA", beta), ("GAMMA", gamma)]))
+        check(fails, name, ram_files(r) == [b"ALPHA"] and r.peek("CmdStatus") == 14 and left(r) == 4
+              and r.peek("DgOpenFlag") == 0,
+              f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    # PRN in the other pane is no target: nothing read
+    r = run(p_key + i_key, "imp-prn", tape_blocks([("ALPHA", alpha)]))
+    _, (devs, active) = panes(b"RAM")
+    header = r.nt()[4 * 32 + 1 + (16 if active == 0 else 1):][:3]   # the other pane's header, the window at (1, 3)
+    check(fails, "imp-prn", ram_files(r) == [] and r.peek("CmdStatus") == 13 and left(r) == 2
+          and header == b"PRN",
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left, other pane {header}")
+    # a header name SAVE AS would refuse becomes NOTE (lf-1551); twelve
+    # characters are a name on RAM
+    r = run(i_key, "imp-name-space", tape_blocks([("MY FILE", alpha)]))
+    check(fails, "imp-name-space", ram_files(r) == [b"NOTE"] and r.bytes("RamHeap", 256) == alpha,
+          f"RAM {ram_files(r)}")
+    r = run(i_key, "imp-name-long", tape_blocks([("ABCDEFGHIJKL", alpha)]))
+    check(fails, "imp-name-long", ram_files(r) == [b"ABCDEFGHIJKL"] and r.bytes("RamHeap", 256) == alpha,
+          f"RAM {ram_files(r)}")
+    # I and A on a pane that is not the tape mean nothing
+    r = run(tab + i_key + a_key, "imp-not-tape", tape_blocks([("ALPHA", alpha)]))
+    check(fails, "imp-not-tape", ram_files(r) == [] and r.peek("CmdStatus") == 0 and left(r) == 2,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left")
+    if not EXT:
+        return
+    # the disk as the target: the file on the FAT12 image, opened from
+    # its pane it is the tape's document, owned by the disk
+    r = run(i_key + tab + enter, "imp-open-disk", tape_blocks([("ALPHA", alpha)]), target=b"DISK", files={})
+    check(fails, "imp-open-disk", read_disk_image(DISK) == {"ALPHA": alpha} and r.peek("WndCount") == 2
+          and r.bytes("NoteBuf", 256) == alpha and r.bytes("NoteName", 6) == b"ALPHA\0"
+          and r.peek("NoteBackend") == ts["ST_DISK"] and ram_files(r) == [],
+          f"disk {list(read_disk_image(DISK))}, windows {r.peek('WndCount')}, backend {r.peek('NoteBackend')}, "
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}")
+    r = run(i_key, "imp-disk-screen", tape_blocks([("ALPHA", alpha), ("BETA", beta)]), target=b"DISK", files={})
+    screen(r, "imp-disk-screen", ["ALPHA"], b"IMPORTED", target=b"DISK")
+    # twelve characters without a dot are no 8.3 name: NOTE on the disk
+    r = run(i_key, "imp-name-long-disk", tape_blocks([("ABCDEFGHIJKL", alpha)]), target=b"DISK", files={})
+    check(fails, "imp-name-long-disk", read_disk_image(DISK) == {"NOTE": alpha},
+          f"disk {list(read_disk_image(DISK))}")
+    # free directory entries, no free clusters: the entry is made, the
+    # write is short, the half file goes and the alert says so
+    full_disk = {"FILLER": b"F" * (((1440 - DATA_SECTOR) // 2) * 1024)}
+    r = run(i_key, "imp-disk-full", tape_blocks([("ALPHA", alpha)]), target=b"DISK", files=full_disk)
+    check(fails, "imp-disk-full", alert(r, b"ALPHA") and read_disk_image(DISK) == full_disk
+          and r.peek("CmdStatus") == 0 and left(r) == 0,
+          f"alert {r.peek('DgOpenFlag')}, disk {list(read_disk_image(DISK))}, status {r.peek('CmdStatus')}")
 
 
 def note_width_document(lines):
@@ -4932,6 +5135,10 @@ def main():
         return bool(fails)
     if sys.argv[1:] == ["--tape"]:
         tape_checks(syms, fails)
+        return bool(fails)
+    if sys.argv[1:] == ["--tape-import"]:
+        rom = os.path.join(BUILD, "msxtape.rom")
+        tape_import_checks(assemble(rom, os.path.join(BUILD, "msxtape.sym"), ["TAPE=1"]), rom, fails)
         return bool(fails)
     if sys.argv[1:] == ["--arrange-only"]:
         arrange_checks(syms, fails)
