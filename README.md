@@ -1556,6 +1556,10 @@ lookups and the delete are the BDOS's, the known exception, so Dropped
 is reported there and not asserted): `fb-click-row` the two clicks,
 GAMMA selected, no compose; `fb-click-stale` the click on G's row
 after GRAPH+S from the notepad, G selected, no compose;
+`fb-click-gone` the click on the ghost row after G is read onto the
+page and deleted from the notepad (FILE > DELETE), BETA still
+selected, G gone from the directory, no compose, Dropped 0 at 50 and
+at 60 Hz (14.1 ms, lf-1622);
 `fb-move-end` SHIFT+DOWN on DELTA and SHIFT+UP on ALPHA around three
 moves up, no compose; `fb-tab` the right pane active, no compose;
 `fb-cmd-enter` ALPHA loaded into a third window, one compose;
