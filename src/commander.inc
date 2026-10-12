@@ -266,6 +266,34 @@ CraOffset:
 CraDone:
                 ld      (CmdCacheP),hl
                 ret
+; A = a row of the page, of the live pane (CmdUse done): NZ when the
+; directory no longer says what the cache does on it, a file saved or
+; deleted from another window since the page was read (lf-1593). A
+; blank row where StDir finds a file, a name where it finds none or
+; another one: all stale. The name is compared, not the size. On RAM
+; this is a walk of four entries; on the disk one BDOS search.
+CmdRowStale:
+                call    CmdRowAt
+                ld      a,(CmdIndex)
+                call    StDir
+                ld      de,(CmdCacheP)
+                jr      c,CrsNone
+                ld      b,12
+CrsName:
+                ld      a,(de)
+                cp      (hl)
+                ret     nz
+                or      a
+                ret     z                       ; both ended: the same name
+                inc     hl
+                inc     de
+                djnz    CrsName
+                cp      a                       ; twelve cells the same
+                ret
+CrsNone:
+                ld      a,(de)
+                or      a                       ; Z on a blank row
+                ret
 ; The row CmdRow from its cached entry: inverted when it is the
 ; active pane's selection, (EMPTY) on the first row of a pane with
 ; no files (the keys that read from it on a tape's, which has no
@@ -576,6 +604,7 @@ CmdPaneSet:
 ; was CmdRefresh (both panes read again) and a recompose and blit of
 ; the whole window, 21 ms at 60 Hz in the picker (lf-1590).
 CmdUp:
+                call    CmdUse
                 call    CmdSelAt
                 ld      a,(hl)
                 or      a
@@ -601,7 +630,7 @@ CmdDown:
                 push    af
                 call    StDir
                 pop     bc                      ; B = proposed selection
-                jp      c,CmdDone
+                jr      c,CdnEnd
                 call    CmdSelAt
                 ld      a,(hl)
                 ld      (hl),b
@@ -628,9 +657,26 @@ CpgRow:
                 cp      CMDROWS
                 jr      c,CpgRow
                 jr      CmdPainted
+; No file after the selection: nothing moves, unless the selection's
+; own row no longer says what the directory does (its file deleted
+; from another window, lf-1593): then the page is read again and
+; painted as it is, the selection on its blank row.
+CdnEnd:
+                ld      a,b
+                dec     a
+                push    af
+                call    CmdTopAt
+                pop     af
+                sub     (hl)
+                call    CmdRowStale
+                jp      z,CmdDone
+                jr      CmdPaged
 ; B = the selection left, C = the one it is on, both on the page: the
-; cache still describes it, so the directory is not read and those
-; two rows alone are painted.
+; cache still describes it, so the page is not read again and those
+; two rows alone are painted. Unless another window saved or deleted
+; a file since the page was read (lf-1593): each of the two rows is
+; checked against the directory first, and when either no longer
+; says what the cache does the move takes the page route above.
 CmdMoved:
                 push    bc
                 call    CmdTopAt
@@ -639,13 +685,24 @@ CmdMoved:
                 ld      d,a
                 ld      a,b
                 sub     d
-                push    bc
-                push    de
-                call    CmdPaintPageRow
-                pop     de
-                pop     bc
+                ld      b,a                     ; B = the row left
                 ld      a,c
                 sub     d
+                ld      c,a                     ; C = the row it is on
+                push    bc
+                call    CmdRowStale
+                pop     bc
+                jr      nz,CmdPaged
+                ld      a,b
+                push    bc
+                call    CmdRowStale
+                pop     bc
+                jr      nz,CmdPaged
+                ld      a,b
+                push    bc
+                call    CmdPaintPageRow
+                pop     bc
+                ld      a,c
                 call    CmdPaintPageRow
 ; Painted and marked: READY on the status row if it said something
 ; else, the backend given back, and 2 for the dispatcher.
