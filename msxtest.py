@@ -4722,6 +4722,34 @@ def frame_checks(syms, fails):
           and r.bytes("NoteName", 5) == b"NOTE\0",
           f"Dropped at {m}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}, name {r.bytes('NoteName', 5)!r}, "
           f"max frame {frames(r)} us")
+    # SELECT and SHIFT+arrows in the 24x17 notepad (lf-1591): HELLO
+    # WORLD, SELECT, five SHIFT+LEFT, two SHIFT+DOWN and two SHIFT+UP.
+    # With WRAP on the rows below are the empty lines, so DOWN and UP
+    # take the end to (0, 0) and back, over the whole line; with it off
+    # DOWN keeps column 6 on the blank rows and UP comes back to WORLD.
+    # Only the rows the end moves over are painted: the screen is the
+    # compositor's with the selection inverted and no caret, Dropped 0
+    # from boot, and the longest frame from SELECT on is reported. With
+    # WRAP off the text is typed at the home size, as a typed key in
+    # the grown window drops one there as it is (README).
+    off = [(5, f"debug write memory {syms['SetWrap']} 0")]
+    shifted = lambda mask: [(5, "key_down 6 1")] + tap(8, mask) + [(5, "key_up 6 1")]
+    moves = mark("select") + tap(7, 64) + shifted(16) * 5 + shifted(64) * 2 + shifted(32) * 2
+    hello = note_width_document([b"HELLO WORLD"])
+    wrapped = wrap_win(hello, 0, 0, 0, w=24, h=17, sel=(0, 11))[0]
+    plain = (8, 6, 24, 17, b"NOTEPAD", [(1, 1, b"HELLO WORLD", False), (1, 7, b"WORLD", True), (-1, 0, b"", False)])
+    for name, steps, window, end in [
+            ("fb-select", big + text("HELLO WORLD") + moves, wrapped, (0, 0)),
+            ("fb-select-wrap-off", s.init + new + off + text("HELLO WORLD") + grip(23 * 8 + 2, 14 * 8 + 2) + moves,
+             plain, (6, 0))]:
+        r = Run(syms, timing + steps + [(10, "")], name, files={})
+        want = compose(expected_nt(), [window])
+        got_end = (r.peek("NoteEnd"), r.peek("NoteEnd", 2) >> 8)
+        longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("mark select")[-1])))
+        check(fails, name, r.nt() == want and r.bytes("NoteBuf", 256) == hello and r.bytes("NoteAnchor", 2) == bytes((0x8B, 0))
+              and got_end == end and r.peek("Dropped", 2) == 0,
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, "
+              f"Dropped={r.peek('Dropped', 2)}, longest frame from SELECT {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)

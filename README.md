@@ -594,6 +594,8 @@ starts from opened before that), `Dropped` counts from boot.
 | eight lines of A + ENTER with WRAP off, the grip to 6x4 and to 22x17 (lf-1581) | 17.5 / 0 | 19.1 / 11 to 12 | 11.6 / 0 | 11.6 / 0 |
 | BS at the start of a line of 19 after one of 19, WRAP on (lf-1582) | 18.5 / 0 | 18.7 to 20.5 / 1 | 11.6 / 0 | 11.6 / 0 |
 | DEL at the end of the first of those lines (lf-1582) | 18.9 / 0 | 19.1 / 1 | 12.0 / 0 | 12.0 / 0 |
+| selection extended at 24x17: HELLO WORLD, SELECT, 5 SHIFT+LEFT, 2 SHIFT+DOWN, 2 SHIFT+UP, WRAP on (`fb-select`, lf-1591, main `3393724`) | 17.6 / 0 | 19.4 / 10 | 7.7 / 0 | 7.7 / 0 |
+| the same with WRAP off, typed at the home size (`fb-select-wrap-off`, lf-1591) | 26.9 / 10 | 26.8 / 10 | 9.3 / 0 | 9.3 / 0 |
 
 The grip of lf-1581 itself was 15.1 to 15.3 ms at 60 Hz (dropped one in
 two runs); the eleven drops on main are its typed preamble. The join of
@@ -642,6 +644,7 @@ What changed, each measured on its own route:
 | fb-save | SAVE AS on RAM: the file LETTER is HI byte for byte, the name, unmodified, Dropped 0; with the disk Dropped is 0 up to the ENTER and after the write |
 | fb-join-bs, fb-join-del | the BS and DEL joins of two lines of 19 with WRAP on: the 256 bytes, the caret (5, 1), the screen against `wrap_win`, Dropped 0 |
 | fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; on RAM Dropped 0 over the whole route, the picker included (lf-1590); on the disk 0 before the OPEN and from the frame after the save |
+| fb-select, fb-select-wrap-off | a 24x17 notepad, HELLO WORLD, SELECT, five SHIFT+LEFT, two SHIFT+DOWN and two SHIFT+UP (lf-1591): the screen against the compositor with the selection inverted (with WRAP on the end goes down the empty lines to (0, 0): the whole line; with it off it keeps column 6 and comes back to WORLD), the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on in the detail |
 
 And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
 zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
@@ -669,6 +672,79 @@ without a disk ROM and **2,884 → 2,885** with one (TEST 5,537 → 5,538
 and 152 → 153). No new allocation. Padded ROM crc32: normal
 **b7a86a4b**, TEST **fedafa4d**. `./test.sh`: C-BIOS_MSX1_EU 721 ok,
 C-BIOS_MSX1_JP 711 ok, all subjects pass.
+
+## The selection extended with SHIFT+arrow at 24x17 (lf-1591)
+
+dev3's report on lf-1549: FILE > NEW, the grip to 24x17, HELLO WORLD,
+SELECT, five SHIFT+LEFT drops 5 to 6 frames at 60 Hz, 17.2 to 19.1 ms
+an extension frame, on `d5bf146` and `3393724` alike. A key while
+marking went the way of every cursor key: `NoteKey` returned 1, HdlKey
+touched the window, and the frame composed and blitted all seventeen
+rows although the inverse changes on the rows between the old end and
+the new one only. With WRAP off it was worse: as soon as anything was
+selected every chunk, blank ones too, was copied through
+`NotePaintSelection` and `WinPrint` at 0.7 ms a chunk, 11 ms of the
+compose.
+
+Measured as in the table above (the loop iteration at `FrameWatch`
+and `MainLoop`; "longest" from SELECT on, `Dropped` for the phase
+unless the subject counts from boot), on `3393724` and on this change:
+
+| scenario | main EU longest / Dropped | main JP | now EU | now JP |
+|---|---|---|---|---|
+| `fb-select`: HELLO WORLD at 24x17, SELECT, 5 SHIFT+LEFT, 2 SHIFT+DOWN, 2 SHIFT+UP, WRAP on (Dropped from boot) | 17.6 / 0 | 19.4 / 10 | 7.7 / 0 | 7.7 / 0 |
+| `fb-select-wrap-off`: the same with WRAP off | 26.9 / 10 | 26.8 / 10 | 9.3 / 0 | 9.3 / 0 |
+| sixteen lines of a letter at 24x17, SELECT, fourteen SHIFT+UP: the extension frames, WRAP on | 21.9 to 23.1 / 14 | 20.2 to 22.9 / 14 | 7.6 to 10.8 / 0 | 7.6 to 10.8 / 0 |
+| the fifteenth SHIFT+UP, which scrolls the view: the compose frame, WRAP on | 19.7 / 0 | 19.9 / 1 | 13.1 / 0 | 13.1 / 0 |
+| the fourteen extension frames with WRAP off | 27.4 to 29.1 / 14 | 25.7 to 29.0 / 14 | 9.3 to 11.1 / 0 | 9.3 to 11.1 / 0 |
+| the scrolling SHIFT+UP with WRAP off: the compose frame | 26.6 / 1 | 24.8 / 1 | 20.5 / 1 | 20.5 / 1 |
+
+What changed:
+
+- **The row route** (`NoteEndRowSave`, `NoteEndMoved`, `NoteDrawRows`):
+  before a key while marking, the end's row (the table's with WRAP, the
+  line without); after the move, when the top (and with WRAP off the
+  left column) stays, the rows of the view from the old end's to the
+  new one's are blanked and painted into the buffer by the same
+  painters, marked with `RowsAddText`, and `NoteKey` returns 2: no
+  recompose, the blit and the flush take those rows only. The painters
+  take a row range (`NdRowLo`, `NdRowHi`, `NdRowsOnly` in the tape
+  buffer scratch): `NotePaintChunk` and `NotePaintAddr` skip the other
+  rows, `NwPaint` steps over them without touching the buffer and stops
+  after the last. The mouse drag (`NoteMouseFrame`) takes the same
+  route; a drag past the edge scrolls and composes as before. A SELECT
+  that changes nothing on the screen (marking off, or on from the caret
+  with nothing selected) returns 2 too: its compose dropped one at JP.
+- **The scroll case** (`NoteRecomposeSplit`, `NwKeyed` 3): the key's
+  frame paints nothing, the next composes, the one after blits, with
+  WRAP on and off alike (`NoteLayService` composes a WRAP-off window
+  for it as the toggle does). With WRAP on that is 13.1 ms, 0 dropped.
+- **The chunk painter with a selection** (`NotePaintChunk`,
+  `NpcSelected`, `NpcInvert`): a chunk without selected cells is
+  painted as if nothing were selected (blank ones skipped, the others
+  by LDIR); a chunk with them is copied the same way and its selected
+  cells are inverted in place. `NotePaintSelection` and its 15-byte
+  `NotePaintBuf` are gone. The front-window rule (the instances behind
+  show no selection) lives in `NpcSelected` now. `NwpSel`, the WRAP
+  painter's inverse, keeps its bounds in registers.
+
+**Known exceptions**, measured: the compose of a 24x17 window with
+WRAP off over a selection of fifteen chunks is 18.5 ms (its painting
+costs are the painter's, as on main: `WinCell` is a loop of the row,
+and the inverse adds 14 cells a chunk), so the scrolling key drops
+one at 50 and 60 Hz, as it did with the blit in the same frame. A
+typed key in a 24x17 notepad with WRAP off drops frames at 60 Hz on
+main too (the compose and blit frame is 16.0 ms; `fb-select-wrap-off`
+types at the home size for that reason). Both are a cheaper WRAP-off
+painter, a change of its own.
+
+Budget against `3393724`: normal ROM **24,671 → 25,084 bytes (+413)**,
+TEST ROM **26,428 → 26,841 (+413)**; static RAM **4,018 → 4,003
+(-15)**, TEST **6,750 → 6,735**; heap **8,270 → 8,285** without a
+disk ROM and **2,885 → 2,900** with one (TEST 5,538 → 5,553 and 153 →
+168). Six bytes of the tape buffer scratch (`TapeBuf+194` to `+199`)
+are used by the painters' row range. Padded ROM crc32: normal
+**17c8b2e8**, TEST **a3705187**.
 
 ## FILE > OPEN in the budget (lf-1590)
 
