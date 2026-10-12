@@ -5097,13 +5097,21 @@ NselEmpty:
                 xor     a
                 ret
 
-; A selection within one line goes in one pass (lf-1597): the caret at
-; the lower bound and NoteDeleteN over the characters between the
-; bounds, the chunk ends between them not counted, then the tail
-; reclaimed once; a BS a character was a pass over the rest of the
-; line each, 0.4 ms a character. Over a line end it is deleted
-; backwards as before, so the lower endpoint remains stable while
-; chunks above it are reclaimed and hard line breaks are joined.
+; A selection goes in one pass (lf-1597, lf-1608): the caret at the
+; lower bound and NoteDeleteN over the cells between the bounds, the
+; chunk ends between them not counted, then the tail reclaimed once.
+; A line that ends between the bounds is joined first the way NbHard
+; has it, its link set and NwJoined counted for the span job; a lower
+; bound among the trailing spaces of its line's last chunk moves back
+; to the text's end, where the join left the caret before, and those
+; spaces are cells to delete. A lower bound of 14, the end-of-chunk
+; caret, begins the cells at the next chunk's first and the caret
+; stays as it was. Within one line lf-1597 made this one pass (a BS a
+; character was a pass over the rest of the line each, 0.4 ms a
+; character); over a line end the selection was still deleted
+; backwards a NoteBack at a time, 0.5 ms a character and NoteTrimTail
+; 2 ms at each join: 12 ms of the 21 ms frame of X over three short
+; lines at 24x17 with WRAP on, a frame dropped at 60 Hz (lf-1608).
 NoteEraseSelection:
                 call    NoteSelectionBounds
                 jr      nz,NesSelected
@@ -5111,7 +5119,20 @@ NoteEraseSelection:
                 xor     a
                 ret
 NesSelected:
-                push    bc
+                ld      a,b
+                and     $0F
+                ld      (NoteCX),a              ; the caret at the lower bound
+                ld      a,b
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ld      (NoteCY),a
+                ld      (NoteRowIx),a           ; the chunk whose link is looked at
+                ld      a,c
+                sub     b
+                ld      e,a                     ; the packed distance
                 ld      a,c
                 and     $F0
                 ld      c,a
@@ -5119,87 +5140,70 @@ NesSelected:
                 and     $F0
                 ld      b,a
                 ld      a,c
-                sub     b
+                sub     b                       ; 16 a chunk end between the bounds
                 rrca
                 rrca
                 rrca
+                and     $1E                     ; 2 each: the terminator and the link
+                ld      d,a
+                ld      a,e
+                sub     d
+                ld      (NoteDeleteCount),a     ; the cells between the bounds
+                ld      a,d
                 rrca
                 and     $0F
                 ld      (NoteJoinAt),a          ; the chunk ends between the bounds
-                ld      a,b
-                rrca
-                rrca
-                rrca
-                rrca
-                and     $0F
-                ld      c,a                     ; the lower bound's chunk
-                ld      a,(NoteJoinAt)
-                ld      b,a
-                or      a
-                jr      z,NesOneLine
+                jr      z,NesCells
 NesLinks:
-                ld      a,c
-                push    bc
+                ld      a,(NoteRowIx)
                 call    NoteLinkAddr
-                pop     bc
                 ld      a,(hl)
                 or      a
-                jr      z,NesByChar             ; a line ends between them
-                inc     c
-                djnz    NesLinks
-NesOneLine:
-                pop     bc
-                ld      a,c
-                sub     b
-                ld      c,a
-                ld      a,(NoteJoinAt)
-                add     a,a
-                neg
-                add     a,c                     ; the characters between the bounds
-                ld      (NoteDeleteCount),a
-                ld      a,b
-                and     $0F
-                ld      (NoteCX),a
-                ld      a,b
-                rrca
-                rrca
-                rrca
-                rrca
-                and     $0F
-                ld      (NoteCY),a
+                jr      nz,NesLinked
+                ld      (hl),1                  ; a line ends here: joined, as NbHard has it
+                ld      hl,NwJoined
+                inc     (hl)
+                ld      a,(NoteRowIx)
+                ld      hl,NoteCY
+                cp      (hl)
+                jr      nz,NesLinked
+                call    NoteLineLen             ; the lower bound's own line ends
+                ld      hl,NoteCX
+                cp      (hl)
+                jr      nc,NesLinked            ; the bound at or before its text's end
+                ld      b,a
+                ld      a,(hl)
+                sub     b                       ; the trailing spaces before the bound
+                ld      (hl),b
+                ld      hl,NoteDeleteCount
+                add     a,(hl)
+                ld      (hl),a
+NesLinked:
+                ld      hl,NoteRowIx
+                inc     (hl)
+                ld      hl,NoteJoinAt
+                dec     (hl)
+                jr      nz,NesLinks
+NesCells:
                 call    NoteUndoDue             ; as NoteBack has it, once
+                ld      a,(NoteCX)
+                cp      NOTECOLS
+                jr      nz,NesDelete
+                ld      hl,NoteCY               ; the end-of-chunk caret: the cells
+                inc     (hl)                    ; begin at the next chunk's first
+                xor     a
+                ld      (NoteCX),a
                 call    NoteDeleteN
+                ld      hl,NoteCY
+                dec     (hl)
+                ld      a,NOTECOLS
+                ld      (NoteCX),a
+                jr      NesTrim
+NesDelete:
+                call    NoteDeleteN
+NesTrim:
                 call    NoteTrimTail
                 call    NoteMarkEdited
-                jr      NesCleared
-NesByChar:
-                pop     bc
-                ld      a,b
-                push    af
-                ld      a,c
-                and     $0F
-                ld      (NoteCX),a
-                ld      a,c
-                rrca
-                rrca
-                rrca
-                rrca
-                and     $0F
-                ld      (NoteCY),a
-NesLoop:
-                pop     af
-                push    af
-                ld      b,a
-                ld      hl,(NoteCX)
-                call    NotePack
-                cp      b
-                jr      c,NesDone
-                jr      z,NesDone
-                call    NoteBack
-                jr      NesLoop
-NesDone:
-                pop     af
-NesCleared:
                 call    NoteClearSelection
                 ld      a,1
                 or      a
