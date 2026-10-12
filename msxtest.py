@@ -1652,10 +1652,66 @@ def commander_checks(syms, fails, vram0, browse_only=False):
           f"Recomposes +{added}, rows {ranges}, composes {composes}: ALPHA's and BETA's rows alone")
     r = pick(down + tap(8, 32, True), "browse-up")
     screen(r, "browse-up", [browser(left)])
+    # A file saved from another window while the picker is open
+    # (lf-1593): a notepad with HI, FILE > OPEN over ALPHA and BETA,
+    # GRAPH+X to the notepad, GRAPH+S with the name G, GRAPH+X back,
+    # two SHIFT+DOWN. The second move finds G where the cache has a
+    # blank row and reads the page again: G on the picker's third row,
+    # inverted, and ENTER loads it.
+    def shortcut(row, mask):
+        return [(5, "key_down 6 4")] + tap(row, mask) + [(5, "key_up 6 4")]
+    up = tap(8, 32, True)
+    hi = note_width_document([b"HI"])
+    two = {name: fixtures[name] for name in ("ALPHA", "BETA")}
+    saved = (new + tap(3, 32) + tap(3, 64) + browse + shortcut(5, 0x20) + shortcut(5, 1) + tap(3, 16) + enter
+             + [(10, "")] + shortcut(5, 0x20) + down * 2)
+    def at(r, slot, window):
+        """`window` where the ROM put the window in `slot`."""
+        rec = syms["WndTab"] + slot * syms["WNDRECSZ"] - WORK
+        return (r.ram[rec], r.ram[rec + 1]) + window[2:]
+    def stored_g(r):
+        if EXT:
+            return read_disk_image(DISK).get("G")
+        return next((r.bytes("RamHeap", 1024)[i * 256:(i + 1) * 256] for i in range(4)
+                     if r.bytes("RamDir", 64)[i * 16:i * 16 + 2] == b"G\0"), None)
+    r = Run(syms, seed_ram({} if EXT else two) + saved + [(15, "")], "browse-saved-behind", files=two if EXT else None)
+    want = compose(nt0, [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G"),
+                         at(r, 1, browser(["ALPHA", "BETA", "G"], 2))])
+    check(fails, "browse-saved-behind", r.nt() == want and r.peek("CmdSel0") == 2 and stored_g(r) == hi
+          and r.peek("WndCount") == 2,
+          f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; selection {r.peek('CmdSel0')}, "
+          f"G stored {stored_g(r) == hi}")
+    r = Run(syms, seed_ram({} if EXT else two) + saved + enter + [(15, "")], "browse-saved-behind-open",
+            files=two if EXT else None)
+    check(fails, "browse-saved-behind-open", r.peek("WndCount") == 1 and r.bytes("NoteName", 2) == b"G\0"
+          and r.bytes("NoteBuf", 256) == hi and r.peek("NoteModified") == 0,
+          f"windows {r.peek('WndCount')}, name {r.bytes('NoteName', 2)!r}, "
+          f"document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/{zlib.crc32(hi):08x}")
     if not EXT:
         # R reads the directory again: a file removed behind the picker's back
         r = pick([(5, f"debug write memory {syms['RamDir'] + 15} 0")] + tap(4, 128), "browse-reload")
         screen(r, "browse-reload", [browser(left[1:])])
+        # The directory changed behind the picker's back (lf-1593), the
+        # RAM table written directly. An entry added past the cached
+        # page's files: the move onto its row reads the page again. BETA
+        # removed with the selection on ALPHA: the move lands on GAMMA,
+        # BETA's row no longer saying what the directory does. DELTA
+        # removed with the selection on it: SHIFT+DOWN reads the page
+        # again, the selection on its blank row, and SHIFT+UP from there
+        # takes GAMMA. A move whose two rows the directory confirms
+        # reads nothing (browse-move-rows above).
+        gone = lambda i: [(5, f"debug write memory {syms['RamDir'] + 16 * i + 15} 0")]
+        extra = seed_ram_steps(syms, {**two, "GAMMA": fixtures["GAMMA"]})
+        r = pick(extra + down * 2, "browse-added-behind", files=two)
+        screen(r, "browse-added-behind", [browser(["ALPHA", "BETA", "GAMMA"], 2)])
+        r = pick(gone(1) + down, "browse-gone-behind")
+        screen(r, "browse-gone-behind", [browser(["ALPHA", "GAMMA", "DELTA"], 1)])
+        check(fails, "browse-gone-behind-sel", r.peek("CmdSel0") == 1, f"selection {r.peek('CmdSel0')}")
+        r = pick(down * 3 + gone(3) + down, "browse-gone-under")
+        screen(r, "browse-gone-under", [browser(["ALPHA", "BETA", "GAMMA"], 3)])
+        check(fails, "browse-gone-under-sel", r.peek("CmdSel0") == 3, f"selection {r.peek('CmdSel0')}")
+        r = pick(down * 3 + gone(3) + up, "browse-gone-under-up")
+        screen(r, "browse-gone-under-up", [browser(["ALPHA", "BETA", "GAMMA"], 2)])
     if EXT:
         # the page turns: the pane is read again from its new top, the
         # first file of the page on the first row, the selection on the last
@@ -1722,6 +1778,24 @@ def commander_checks(syms, fails, vram0, browse_only=False):
     added, ranges, composes = moved(r)
     check(fails, "cmd-move-rows", added == 1 and ranges == [(5, 7, 0)] and composes == 0,
           f"Recomposes +{added}, rows {ranges}, composes {composes}: the left pane's two rows alone")
+    # G saved from a notepad behind the Commander (lf-1593), the route
+    # of browse-saved-behind: the left pane shows G once the selection
+    # moves onto its row, the right pane, on RAM, once its own does
+    # after TAB (each pane's page is checked on its own moves, as it
+    # is read on its own page turns); on the disk the right pane is
+    # RAM and stays empty.
+    three = ["ALPHA", "BETA", "G"]
+    behind = (new + tap(3, 32) + tap(3, 64) + open_cmd + shortcut(5, 0x20) + shortcut(5, 1) + tap(3, 16) + enter
+              + [(10, "")] + shortcut(5, 0x20) + down * 2)
+    for name, steps, window in [
+            ("cmd-saved-behind", behind, cmdwin(three, [] if EXT else three[:2], selection=2)),
+            ("cmd-saved-behind-right", behind + tab + down * 2,
+             cmdwin(three, [] if EXT else three, active=1, selection=0 if EXT else 2))]:
+        r = Run(syms, seed_ram({} if EXT else two) + steps + [(15, "")], name, files=two if EXT else None)
+        want = compose(nt0, [note_win(8, 6, [b"HI"] + [b""] * 15, 2, 0, title=b"G"), at(r, 1, window)])
+        check(fails, name, r.nt() == want and r.peek("WndCount") == 2 and stored_g(r) == hi,
+              f"crc32 {zlib.crc32(r.nt()):08x}, expected {zlib.crc32(want):08x}; "
+              f"selections {r.peek('CmdSel0')}, {r.peek('CmdSel1')}, G stored {stored_g(r) == hi}")
     r = run(tab, "cmd-pane")
     screen(r, "cmd-pane", [cmdwin(left, right, active=1)])
     r = run(delete, "cmd-confirm")
