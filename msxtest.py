@@ -2946,10 +2946,18 @@ def tape_trap_tcl(syms, blocks, once=False):
     With `once` the breakpoint removes itself at the read that finds
     the tape run out: a breakpoint slows openMSX many times over, and
     the TEST build's bank fill comes after TestTapeHeld's reads."""
+    # TapeGetBlock sits in page 1, the page a disk ROM in slot 1 runs its
+    # own code in: at boot, before this ROM's init, and for every BDOS
+    # call. The breakpoint is on the address alone, so it fires only
+    # when this ROM is the one there: its first instruction, `ld
+    # ix,TAPION` (dd 21 e1 00), must be at the address. On Roms_MSX1 +
+    # Roms_Disk the disk ROM's boot took one block off TestTapeHeld's
+    # tape and the subject read a shifted tape.
     tape = "set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
+    ours = f"{{[string equal [debug read_block memory {syms['TapeGetBlock']} 4] [binary format H* dd21e100]]}}"
     if not once:
-        return tape + f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}"
-    return (tape + f"set ::tape_bp [debug set_bp {syms['TapeGetBlock']} {{}} "
+        return tape + f"debug set_bp {syms['TapeGetBlock']} {ours} {{tape_trap}}"
+    return (tape + f"set ::tape_bp [debug set_bp {syms['TapeGetBlock']} {ours} "
             "{set ::tape_done [expr {![llength $::tape]}]; tape_trap; "
             "if {$::tape_done} {debug remove_bp $::tape_bp}}]")
 
