@@ -8,7 +8,8 @@
 ; ============================================================
 IFDEF TEST
 TestRun:
-                call    TestHeap
+                call    TestTapeHeld            ; first: its trap's breakpoint goes
+                call    TestHeap                ; with its last read (lf-1576)
                 call    TestCalendar
                 call    TestStorage
                 call    TestBankSys
@@ -18,7 +19,6 @@ TestRun:
                 call    TestDiskNames
                 call    TestSettings
                 call    TestTapeBuffer
-                call    TestTapeHeld
                 ld      a,1
                 ld      (TestDone),a
                 ret
@@ -107,7 +107,11 @@ TtName:         defb    "BUFFER",0
 ; NOTFOUND. Record: seven pairs of carry and TapeKeep, the sixth after
 ; NwStartFull alone, the seventh carry and the error. The record is
 ; a TEST build var (msxdesk.asm): CmdBuf is taken, TbResults holds
-; the bank subject's record at CmdBuf+221.
+; the bank subject's record at CmdBuf+221. It runs first: a real
+; BIOS without the trap waits on TAPION for ever (the bank run on
+; Roms_MSX1 timed out), so every TEST build run arms the trap, with a
+; breakpoint that removes itself at the read that finds the tape run
+; out, before the bank fill that a breakpoint slows many times over.
 TestTapeHeld:
                 ld      de,TthResults
                 ld      hl,TthAlpha

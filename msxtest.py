@@ -482,11 +482,8 @@ def test_build_checks(tsyms, fails):
     page2_size = max(0, tsyms["RomEnd"] - 0x8000)
     dump_page2 = (f'set f [open $::out/page2.bin wb]; puts -nonewline $f '
                   f'[debug read_block memory 32768 {page2_size}]; close $f')
-    # The read trap armed before boot for TestTapeHeld (lf-1576): ALPHA,
-    # BETA, ALPHA, ALPHA on the tape.
-    alpha, beta = doc("ALPHA"), doc("BETA")
-    held_tape = tape_blocks([("ALPHA", alpha), ("BETA", beta), ("ALPHA", alpha), ("ALPHA", alpha)])
-    r = Run(tsyms, [(60, dump_page2)], "subjects", rom=TROM, setup=[tape_trap_tcl(tsyms, held_tape)])
+    # The read trap armed before boot for TestTapeHeld (lf-1576)
+    r = Run(tsyms, [(60, dump_page2)], "subjects", rom=TROM, setup=[tape_held_tcl(tsyms)])
     page2 = open(os.path.join(OUT, "subjects", "page2.bin"), "rb").read()
     expected_page2 = open(TROM, "rb").read()[0x4000:0x4000 + page2_size]
     check(fails, "rom-page2", page2 == expected_page2,
@@ -503,19 +500,17 @@ def test_build_checks(tsyms, fails):
     # again from the buffer (none), BETA from the tape, ALPHA from the
     # tape (BETA was in the buffer), a scribbled buffer byte sends ALPHA
     # to the tape, NwStartFull drops the flag and the open after it finds
-    # the tape run out: nine blocks asked for, the tape empty, the
-    # buffer's first half ALPHA's as the last read left it (the job's
-    # start wrote its scratch above the table, from TapeBuf+129), the
-    # last pair carry and STERR_NOTFOUND.
+    # the tape run out: nine blocks asked for and no more (the trap's
+    # breakpoint went with the ninth; TestTapeBuffer's write open takes
+    # the buffer later), the tape empty, the last pair carry and
+    # STERR_NOTFOUND.
     held = r.bytes("TthResults", 14)
     reads = r.log.count("tape block:")
     import re
     left = [int(m.group(1)) for m in re.finditer(r"tape block: .*, (\d+) left", r.log)]
     check(fails, "tape-held", held == bytes((0, 1) * 5 + (0, 0) + (1, tsyms["STERR_NOTFOUND"]))
-          and reads == 9 and left[-1:] == [0] and r.bytes("TapeBuf", 128) == alpha[:128]
-          and r.peek("TapeKeep") == 0 and r.peek("TapeMode") == 0,
-          f"pairs {held.hex()}, {reads} blocks asked for, {left[-1:]} left, buffer crc32 "
-          f"{zlib.crc32(r.bytes('TapeBuf', 128)):08x} for {zlib.crc32(alpha[:128]):08x}")
+          and reads == 9 and left[-1:] == [0] and r.peek("TapeKeep") == 0 and r.peek("TapeMode") == 0,
+          f"pairs {held.hex()}, {reads} blocks asked for, {left[-1:]} left, TapeKeep {r.peek('TapeKeep')}")
     backend = 5 if EXT else 1
     saved = bytes((0x4D, SET_VERSION, 2, 0, 1, 1, 1, 1))
     default = bytes((0x4D, SET_VERSION, 1, 0, backend, 1, 1, 1))
@@ -1533,7 +1528,10 @@ def bank_test_checks(tsyms, fails, machine=None):
     # The breakpoints go once the second snapshot is taken: openMSX runs
     # many times slower with one armed, and filling a 512K bank is 1,800
     # files, each open a walk of the whole directory through the window.
-    bps = [f"set ::sysbp0 [debug set_bp {tsyms['TbsStart']} {{}} {{{snap.format(n=0)}}}]",
+    # TestTapeHeld reads first and its trap's breakpoint goes with its
+    # last read (lf-1576): without the trap a real BIOS waits on TAPION.
+    bps = [tape_held_tcl(tsyms),
+           f"set ::sysbp0 [debug set_bp {tsyms['TbsStart']} {{}} {{{snap.format(n=0)}}}]",
            f"set ::sysbp1 [debug set_bp {tsyms['TbsEnd']} {{}} {{{snap.format(n=1)}; "
            f"debug remove_bp $::sysbp0; debug remove_bp $::sysbp1}}]"]
     name = "bank-subjects" + tag
@@ -2941,12 +2939,28 @@ def tape_blocks(files):
     return out
 
 
-def tape_trap_tcl(syms, blocks):
+def tape_trap_tcl(syms, blocks, once=False):
     """The Tcl that arms the trap of harness/run.tcl with `blocks`, in
     place of the BIOS cassette routines (lf-1575): a step, or a Run's
-    `setup` for the TEST build, whose subjects read before any step."""
-    return ("set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
-            f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}")
+    `setup` for the TEST build, whose subjects read before any step.
+    With `once` the breakpoint removes itself at the read that finds
+    the tape run out: a breakpoint slows openMSX many times over, and
+    the TEST build's bank fill comes after TestTapeHeld's reads."""
+    tape = "set ::tape [list " + " ".join("{" + b.hex() + "}" for b in blocks) + "]; "
+    if not once:
+        return tape + f"debug set_bp {syms['TapeGetBlock']} {{}} {{tape_trap}}"
+    return (tape + f"set ::tape_bp [debug set_bp {syms['TapeGetBlock']} {{}} "
+            "{set ::tape_done [expr {![llength $::tape]}]; tape_trap; "
+            "if {$::tape_done} {debug remove_bp $::tape_bp}}]")
+
+
+def tape_held_tcl(syms):
+    """TestTapeHeld's tape (lf-1576), armed before boot in every TEST
+    build run: ALPHA, BETA, ALPHA, ALPHA; the breakpoint goes with the
+    ninth read. Without it a real BIOS waits on TAPION for a leader."""
+    alpha, beta = doc("ALPHA"), doc("BETA")
+    return tape_trap_tcl(syms, tape_blocks([("ALPHA", alpha), ("BETA", beta), ("ALPHA", alpha), ("ALPHA", alpha)]),
+                         once=True)
 
 
 def tape_trap_steps(syms, blocks):

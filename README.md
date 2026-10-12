@@ -3034,7 +3034,7 @@ write trap does, the screen while the tape runs.
 
 | subject | asserts |
 |---|---|
-| tape-held (TEST build, every machine) | ALPHA, BETA, ALPHA, ALPHA on the tape: ALPHA read (two blocks), ALPHA again from the buffer (no block), BETA from the tape, ALPHA from the tape (BETA was in the buffer), a byte of the buffer changed by a path that drops no flag sends ALPHA to the tape (the sum), `NwStartFull` drops the flag and the open after it finds the tape run out, carry and STERR_NOTFOUND; nine blocks asked for, the tape empty, the buffer's table-free half ALPHA's |
+| tape-held (TEST build, every machine) | ALPHA, BETA, ALPHA, ALPHA on the tape: ALPHA read (two blocks), ALPHA again from the buffer (no block), BETA from the tape, ALPHA from the tape (BETA was in the buffer), a byte of the buffer changed by a path that drops no flag sends ALPHA to the tape (the sum), `NwStartFull` drops the flag and the open after it finds the tape run out, carry and STERR_NOTFOUND; nine blocks asked for, the tape empty. It runs first of the subjects and every TEST build run arms its tape (the bank runs too: on Roms_MSX1 the real BIOS waited on TAPION for ever, the run timed out), with a breakpoint that removes itself at the ninth read, before the bank fill |
 | imp-reading (`--tape-import`) | at both blocks of I the band reads `READING TAPE, CTRL+STOP ENDS` over the Commander with READY on its row, against the compositor; imp-next-screen has the band blank after |
 | cp-tape-recording | now the Commander with `RECORDING` on its row and on the band |
 | note-tape-save, note-tape-saveas-recording, note-tape-save-recording (`--tape-note`, TAPE=1, not the disk machine) | FILE > NEW, A, FILE > SAVE (SAVE AS: LETTER), A, FILE > SAVE: two recordings of the header and the document; at both headers the band says `RECORDING, CTRL+STOP ENDS` with the menu's rows and the dialogue's as on the screen after; saved, unmodified, the band blank after |
@@ -3064,5 +3064,5 @@ is taken: `TbResults`, the bank subject's record, sits at
 in the full suite), **6,729 → 6,747**; heap **8,291 → 8,287 / 2,906 →
 2,902**, no heap allocation. Per frame: `TapeBandIdle` is a load, a
 test and a return, 45 cycles. crc32 of the padded ROMs: normal
-**6ad150f4**, TEST **c8db8a70**, TAPE=1 **f8ff14f1** (base dd9db94c /
+**6ad150f4**, TEST **24f3f3c2** (TestTapeHeld first in TestRun), TAPE=1 **f8ff14f1** (base dd9db94c /
 b5928469 / 814e16cf, the same three from `git archive ab93a19`).
