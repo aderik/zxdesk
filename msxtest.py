@@ -4953,6 +4953,53 @@ def frame_checks(syms, fails):
               and got_end == end and r.peek("Dropped", 2) == 0,
               f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, "
               f"Dropped={r.peek('Dropped', 2)}, longest frame from SELECT {longest} us")
+    # Typing in the 24x17 notepad with WRAP on (lf-1596): eight lines of
+    # A and ENTER, then A, Dropped 0 from boot. Every compose of the grown
+    # window is NwPaint's, which has no headroom at 60 Hz: a typed key's
+    # frame grows with the lines (13.0 ms at the first, 15.0 at the
+    # thirteenth, where the drops begin on 79843be). lf-1591's first
+    # version tested the row range once a row there, 0.4 ms a compose,
+    # and the drops began at line 6. The eighth line's frames are 14.3
+    # and 14.6 ms here.
+    lines = [b"A"] * 9
+    typed = note_width_document(lines)
+    r = Run(syms, timing + big + (text("A") + s.enter) * 8 + text("A") + [(10, "")], "fb-type-24", files={})
+    want = compose(expected_nt(), [wrap_win(typed, 1, 8, 0, w=24, h=17)[0]])
+    check(fails, "fb-type-24", r.nt() == want and r.bytes("NoteBuf", 256) == typed and r.peek("Dropped", 2) == 0,
+          f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
+          f"{zlib.crc32(typed):08x}, Dropped={r.peek('Dropped', 2)}, max frame {frames(r)} us")
+    # SHIFT+RIGHT past a line's end and then SHIFT+DOWN or SHIFT+UP while
+    # marking, WRAP on (lf-1596, dev3's finding 2 on lf-1591). The caret
+    # among the spaces after HELLO WORLD has the line laid out as far as
+    # it (NwEditLine), and leaving the line laid it out again; both went
+    # through a compose of the whole window, the second after a full
+    # relayout with the compose and the blit in its last frame: 16.3 ms,
+    # a frame dropped at 60 Hz. Now the line's job runs in the key's
+    # frame and the rows the end moved over are painted alone. The text
+    # is typed and the caret put at (0, 0) at the home size (typing and
+    # a cursor key without marking compose and blit the 24x17 window in
+    # their frame and drop at 60 Hz, see fb-type-24 for the limit), then
+    # the grip, SELECT and the keys; the screen against the compositor
+    # with the selection inverted, the document, anchor and end, Dropped
+    # 0 from boot.
+    two, three = [b"HELLO WORLD", b"FOO BAR"], [b"HELLO WORLD", b"FOO BAR", b"BAZ"]
+    grown = grip(23 * 8 + 2, 14 * 8 + 2)
+    down = (s.new + text("HELLO WORLD") + s.enter + text("FOO BAR") + s.up + shifted(16) * 11 + grown
+            + mark("select") + tap(7, 64) + shifted(128) * 12 + shifted(64))
+    up = (s.new + text("HELLO WORLD") + s.enter + text("FOO BAR") + s.enter + text("BAZ") + grown
+          + mark("select") + tap(7, 64) + shifted(128) + shifted(32))
+    for name, steps, lines, caret, anchor, sel in [
+            ("fb-select-past-end", down, two, (7, 1), bytes((0x80, 0, 7, 1)), (0x00, 0x17)),
+            ("fb-select-past-end-up", up, three, (4, 1), bytes((0x83, 2, 4, 1)), (0x14, 0x23))]:
+        r = Run(syms, timing + steps + [(10, "")], name, files={})
+        doc = note_width_document(lines)
+        want = compose(expected_nt(), [wrap_win(doc, caret[0], caret[1], 0, w=24, h=17, sel=sel)[0]])
+        longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("mark select")[-1])))
+        check(fails, name, r.nt() == want and r.bytes("NoteBuf", 256) == doc and r.bytes("NoteAnchor", 4) == anchor
+              and r.peek("Dropped", 2) == 0,
+              f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
+              f"{zlib.crc32(doc):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, Dropped={r.peek('Dropped', 2)}, "
+              f"longest frame from SELECT {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)

@@ -645,6 +645,8 @@ What changed, each measured on its own route:
 | fb-join-bs, fb-join-del | the BS and DEL joins of two lines of 19 with WRAP on: the 256 bytes, the caret (5, 1), the screen against `wrap_win`, Dropped 0 |
 | fb-open | FILE > OPEN BETA, GRAPH+S, GRAPH+U (lf-1562): HI under NOTE again; on RAM Dropped 0 over the whole route, the picker included (lf-1590); on the disk 0 before the OPEN and from the frame after the save |
 | fb-select, fb-select-wrap-off | a 24x17 notepad, HELLO WORLD, SELECT, five SHIFT+LEFT, two SHIFT+DOWN and two SHIFT+UP (lf-1591): the screen against the compositor with the selection inverted (with WRAP on the end goes down the empty lines to (0, 0): the whole line; with it off it keeps column 6 and comes back to WORLD), the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on in the detail |
+| fb-type-24 | a 24x17 notepad with WRAP on, eight lines of A and ENTER, then A (lf-1596): the screen against `wrap_win`, the document, Dropped 0 from boot; the eighth line's frames are 14.3 and 14.6 ms at 60 Hz, the painter's limit |
+| fb-select-past-end, fb-select-past-end-up | HELLO WORLD and FOO BAR (and BAZ) typed at the home size, the grip to 24x17, SELECT, SHIFT+RIGHT past the line's end and SHIFT+DOWN (SHIFT+UP) (lf-1596): the screen with the selection inverted, the document, anchor and end, Dropped 0 from boot, the longest frame from SELECT on |
 
 And elsewhere: `sel-scroll` and the `wrap-full-enter` subjects no longer
 zero `Dropped`; `wrap-13-enter` (13 characters, ENTER, X) and
@@ -745,6 +747,80 @@ disk ROM and **2,885 → 2,900** with one (TEST 5,538 → 5,553 and 153 →
 168). Six bytes of the tape buffer scratch (`TapeBuf+194` to `+199`)
 are used by the painters' row range. Padded ROM crc32: normal
 **17c8b2e8**, TEST **a3705187**.
+
+## The painter's per-row cost, and the caret past a line's end while marking (lf-1596)
+
+dev3's two findings on lf-1591, measured as above (the loop iteration
+at `FrameWatch` and `MainLoop`, breakpoints on the routines' entries
+for the split), on `79843be` (before lf-1591), `5264508` (lf-1591) and
+this change, C-BIOS JP; EU drops nothing in any of them.
+
+1. **Every WRAP-on compose was 0.4 ms slower.** `NwPaint` is the whole
+   cost of a compose with WRAP on and has no headroom at 24x17: a typed
+   key's frame grows with the lines, 13.0 ms at the first and 15.0 at
+   the thirteenth, where the drops begin. lf-1591 tested the row range
+   once a row inside the painter's loop and counted the row (a test of
+   `NdRowsOnly`, a call for the cell step, a counter in memory: about
+   84 cycles a row, 0.36 ms over the fifteen rows), so the same frame
+   was 0.4 ms longer and the drops began at line 6. The
+   loop over every row is the one of `79843be` again, and the row
+   route has a loop of its own (`NwpOnly`) that counts rows and steps
+   over the ones not wanted.
+
+   | fifteen lines of A and ENTER, then A, at 24x17, WRAP on | `79843be` | `5264508` | now |
+   |---|---|---|---|
+   | `NwPaint` with the caret, the last A | 3.90 ms | 4.27 | 3.92 |
+   | the last A's frame | 15.61 | 16.03 | 15.68 |
+   | Dropped over the sixteen lines (JP) | 5 | 12 | 5 |
+
+   The 0.07 ms left against `79843be` is the row range's reset in
+   `NoteDraw` and the follow and clamp as calls. `fb-type-24` (eight
+   lines, Dropped 0 from boot) fails on `5264508` with Dropped 2.
+
+2. **SHIFT+RIGHT past a line's end, then SHIFT+DOWN or SHIFT+UP.** The
+   caret among the spaces after HELLO WORLD has its line laid out as
+   far as it (`NwCaretCheck`, `NwEditLine`): a job under way, so the
+   row route stood back and the key composed the window (10.8 ms, 0
+   dropped). The SHIFT+DOWN then left the extended line, and
+   `NwCaretCheck` invalidated the whole table: a full relayout over
+   three frames with the compose and the blit in the last one, 16.1 to
+   16.3 ms, one dropped at 60 Hz. Now:
+   - a caret that leaves a line laid out as far as it has that line
+     alone laid out again, to its text (`NwEditLineAt`; `NwLineBegin`
+     drops the extension of a line without the caret), unless the
+     caret's own line asks for a job, which is everything again as
+     before;
+   - while marking, a job over one line (not over all sixteen chunks)
+     runs within the key's frame (`NemWrap`), and when the table keeps
+     its row count, which is when nothing but the line's own trailing
+     spaces changed, the rows the end moved over are painted as if
+     there had been no job. A job that adds or takes a row goes the
+     split way (`NoteRecomposeSplit`) as before.
+
+   | key at 24x17, WRAP on (frame ms / Dropped, JP) | `79843be` | `5264508` | now |
+   |---|---|---|---|
+   | HELLO WORLD, FOO BAR, caret at (0, 0), SELECT, the 12th SHIFT+RIGHT (into the spaces) | 17.8 / 1 | 10.8 / 0 | 8.2 / 0 |
+   | the SHIFT+DOWN after it | 6.4, 7.8, 15.7 / 1 | 5.1, 7.7, 16.1 / 1 | 9.8 / 0 |
+   | HELLO WORLD, FOO BAR, BAZ, SELECT at the end, SHIFT+RIGHT | 20.0 / 1 | 11.1 / 0 | 8.6 / 0 |
+   | the SHIFT+UP after it | 6.4, 7.7, 15.8 / 0 or 1 | 5.0, 7.7, 16.1 / 0 or 1 | 9.7 / 0 |
+
+   The 9.8 ms key frame is the key (2.2 ms with the two derivations),
+   the line's job (1.2 ms, the parked tail copied back included), two
+   rows painted (2.4 ms) and blitted (1.6 ms). The screens, documents,
+   anchors and ends are byte for byte those of `79843be` in all of
+   these. A plain cursor key (no marking) that leaves an extended line
+   composes and blits in its frame as every cursor key does, instead
+   of the three frames of the relayout.
+
+Budget against `5264508`: normal ROM code **25,742 → 25,831 bytes
+(+89)** before the page alignment of `NsanTab` (the build line stays
+25,856, 25 bytes of the pad left), TEST **27,496 → 27,585 (+89)**;
+static RAM **3,997**, heap **8,291** without a disk ROM and **2,906**
+with one, unchanged; no new scratch. Padded ROM crc32: normal
+**1d8dd026**, TEST **92eca1c3**. `./test.sh`: C-BIOS_MSX1_EU 746 ok,
+C-BIOS_MSX1_JP 736 ok, all subjects pass (the three subjects above are
+new; against `5264508`'s source they fail at JP with Dropped 2, 1
+and 1).
 
 ## FILE > OPEN in the budget (lf-1590)
 

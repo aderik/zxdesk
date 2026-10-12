@@ -2732,6 +2732,11 @@ NwEditLine:
                 call    NwStale
                 ret     nz                      ; another window's table serves it still
                 ld      a,(NoteCY)
+; A = a chunk of the line, with WRAP on, no job under way and the
+; table valid: the job over that line. NwCaretCheck gives it the line
+; the caret left when that line was laid out as far as the caret
+; (lf-1596): a line without the caret is laid out to its text.
+NwEditLineAt:
                 call    NwLineOf                ; A = the line, C = its chunk
                 ld      b,a
                 ; another line laid out as far as the caret was: ENTER
@@ -2847,10 +2852,34 @@ NccFull:
                 call    NwLineOf                ; C = the line's first chunk
                 ld      a,(NwExtLine)
                 cp      NWNONE
-                jr      z,NccNoOld
+                jr      z,NccOwn
                 cp      c
-                jp      nz,NwInvalidate         ; another line carries the extension
-NccNoOld:
+                jr      z,NccOwn
+                ; another line carries the extension: that line alone is
+                ; laid out again, to its text, unless the caret's line asks
+                ; for a job of its own; two jobs are everything again. The
+                ; whole table was laid out again whenever the caret left
+                ; the line, over three frames at 24x17 with the compose
+                ; and the blit in the last, 16.3 ms, a frame dropped at
+                ; 60 Hz (lf-1596).
+                push    bc
+                call    NccNeed
+                pop     bc
+                jp      nz,NwInvalidate
+                ld      a,(NwExtLine)
+                jp      NwEditLineAt
+NccOwn:
+                call    NccNeed
+                ret     z
+                jp      NwEditLine
+NccEdge:
+                call    NccDerived
+                ret     z
+                jp      NwEditLine
+
+; C = the caret's line's first chunk, the table valid: NZ when the
+; line is to be laid out again for the caret.
+NccNeed:
                 push    bc
                 ld      a,c
                 call    NwTrimmed               ; A = the text's length
@@ -2869,26 +2898,27 @@ NccNoOld:
                 ld      e,a
                 ld      a,c
                 cp      (hl)
-                jp      nz,NwEditLine
+                ret     nz
                 inc     hl
                 ld      a,e
                 cp      (hl)                    ; NwExtX
-                ret     z
-                jp      NwEditLine
+                ret
 NccWithin:
                 ld      a,(NwExtLine)
                 cp      c
-                jp      z,NwEditLine            ; the extension goes
+                jr      z,NccYes                ; the extension goes
                 ; nothing extended here: a caret after a line that fills
                 ; its last row has a row of its own, which a line laid out
                 ; with the caret elsewhere lacks (lf-1555). The draw
                 ; derives the same caret and finds it done.
-NccEdge:
+NccDerived:
                 call    NwDerive
                 ld      a,(NwPastEnd)
                 or      a
-                ret     z
-                jp      NwEditLine
+                ret
+NccYes:
+                or      1
+                ret
 
 ; The sixteen links as they are, kept across an edit (NwLinksSave),
 ; and Z when they are still the same (NwLinksSame).
@@ -3101,11 +3131,11 @@ NwLineBegin:
                 ld      a,(NoteCY)
                 ld      hl,NwLine
                 cp      (hl)
-                jr      c,NwLbPlain             ; the caret's line is before this one
+                jr      c,NwLbNoExt             ; the caret's line is before this one
                 ld      hl,NwLast
                 cp      (hl)
                 jr      z,NwLbCaret
-                jr      nc,NwLbPlain            ; or after it
+                jr      nc,NwLbNoExt            ; or after it
 NwLbCaret:
                 ld      hl,NwLine
                 sub     (hl)
@@ -3124,14 +3154,14 @@ NwLbCaret:
                 ld      (NwExtCX),hl
                 jr      NwLbSet
 NwLbNoExt:
+                ; the caret not past this line's text, or not on the line
+                ; at all (NwEditLineAt, lf-1596): no longer extended
                 ld      a,(NwExtLine)
                 ld      hl,NwLine
                 cp      (hl)
                 jr      nz,NwLbSet
-                ld      a,NWNONE                ; no longer extended
+                ld      a,NWNONE
                 ld      (NwExtLine),a
-                jr      NwLbSet
-NwLbPlain:
 NwLbSet:
                 ld      a,c
                 ld      (NwN),a
@@ -3577,16 +3607,45 @@ NwpTop:
                 ld      a,1
                 ld      (NwTopOK),a
 NwpRows:
+                ; the row route (NoteDrawRows) has its own loop: this one,
+                ; every compose's, is the draw's whole cost with WRAP on
+                ; and has nothing per row that the draw does not need. A
+                ; test of NdRowsOnly and a counted row in it were 0.4 ms
+                ; of a 24x17 compose, and typing there dropped 18 frames
+                ; at 60 Hz instead of 7 (lf-1596).
+                ld      a,(NdRowsOnly)
+                or      a
+                jr      nz,NwpOnly
+NwpEvery:
                 ld      a,(NwPRows)
                 or      a
                 ret     z
                 dec     a
                 ld      (NwPRows),a
-                ; the rows wanted, NdRowLo to NdRowHi (the row route): the
-                ; walk steps over a row above them and stops after the last
-                ld      a,(NdRowsOnly)
+                ld      a,b
                 or      a
-                jr      z,NwpEvery
+                jr      z,NwpBelow
+                ld      a,(hl)
+                call    NwpRow
+                ld      a,(hl)
+                inc     hl
+                call    NwAdvRow
+                dec     b
+                jr      NwpEvery
+NwpBelow:
+                xor     a                       ; a row below the table: blank
+                call    NwpRow
+                jr      NwpEvery
+
+; The rows wanted, NdRowLo to NdRowHi, counted in NwPRow: the walk
+; steps over a row above them without painting and stops after the
+; last.
+NwpOnly:
+                ld      a,(NwPRows)
+                or      a
+                ret     z
+                dec     a
+                ld      (NwPRows),a
                 ld      a,(NwPRow)
                 push    hl
                 ld      hl,NdRowHi
@@ -3599,42 +3658,45 @@ NwpRows:
                 pop     hl
                 push    hl
                 push    de
-                call    NwpAdvance
+                call    NwpCellOn
                 pop     de
                 pop     hl
                 ld      a,b
                 or      a
-                jr      z,NwpRows               ; below the table: no walk
+                jr      z,NwpNext               ; below the table: no walk
                 ld      a,(hl)
                 inc     hl
                 call    NwAdvRow
                 dec     b
-                jr      NwpRows
+                jr      NwpNext
 NwpPast:
                 pop     hl
                 ret
 NwpWanted:
                 pop     hl
-NwpEvery:
                 ld      a,b
                 or      a
-                jr      z,NwpBelow
+                jr      z,NwpOnlyBelow
                 ld      a,(hl)
                 call    NwpRow
                 ld      a,(hl)
                 inc     hl
                 call    NwAdvRow
                 dec     b
-                jr      NwpRows
-NwpBelow:
-                xor     a                       ; a row below the table: blank
+                jr      NwpNext
+NwpOnlyBelow:
+                xor     a
                 call    NwpRow
-                jr      NwpRows
-
-; The painter's cell on to the next row of the view.
-NwpAdvance:
+NwpNext:
+                push    hl
                 ld      hl,NwPRow
                 inc     (hl)
+                pop     hl
+                jr      NwpOnly
+
+; The painter's cell on to the next row of the view, as NwpDone has
+; it after a painted row.
+NwpCellOn:
                 ld      hl,(NwPCell)
                 ld      a,(WinW)
                 ld      e,a
@@ -3759,7 +3821,12 @@ NwpSpace:
                 inc     de
                 djnz    NwpSpace
 NwpDone:
-                call    NwpAdvance
+                ld      hl,(NwPCell)
+                ld      a,(WinW)
+                ld      e,a
+                ld      d,0
+                add     hl,de
+                ld      (NwPCell),hl
                 pop     bc
                 pop     de
                 pop     hl
@@ -3993,9 +4060,33 @@ NemWrap:
                 ld      a,(NoteOldRow)
                 cp      NWNONE
                 jr      z,NemScroll
-                ld      a,(NwBusy)              ; a line laid out again: its
-                or      a                       ; rows move
-                jr      nz,NemScroll
+                ld      a,(NwBusy)
+                or      a
+                jr      z,NemTable
+                ; the move started a job over one line (NwCaretCheck: the
+                ; caret into the spaces after a line's text, or off a line
+                ; laid out as far as it). The line's text is what it was,
+                ; so the job changes what is in view only when it adds or
+                ; takes a row: it is run here, within the key's frame, and
+                ; the rows the end moved over are painted as when there
+                ; was no job if the table keeps its rows. Every such key
+                ; composed the window whole, 11 ms at 24x17 (lf-1596). A
+                ; job over all sixteen chunks is left to the service.
+                ld      a,(NwJobEnd)
+                ld      hl,NwLine               ; the job has not stepped yet
+                sub     (hl)
+                cp      NOTEROWS
+                jr      z,NemScroll
+                ld      a,(NwTabN)
+                push    af
+NemJob:
+                call    NwStep
+                jr      nz,NemJob
+                pop     af
+                ld      hl,NwTabN
+                cp      (hl)
+                jr      nz,NemScroll            ; its rows moved
+NemTable:
                 call    NwStale
                 jr      nz,NemScroll
                 call    NwDerive
