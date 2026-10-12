@@ -1308,11 +1308,7 @@ NoteLoadFile:
                 call    NoteUndoTake            ; the document it replaces
                 ld      hl,NoteUndoSt
                 set     UNDO_OTHERB,(hl)        ; not this one, whatever its name
-                ld      hl,CmdBuf
-                ld      de,NoteBuf
-                ld      bc,NOTESIZE
-                ldir
-                call    NoteSanitise
+                call    NoteSanitise            ; CmdBuf into NoteBuf
                 call    NoteClearSelection
                 xor     a
                 ld      (NoteCX),a
@@ -1369,42 +1365,53 @@ NsnPad:
 
 ; Whatever came off the file: anything unprintable becomes a space,
 ; and the terminators are put back.
+; The document read into CmdBuf becomes NoteBuf in one pass: every
+; cell through NsanTab (a byte outside 32 to 127 is a space), each
+; row's terminator zero, its link byte kept when it is 1 and the row
+; is not the last. POP takes the source two cells at a time, with
+; interrupts off while the stack is borrowed, as DrawDesktopRows does:
+; 34 T a cell. The LDIR and the compare loop this replaces were 1.5
+; and 7.4 ms of the ENTER frame of FILE > OPEN at 60 Hz (lf-1590).
 NoteSanitise:
-                ld      b,NOTEROWS
-                xor     a
-                ld      (NoteRowIx),a
+                ld      (SpSave),sp
+                di
+                ld      sp,CmdBuf
+                ld      de,NoteBuf
+                ld      h,NsanTab/256
+                ld      a,NOTEROWS
+                ex      af,af'
 NsanRow:
-                push    bc
-                ld      a,(NoteRowIx)
-                call    NoteRowAddr
-                ld      b,NOTECOLS
-NsanCol:
+                rept    NOTECOLS/2
+                pop     bc
+                ld      l,c
                 ld      a,(hl)
-                cp      ' '
-                jr      c,NsanBad
-                cp      128
-                jr      c,NsanOk
-NsanBad:
-                ld      (hl),' '
-NsanOk:
-                inc     hl
-                djnz    NsanCol
-                ld      (hl),0
-                inc     hl
-                ld      a,(NoteRowIx)
-                cp      NOTELASTROW
-                jr      z,NsanEnd
+                ld      (de),a
+                inc     de
+                ld      l,b
                 ld      a,(hl)
+                ld      (de),a
+                inc     de
+                endm
+                pop     bc                      ; C = the terminator, B = the link
+                xor     a
+                ld      (de),a
+                inc     de
+                ex      af,af'
+                dec     a
+                jr      z,NsanLast
+                ex      af,af'
+                ld      a,b
                 cp      1
                 jr      z,NsanLink
-NsanEnd:
-                ld      (hl),0
+                xor     a
 NsanLink:
-                ld      a,(NoteRowIx)
-                inc     a
-                ld      (NoteRowIx),a
-                pop     bc
-                djnz    NsanRow
+                ld      (de),a
+                inc     de
+                jr      NsanRow
+NsanLast:
+                ld      (de),a                  ; the last row never links
+                ld      sp,(SpSave)
+                ei
                 ret
 
 NoteClose:
@@ -1840,7 +1847,7 @@ NoteUndoFrom:
                 or      e
                 jr      z,NufNone
                 ld      bc,NOTESIZE
-                ldir
+                call    CopyFast
                 ld      hl,NoteName
                 ld      bc,NOTENAMEMAX+1
                 ldir

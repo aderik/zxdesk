@@ -668,16 +668,17 @@ TbSetName:
                 ld      l,a
                 ld      h,0
 TbSetNameHL:
-                ld      ix,TbName+1
-                ld      de,1000
+                ld      de,TbName+1
+                ld      bc,1000
                 call    CdsDigit
-                ld      de,100
+                ld      bc,100
                 call    CdsDigit
-                ld      de,10
+                ld      bc,10
                 call    CdsDigit
-                ld      de,1
+                ld      bc,1
                 call    CdsDigit
-                ld      (ix+0),0
+                xor     a
+                ld      (de),a
                 ld      a,'F'
                 ld      (TbName),a
                 ret
