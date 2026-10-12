@@ -5102,6 +5102,37 @@ def frame_checks(syms, fails):
           f"screen {zlib.crc32(r.nt()):08x}/{zlib.crc32(want):08x}, document crc32 {zlib.crc32(r.bytes('NoteBuf', 256)):08x}/"
           f"{zlib.crc32(doc):08x}, anchor/end {r.bytes('NoteAnchor', 4).hex()}, top {r.peek('NoteTop')}, "
           f"Dropped={r.peek('Dropped', 2)}, longest frame from SELECT {longest} us")
+    # A minute's roll with a window open (lf-1601, dev3 on lf-1599):
+    # ClkService read WndCount, called WndFlush, which returns A =
+    # WndCur, and took that as the slot count, so with the live window
+    # in slot 0 it walked 256 slots past WndZ and WndTab: 357 ms with a
+    # notepad, 488 with a clock alone, 18 frames dropped at 50 Hz and
+    # 22 to 24 at 60. The wait is bridged by setting ClkS to 59 so the
+    # next second rolls the minute within 60 frames. The 24x17 notepad
+    # alone, a clock alone (GRAPH+K, slot 0) and the clock from the
+    # VIEW menu over the notepad with the notepad made the front again
+    # (the clock in slot 1, behind, not the live window): Dropped
+    # before and after the roll equal and 0 from boot, 12:01 counted,
+    # every clock window recomposed with the new minute and the
+    # notepad as it was; the longest frame from the roll on in the
+    # detail (the loop's frame, where the stall was).
+    roll = mark("before") + [(5, f"debug write memory {syms['ClkS']} 59"), (90, "")] + mark("after")
+    def clock_at(r, slot):
+        at = syms["WndTab"] + slot * syms["WNDRECSZ"] - WORK
+        return clock_win(r.ram[at], r.ram[at + 1], r.peek("ClkH"), r.peek("ClkM"))
+    for name, steps, windows in [
+            ("fb-minute-note", big, lambda r: [first]),
+            ("fb-minute-clock", s.init + clock, lambda r: [clock_at(r, 0)]),
+            ("fb-minute-both", big + s.click(180, 3) + s.click(188, 11) + [(10, "")] + nxt,
+             lambda r: [clock_at(r, 1), first])]:
+        r = Run(syms, timing + steps + roll + [(10, "")], name, files={})
+        m = marks(r)
+        want = compose(expected_nt(), windows(r))
+        longest = max(map(int, re.findall(r"frame us (\d+)", r.log.split("\nmark before")[-1])))
+        check(fails, name, (r.peek("ClkH"), r.peek("ClkM")) == (12, 1) and m["before"] == 0 and m["after"] == 0
+              and r.peek("Dropped", 2) == 0 and r.nt() == want and r.peek("WndCount") == len(windows(r)),
+              f"{r.peek('ClkH'):02d}:{r.peek('ClkM'):02d}, Dropped {m}, screen {zlib.crc32(r.nt()):08x}/"
+              f"{zlib.crc32(want):08x}, {r.peek('WndCount')} windows, longest frame from the roll {longest} us")
 
 def note_selection_checks(syms, fails):
     _, _, _, _, click, tap, menu = note_width_steps(syms)
