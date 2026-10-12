@@ -941,10 +941,10 @@ NbHard:
                 ; Join at a hard newline by linking its chunks. Keeping
                 ; padding here would add spaces, so delete the unused tail.
                 ; An empty line joined leaves the links as they were but
-                ; the lines below move up: NkEdited lays them all out again
-                ; (lf-1572).
-                ld      a,$FF
-                ld      (NwLinks),a
+                ; the lines below move up: NkEdited counts the join
+                ; (lf-1572, lf-1597).
+                ld      hl,NwJoined
+                inc     (hl)
                 ld      a,(NoteCY)
                 dec     a
                 call    NoteLineLen
@@ -1052,6 +1052,8 @@ NoteEnter:
                 ld      a,(NoteCY)
                 call    NoteExtend            ; also checks capacity
                 ret     c
+                ld      a,1
+                ld      (NwSplit),a           ; one line becomes two (NkEditSpan)
                 ld      a,(NoteCY)
                 call    NoteRowAddr
                 push    hl
@@ -1224,23 +1226,26 @@ NhFirst:
 ; The key vector. Returns A = 1: every key it takes moves the cursor,
 ; and the cursor is painted, so the window is recomposed; 2 when the
 ; rows that changed are painted and marked here (a selection's end
-; moved, NoteEndMoved) or nothing on the screen changed (SELECT).
+; moved, NoteEndMoved; with WRAP on a caret move, an edit or ESC,
+; lf-1597) or nothing on the screen changed (SELECT).
 NoteKey:
                 ld      (NoteChar),a
                 xor     a
                 ld      (NoteEdited),a
+                ld      (NwJoined),a            ; the lines NbHard joins this key
+                ld      (NwSplit),a             ; and the one NoteEnter splits
                 inc     a
                 ld      (NwKeyed),a             ; the job's budget this frame
                 call    NwLinksSave             ; for NkEdited, whatever the key
                 call    NoteUndoKey
-                call    NoteEndRowSave          ; marking: the end's row, for NkMoved
+                call    NoteEndRowSave          ; the caret's row before the key
+                ld      a,(NoteRows)            ; and the rows, for the scroll bar
+                ld      (NkRowsOld),a
                 ld      a,(NoteChar)
                 cp      KEY_SELECT
                 jp      z,NoteToggleSelection
                 cp      KEY_ESC
-                jr      nz,NkSelectionEdit
-                call    NoteClearSelection
-                jp      NkView
+                jp      z,NkEscape
 NkSelectionEdit:
                 cp      KEY_DELETE
                 jr      z,NkEraseSelection
@@ -1254,7 +1259,7 @@ NkSelectionEdit:
                 jr      nc,NkNavigation
 NkReplaceSelection:
                 push    af
-                call    NoteEraseSelection
+                call    NoteEraseSelection      ; its rows are the edited line's (NoteEditRows)
                 pop     af
                 jr      NkNavigation
 NkEraseSelection:
@@ -1289,13 +1294,26 @@ NkMoved:
                 call    NwCaretCheck            ; with WRAP: a caret among
                 ld      a,(NoteAnchor)          ; trailing spaces has its row
                 bit     7,a
-                jr      z,NkView
+                jr      z,NkCaret
                 ; marking: the end follows, and only the rows it moved
                 ; over are painted unless the view scrolls (lf-1591)
                 call    NoteEndMoved
+NkRoute:
                 cp      2
                 ret     z
                 jp      NoteRecomposeSplit
+NkCaret:
+                ; not marking, WRAP on (lf-1597): the row the caret left
+                ; and the one it reached, the same way; the view scrolled
+                ; is the window composed next frame and blitted the one
+                ; after. The compose and the blit in the key's frame were
+                ; 15.2 to 16.0 ms at 24x17, two keys in three dropped a
+                ; frame at 60 Hz. With WRAP off as before.
+                ld      a,(SetWrap)
+                or      a
+                jr      z,NkView
+                call    NoteCaretMoved
+                jr      NkRoute
 NkNotD:
                 cp      KEY_DELETE
                 jr      nz,NkNotBs
@@ -1322,18 +1340,33 @@ NkEdited:
                 res     UNDO_DUEB,(hl)
                 ld      a,2
                 ld      (NwKeyed),a             ; an edit: the repaint waits a frame
-                ; The same links as before: the edit stayed within the
-                ; caret's line, whose rows are laid out again. Otherwise a
-                ; line was split, joined, extended into another chunk or
-                ; gave one back, the chunks after it moved, and the whole
-                ; table is stale. (The count of lines is not enough: a join
-                ; that frees a chunk leaves a blank line at the end.)
+                ld      a,(SetWrap)
+                or      a
+                jr      z,NkEditPlain
+                ; WRAP on (lf-1597): the lines the edit changed, and those
+                ; alone, are laid out again by a job run within the key's
+                ; frame, the rows of the lines after them parked meanwhile
+                ; (NwEditSpan), and the rows of those lines are painted and
+                ; marked when the view stays (NoteEditRows). The whole
+                ; window was composed for a typed key, 13.0 to 15.6 ms at
+                ; 24x17 growing with the lines, and a character that went
+                ; on into a new chunk had the table laid out again from
+                ; the first line over three frames, the last with the
+                ; compose and the blit, 13 to 16 ms.
+                call    NkEditSpan
+                jr      nc,NkView               ; the table is stale or busy: the service
+                call    NoteEditRows
+                jr      NkRoute
+NkEditPlain:
+                ; WRAP off: the same links as before leave the table as it
+                ; is (NwEditLine would lay out nothing); otherwise a line
+                ; was split, joined, extended into another chunk or gave one
+                ; back, the chunks after it moved, and the table is stale.
+                ; (The count of lines is not enough: a join that frees a
+                ; chunk leaves a blank line at the end.)
                 call    NwLinksSame
-                jr      z,NkSameLines
+                jr      z,NkView
                 call    NwInvalidate
-                jr      NkView
-NkSameLines:
-                call    NwEditLine
 NkView:
                 ld      a,(NoteAnchor)
                 bit     7,a
@@ -2581,6 +2614,7 @@ NWNONE          equ     $FF
 NWBUDGET        equ     300             ; a frame's work, about 5 ms
 NWROWCOST       equ     12
 NWLINECOST      equ     20
+NKSPANMAX       equ     4               ; rows of a line an edit lays out again within its key's frame (lf-1597)
 NWSMALL         equ     40              ; a frame that did no more than this
                                         ; goes on to compose and paint, about
                                         ; 0.7 ms: a short line laid out again
@@ -2637,6 +2671,23 @@ NoteOldRow      equ     TapeBuf+198     ; the selection's end before a move: its
                                         ; (WRAP: the table's, else the line), NWNONE unknown
 NdRowsOnly      equ     TapeBuf+199     ; 1: the painters take NdRowLo..NdRowHi alone (NoteDrawRows)
 NwLinks         equ     TapeBuf+160     ; the sixteen links before an edit
+; the key's routes with WRAP on (lf-1597)
+NwJoined        equ     TapeBuf+196     ; lines NbHard joined this key
+NwSplit         equ     TapeBuf+200     ; 1: NoteEnter split a line this key
+NkRowLo         equ     TapeBuf+201     ; the table's rows to paint: the first (NWNONE: none yet)
+NkRowHi         equ     TapeBuf+202     ; and the last
+NkSelLo         equ     TapeBuf+203     ; NkEscape: the rows the selection covers (NWNONE: none)
+NkSelHi         equ     TapeBuf+204
+NkEnt0          equ     TapeBuf+205     ; an edit's span: its first entry
+NkEnt1          equ     TapeBuf+206     ; the entry after its old lines
+NkTail          equ     TapeBuf+207     ; the entries parked behind it
+NkRowsOld       equ     TapeBuf+208     ; NoteRows at the key's entry, for the scroll bar's marker
+NkThumb         equ     TapeBuf+209     ; the marker's row before the edit
+NkNewN          equ     TapeBuf+210     ; NwEditSpan: the lines laid out
+NkOldN          equ     TapeBuf+211     ; and the lines they replace (NkNewN first: one word)
+NkAdj           equ     TapeBuf+212     ; and the blank lines that came (+) or went (-) at the document's end
+NwRoLo          equ     TapeBuf+213     ; NwRowsOf: the cells looked for
+NwRoHi          equ     TapeBuf+214
 
 ; NZ when the table is not the live window's at its width.
 NwStale:
@@ -2736,25 +2787,51 @@ NwEditLine:
 ; the caret left when that line was laid out as far as the caret
 ; (lf-1596): a line without the caret is laid out to its text.
 NwEditLineAt:
+                ld      de,$0101                ; one line for one
+                ld      c,0                     ; the blank lines at the end as they are
+; The same over a span (lf-1597): A = a chunk of the first line, D =
+; the lines there were from it, E = the lines there are now (ENTER:
+; one became two; a join: two or more became one), C = the blank
+; lines that came (+) or went (-) at the document's end, whose
+; entries are added behind the tail or taken from it. The entries of
+; the D lines are replaced by the job's over the E lines.
+NwEditSpan:
+                ld      (NkNewN),de
+                ld      hl,NkAdj
+                ld      (hl),c
                 call    NwLineOf                ; A = the line, C = its chunk
                 ld      b,a
                 ; another line laid out as far as the caret was: ENTER
                 ; after a line that fills its last row took the caret off
                 ; it with the links unchanged, and the line keeps the
-                ; caret's empty row (lf-1564). Everything again.
+                ; caret's empty row (lf-1564). Everything again, unless
+                ; that line is one of the span's.
                 ld      a,(NwExtLine)
                 cp      NWNONE
                 jr      z,NelOwn
                 cp      c
-                jp      nz,NwInvalidate
+                jp      c,NwInvalidate          ; before the span
+                push    bc
+                call    NwOldSpanEnd            ; A = the chunk after its old lines
+                pop     bc
+                ld      hl,NwExtLine
+                cp      (hl)
+                jp      z,NwInvalidate          ; at or after it: beyond
+                jp      c,NwInvalidate
 NelOwn:
                 ld      a,b
                 push    af
                 ld      a,c
                 ld      (NwLine),a
-                call    NwLastOf
+                ld      hl,NkNewN
+                ld      b,(hl)
+NelNewEnd:
+                push    bc
+                call    NwLastOf                ; B is its own
+                pop     bc
                 inc     a
-                ld      (NwJobEnd),a            ; the chunk after the line
+                djnz    NelNewEnd
+                ld      (NwJobEnd),a            ; the chunk after the new lines
                 pop     af
                 ld      hl,NwTab
                 ld      c,0                     ; the entry
@@ -2770,13 +2847,70 @@ NelFind:
                 djnz    NelFind
 NelFound:
                 ld      a,c
-                ld      (NwTabI),a              ; the line's first row
+                ld      (NwTabI),a              ; the first line's first row
+                ld      a,(NkOldN)
+                ld      b,a
 NelEnd:
                 ld      a,(hl)
                 inc     hl
                 inc     c
                 and     NW_END
-                jr      z,NelEnd                ; C = the entry after its last
+                jr      z,NelEnd
+                djnz    NelEnd                  ; C = the entry after the old lines' last
+                ; the blank lines at the document's end: one entry each
+                ; (NW_END, nothing in it), added after the tail or taken
+                ; from its end, a line at a time
+                ld      a,(NkAdj)
+                or      a
+                jr      z,NelPark
+                jp      m,NelDrop
+                ld      b,a
+                ld      hl,NwTabN
+                ld      a,(hl)
+                add     a,b
+                cp      NWTABSZ+1
+                jp      nc,NwInvalidate         ; no room: everything again
+                ld      (hl),a
+                sub     b                       ; the entries there were
+                ld      hl,NwTab
+                add     a,l
+                ld      l,a
+                jr      nc,NelAdd
+                inc     h
+NelAdd:
+                ld      (hl),NW_END
+                inc     hl
+                djnz    NelAdd
+                jr      NelPark
+NelDrop:
+                neg
+                ld      b,a                     ; the lines to take
+                ld      hl,NwTabN
+NelDropLine:
+                ld      a,(hl)
+                cp      c
+                jp      z,NwInvalidate          ; nothing behind the span: cannot be
+                dec     (hl)                    ; the line's last entry
+NelDropRow:
+                ld      a,(hl)
+                cp      c
+                jr      z,NelDropNext           ; the tail is gone
+                push    hl
+                ld      hl,NwTab-1
+                add     a,l
+                ld      l,a
+                jr      nc,NelDropAt
+                inc     h
+NelDropAt:
+                ld      a,(hl)                  ; the entry before: another line's last?
+                pop     hl
+                and     NW_END
+                jr      nz,NelDropNext
+                dec     (hl)
+                jr      NelDropRow
+NelDropNext:
+                djnz    NelDropLine
+NelPark:
                 ld      a,(NwTabN)
                 sub     c
                 ld      (NwTailN),a
@@ -2920,7 +3054,8 @@ NccYes:
                 ret
 
 ; The sixteen links as they are, kept across an edit (NwLinksSave),
-; and Z when they are still the same (NwLinksSame).
+; and Z when they are still the same and no line was joined
+; (NwLinksSame: an empty line joined leaves them as they were).
 NwLinksSave:
                 ld      hl,NoteBuf+15
                 ld      de,NwLinks
@@ -2939,6 +3074,9 @@ NlsvNext:
                 jr      nz,NlsvLoop
                 ret
 NwLinksSame:
+                ld      a,(NwJoined)
+                or      a
+                ret     nz
                 ld      hl,NoteBuf+15
                 ld      de,NwLinks
                 ld      bc,NOTESTRIDE*256+NOTEROWS
@@ -3981,10 +4119,15 @@ NdwCaret:
 ; Before the move: NoteOldRow = the end's row, which is the caret's
 ; (the table's row with WRAP, else the line). NWNONE when the table
 ; is stale or a job is under way: the whole window then. NoteKey
-; calls it only while marking; the drag always.
+; calls it for every key with WRAP on (the caret's row before a move
+; or an edit, lf-1597), only while marking with it off; the drag
+; always.
 NoteEndRowSave:
                 ld      a,NWNONE
                 ld      (NoteOldRow),a
+                ld      a,(SetWrap)
+                or      a
+                jr      nz,NoteEndRowNow
                 ld      a,(NoteAnchor)
                 bit     7,a
                 ret     z
@@ -4039,6 +4182,9 @@ NoteEndMoved:
 NemFull:
                 xor     a
                 ret
+; NoteCaretMoved (lf-1597): the same for a caret moved without
+; marking, WRAP on; the end stays what it is.
+NoteCaretMoved:
 NemWrap:
                 ld      a,(NoteOldRow)
                 cp      NWNONE
@@ -4085,28 +4231,28 @@ NemScroll:
                 xor     a
                 ret
 NemRows:
-                ; the rows of the view from the old end's to the new,
-                ; clipped to the view: an end above or below it (the bar
-                ; scrolled the caret out) changes nothing in view beyond
+                ; the rows from the old end's to the new
+                call    NkRowsNone
+                ld      a,(NoteOldRow)
+                call    NkWiden
+                ld      a,(NoteCursorY)
+                call    NkWiden
+; NkRowLo to NkRowHi, rows of the table (or lines with WRAP off),
+; clipped to the view: a row above or below it (the bar scrolled the
+; caret out) changes nothing in view beyond. Painted into the buffer
+; (NoteDrawRows) and marked for the blit; A = 2.
+NkPaintRows:
                 ld      a,(NoteTop)
                 ld      c,a
                 ld      a,(WinH)
                 sub     3
                 ld      e,a                     ; the last row of the view
-                ld      a,(NoteOldRow)
+                ld      a,(NkRowLo)
                 call    NemClip
-                ld      b,a
-                ld      a,(NoteCursorY)
-                call    NemClip
-                cp      b
-                jr      nc,NemOrdered
-                ld      d,a
-                ld      a,b
-                ld      b,d
-NemOrdered:
-                ld      (NdRowHi),a
-                ld      a,b
                 ld      (NdRowLo),a
+                ld      a,(NkRowHi)
+                call    NemClip
+                ld      (NdRowHi),a
                 call    NoteDrawRows
                 ld      a,(NdRowHi)
                 ld      hl,NdRowLo
@@ -4133,6 +4279,419 @@ NecLow:
                 ld      a,e
                 ret
 
+; The rows to paint, gathered: none yet (NkRowsNone), A = a row
+; among them (NkWiden). The first widening sets both bounds.
+NkRowsNone:
+                ld      a,NWNONE
+                ld      (NkRowLo),a
+                xor     a
+                ld      (NkRowHi),a
+                ret
+NkWiden:
+                ld      hl,NkRowLo
+                cp      (hl)
+                jr      nc,NkwHi
+                ld      (hl),a
+NkwHi:
+                inc     hl
+                cp      (hl)
+                ret     c
+                ld      (hl),a
+                ret
+
+; ---- The keys that take the row route with WRAP on besides a
+; marking move (lf-1597): a caret move without marking (NkCaret, the
+; same as the marking move with the end left alone), ESC over a
+; selection, and an edit. Each paints when the view stays where it
+; is and composes the window the split way otherwise; the compose and
+; the blit of 24x17 in one frame dropped one at 60 Hz for each of them
+; (15.2 to 16.0 ms a cursor key, 15.5 for ESC or HOME over a selection,
+; 13.0 to 15.6 a typed key, growing with the lines).
+
+; ESC: the selection goes, and the rows it covered are painted with
+; the caret, which shows again, unless the view scrolls to the caret.
+; No selection (or no table to find its rows in): as a caret move
+; that stayed where it was.
+NkEscape:
+                call    NoteSelRows
+                call    NoteClearSelection
+                ld      a,(SetWrap)
+                or      a
+                jp      z,NkView
+                ld      a,(NkSelLo)
+                cp      NWNONE
+                jr      z,NkEscCaret
+                call    NwDerive
+                ld      a,(NoteTop)
+                ld      c,a
+                call    NwFollow
+                call    NwClamp
+                ld      hl,NoteTop
+                cp      (hl)
+                jr      nz,NkEscScroll
+                call    NkRowsNone
+                ld      a,(NoteCursorY)
+                call    NkWiden
+                ld      a,(NkSelLo)
+                call    NkWiden
+                ld      a,(NkSelHi)
+                call    NkWiden
+                jp      NkPaintRows
+NkEscScroll:
+                call    NoteScroll
+                jp      NoteRecomposeSplit
+NkEscCaret:
+                call    NoteCaretMoved
+                jp      NkRoute
+
+; The rows a selection covers, for the key that takes it away: NkSelLo
+; = the table's row of its first cell, NkSelHi = that of its last;
+; NkSelLo = NWNONE with no selection, WRAP off, or no table that
+; serves (stale, or a job under way).
+NoteSelRows:
+                ld      a,NWNONE
+                ld      (NkSelLo),a
+                ld      a,(SetWrap)
+                or      a
+                ret     z
+                ld      a,(NwBusy)
+                or      a
+                ret     nz
+                call    NwStale
+                ret     nz
+                call    NoteSelectionBounds     ; B = the lower, C = the upper bound
+                ret     z
+; B = a packed cell, C = an exclusive upper bound: NkSelLo = the row
+; the cell is on, NkSelHi = the row of the cell before the bound: for
+; each, the last row that starts at or before it, as the painter's
+; inverse (NwpSel) has them. One walk over the table, in registers,
+; stopped at the first row that starts past the bound.
+NwRowsOf:
+                ld      a,b
+                ld      (NwRoLo),a
+                ld      a,c
+                dec     a
+                ld      (NwRoHi),a
+                xor     a
+                ld      (NkSelLo),a
+                ld      (NkSelHi),a
+                ld      a,(NwTabN)
+                or      a
+                ret     z
+                ld      b,a
+                ld      hl,NwTab
+                ld      de,NoteBuf+15
+                ld      c,0
+NroLoop:
+                push    hl
+                push    bc
+                call    NwCharAt                ; HL = the row's first character
+                ld      bc,NoteBuf
+                or      a
+                sbc     hl,bc
+                ld      a,l                     ; its packed cell
+                pop     bc
+                pop     hl
+                push    hl
+                push    af
+                ld      hl,NwRoLo
+                cp      (hl)
+                jr      z,NroLo
+                jr      nc,NroHi                ; the row starts after the cell
+NroLo:
+                ld      a,(NwTabN)
+                sub     b                       ; the row
+                ld      (NkSelLo),a
+NroHi:
+                pop     af
+                ld      hl,NwRoHi
+                cp      (hl)
+                jr      z,NroHiSet
+                jr      nc,NroDone              ; past the bound: no row further on
+NroHiSet:
+                ld      a,(NwTabN)
+                sub     b
+                ld      (NkSelHi),a
+                pop     hl
+                ld      a,(hl)
+                inc     hl
+                call    NwAdvRow
+                djnz    NroLoop
+                ret
+NroDone:
+                pop     hl
+                ret
+
+; An edit (NkEdited): a job over the lines it changed, given a table
+; that serves and no job under way. Carry when it started. The old
+; lines are the caret's and one more for each line NbHard joined into
+; it; the new are that one, or two after ENTER split it, and after a
+; split the chunk before the caret's is in the first. The blank lines
+; at the document's end change with the chunks the edit took or freed
+; (an inserted chunk pushes the last one out, a reclaimed one comes
+; back blank): their count is the links taken away, less the lines the
+; span lost. A job under way has the text as it was: everything again
+; (as NwEditLine); another window's table serves it still.
+NkEditSpan:
+                ld      a,(NwBusy)
+                or      a
+                jr      nz,NesBusy
+                call    NwStale
+                jr      nz,NesNo
+                ld      a,(NwJoined)
+                inc     a
+                ld      d,a                     ; the old lines
+                ld      e,1                     ; the new
+                ld      a,(NwSplit)
+                or      a
+                jr      z,NesLines
+                inc     e
+NesLines:
+                push    de
+                ld      hl,NwLinks
+                ld      b,NOTEROWS
+                xor     a
+NesOld:
+                add     a,(hl)
+                inc     hl
+                djnz    NesOld
+                ld      hl,NoteBuf+15
+                ld      de,NOTESTRIDE
+                ld      b,NOTEROWS
+NesNew:
+                sub     (hl)
+                add     hl,de
+                djnz    NesNew                  ; A = the links taken away
+                pop     de
+                add     a,d
+                sub     e
+                ld      c,a                     ; the tail's blank lines, more or fewer
+                ld      a,(NoteCY)
+                dec     e
+                jr      z,NesChunk
+                dec     a                       ; split: the chunk before the caret's
+NesChunk:
+                inc     e
+                call    NwEditSpan
+                ld      a,(NwBusy)              ; or everything again
+                or      a
+                ret     z
+                ld      a,(NwTabI)
+                ld      (NkEnt0),a              ; the span's first entry
+                ld      a,(NwTailN)
+                ld      (NkTail),a
+                ld      b,a
+                ld      a,(NwTabN)
+                sub     b
+                ld      (NkEnt1),a              ; the entry after the old lines
+                ld      hl,NkEnt0
+                ; the job here, over a span of NKSPANMAX rows at most (about
+                ; 3 ms for four rows of 22 and the one a split or a wrap
+                ; adds). A longer line is the service's over the frames to
+                ; come, a budget a frame, and the window is composed when it
+                ; is done, as before: a document of one line of sixteen
+                ; chunks typed at the home size was 25 ms a key with its
+                ; seventeen rows laid out here, and 15.6 to 16.3 with one
+                ; budget's worth here and the service's on top (wrap-full).
+                sub     (hl)                    ; the old lines' rows (HL = NkEnt0)
+                cp      NKSPANMAX+1
+                jr      nc,NesNo
+NesRun:
+                call    NwStep
+                jr      nz,NesRun
+                scf
+                ret
+NesBusy:
+                call    NwInvalidate
+NesNo:
+                or      a
+                ret
+
+; C = a line's first chunk: A = the chunk after NkOldN lines from it,
+; by the links as they were before the edit.
+NwOldSpanEnd:
+                ld      a,(NkOldN)
+                ld      b,a
+                ld      hl,NwLinks
+                ld      a,c
+                add     a,l
+                ld      l,a
+                jr      nc,NoseGo
+                inc     h
+NoseGo:
+                ld      a,c
+NoseLoop:
+                cp      NOTEROWS
+                ret     nc
+                ld      c,(hl)
+                inc     hl
+                inc     a
+                inc     c
+                dec     c
+                jr      nz,NoseLoop             ; the line goes on
+                djnz    NoseLoop
+                ret
+
+; NkEditSpan ran the job (NkEnt0, NkEnt1 and NkTail from before it):
+; the caret is derived from the new table, and when the top stays
+; and the scroll bar neither comes nor goes, the rows of the lines
+; laid out (the old ones and the new, whichever reach lower; with
+; text below them shifting the window is composed instead) and the
+; caret's row before the edit are painted and marked, the bar's
+; marker moved along: A = 2. Else A = 0 with the scroll decided for
+; the compose the caller arranges. A selection the edit took away
+; lay within those lines: its rows are theirs.
+NoteEditRows:
+                ; a join (BS or DEL at a line's end, a selection over
+                ; lines erased): the lines below move up and the join
+                ; itself is 3.4 ms of the frame (lf-1583); the window is
+                ; composed the split way. Painted in the key's frame the
+                ; join of two lines of 19 at the home size was 16 ms, a
+                ; frame dropped at 60 Hz (fb-join-bs).
+                ld      a,(NwJoined)
+                or      a
+                jp      nz,NerScroll
+                call    NwDerive
+                ld      a,(NoteTop)
+                ld      c,a
+                call    NwFollow
+                call    NwClamp
+                ld      hl,NoteTop
+                cp      (hl)
+                jp      nz,NerScroll
+                call    NkRowsNone
+                ld      a,(NoteCursorY)
+                call    NkWiden
+                ld      a,(NoteOldRow)
+                cp      NWNONE
+                call    nz,NkWiden
+                ld      a,(NkEnt0)
+                call    NkWiden
+                ld      a,(NkTail)
+                ld      b,a
+                ld      a,(NwTabN)
+                sub     b                       ; the entry after the new lines
+                ld      hl,NkEnt1
+                cp      (hl)
+                jr      z,NerLast               ; as many rows: the span's last
+                ; The rows below shift. Painted and blitted within the
+                ; key's frame they were 20.1 ms for ENTER at the top of
+                ; the 24x17 view (3.2 ms blanking, 2.7 painting, 4.7
+                ; blitting the fifteen rows), so the window is composed
+                ; the split way then, unless every row after the span is
+                ; empty (the lines after the text, while typing): those
+                ; show nothing shifting, and the span's rows and the old
+                ; ones, whichever reach lower, are enough.
+                call    NwTailBlank             ; from the new span's end on
+                jp      nz,NerScroll
+                ld      hl,NkEnt1
+                cp      (hl)
+                jr      nc,NerLast
+                ld      a,(hl)                  ; the old rows reached lower
+NerLast:
+                dec     a
+                call    NkWiden
+NerBar:
+                ; the scroll bar's marker for the rows there were and the
+                ; rows there are: the same, moved (its two cells, their
+                ; rows blitted) or the bar comes or goes (the compose)
+                ld      a,(NkRowsOld)
+                ld      hl,NoteRows
+                cp      (hl)
+                jp      z,NkPaintRows
+                ld      b,a
+                call    NoteBarThumb
+                ld      (NkThumb),a
+                ld      a,(NoteRows)
+                ld      b,a
+                call    NoteBarThumb
+                ld      hl,NkThumb
+                cp      (hl)
+                jp      z,NkPaintRows
+                or      a
+                jr      z,NerScroll             ; the bar goes
+                ld      b,(hl)
+                inc     b
+                dec     b
+                jr      z,NerScroll             ; or comes
+                ld      c,a
+                push    bc
+                ld      a,b
+                call    NerThumbRow
+                pop     bc
+                push    bc
+                ld      a,c
+                call    NerThumbRow
+                pop     bc
+                push    bc
+                ld      a,(WinW)
+                dec     a
+                ld      c,a
+                call    WinCell                 ; B = the old marker's row
+                ld      (hl),'|'
+                pop     bc
+                ld      b,c
+                ld      a,(WinW)
+                dec     a
+                ld      c,a
+                call    WinCell                 ; the new
+                ld      (hl),' '+INVBANK
+                jp      NkPaintRows
+NerThumbRow:
+                ; A = a row of the bar (the window's): the table's row on it
+                ld      hl,NoteTop
+                add     a,(hl)
+                dec     a
+                jp      NkWiden
+NerScroll:
+                call    NoteScroll
+                xor     a
+                ret
+
+; B = a count of rows: A = the window row of the scroll bar's marker
+; for it, with the top as it is, or 0 when there is no bar (the rows
+; fit the view), as WndScrollBar places it.
+NoteBarThumb:
+                ld      a,(WinH)
+                sub     2
+                ld      c,a                     ; the rows in view
+                cp      b
+                jr      c,NbtBar
+                xor     a
+                ret
+NbtBar:
+                ld      a,(NoteTop)
+                ld      (ScrFirst),a
+                call    ScrPosition
+                ld      a,(ScrThumb)
+                ret
+
+; A = an entry: NZ when one of the table's rows from it on has text
+; (a row of a line without the caret is never spaces alone), Z when
+; they are all empty rows. A is kept.
+NwTailBlank:
+                ld      (NwRoLo),a
+                ld      hl,NwTabN
+                ld      b,a
+                ld      a,(hl)
+                sub     b
+                jr      z,NtbDone               ; none: Z, blank
+                jr      c,NtbDone               ; (cannot be) Z as well
+                ld      hl,NwTab
+                ld      c,b
+                ld      b,0
+                add     hl,bc
+                ld      b,a
+                xor     a
+NtbLoop:
+                or      (hl)
+                inc     hl
+                djnz    NtbLoop
+                and     NW_LEN
+NtbDone:
+                ld      a,(NwRoLo)              ; the flags stand
+                ret
+
 ; The whole window for a key that moved the selection's end and
 ; scrolled the view, or SELECT over a selection there was: nothing
 ; this frame (RepaintLater), the compose the next frame and the blit
@@ -4157,14 +4716,23 @@ NoteRecomposeSplit:
 NoteDrawRows:
                 ld      a,1
                 ld      (NdRowsOnly),a
-                call    NoteBlankRows
                 ld      a,(SetWrap)
                 or      a
                 jr      nz,NdrWrap
+                call    NoteBlankRows
                 jp      NdWalk                  ; the chunks on those rows, the caret
 NdrWrap:
+                ; the painter pads its rows to the edge, as at the home
+                ; size (WdFull): blanking them first was 0.23 ms a row
+                ; (lf-1597)
+                ld      a,(WdFull)
+                push    af
+                ld      a,1
+                ld      (WdFull),a
                 call    NdwSelect
                 call    NwPaint
+                pop     af
+                ld      (WdFull),a
                 jp      NdwCaret
 
 ; ---- Up and down move a screen row, keeping the column where the
@@ -4529,8 +5097,13 @@ NselEmpty:
                 xor     a
                 ret
 
-; Delete backwards so the lower endpoint remains stable while chunks
-; above it are reclaimed and hard line breaks are joined.
+; A selection within one line goes in one pass (lf-1597): the caret at
+; the lower bound and NoteDeleteN over the characters between the
+; bounds, the chunk ends between them not counted, then the tail
+; reclaimed once; a BS a character was a pass over the rest of the
+; line each, 0.4 ms a character. Over a line end it is deleted
+; backwards as before, so the lower endpoint remains stable while
+; chunks above it are reclaimed and hard line breaks are joined.
 NoteEraseSelection:
                 call    NoteSelectionBounds
                 jr      nz,NesSelected
@@ -4538,6 +5111,69 @@ NoteEraseSelection:
                 xor     a
                 ret
 NesSelected:
+                push    bc
+                ld      a,c
+                and     $F0
+                ld      c,a
+                ld      a,b
+                and     $F0
+                ld      b,a
+                ld      a,c
+                sub     b
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ld      (NoteJoinAt),a          ; the chunk ends between the bounds
+                ld      a,b
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ld      c,a                     ; the lower bound's chunk
+                ld      a,(NoteJoinAt)
+                ld      b,a
+                or      a
+                jr      z,NesOneLine
+NesLinks:
+                ld      a,c
+                push    bc
+                call    NoteLinkAddr
+                pop     bc
+                ld      a,(hl)
+                or      a
+                jr      z,NesByChar             ; a line ends between them
+                inc     c
+                djnz    NesLinks
+NesOneLine:
+                pop     bc
+                ld      a,c
+                sub     b
+                ld      c,a
+                ld      a,(NoteJoinAt)
+                add     a,a
+                neg
+                add     a,c                     ; the characters between the bounds
+                ld      (NoteDeleteCount),a
+                ld      a,b
+                and     $0F
+                ld      (NoteCX),a
+                ld      a,b
+                rrca
+                rrca
+                rrca
+                rrca
+                and     $0F
+                ld      (NoteCY),a
+                call    NoteUndoDue             ; as NoteBack has it, once
+                call    NoteDeleteN
+                call    NoteTrimTail
+                call    NoteMarkEdited
+                jr      NesCleared
+NesByChar:
+                pop     bc
                 ld      a,b
                 push    af
                 ld      a,c
@@ -4563,6 +5199,7 @@ NesLoop:
                 jr      NesLoop
 NesDone:
                 pop     af
+NesCleared:
                 call    NoteClearSelection
                 ld      a,1
                 or      a
