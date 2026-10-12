@@ -3018,6 +3018,24 @@ def tape_import_checks(ts, rom, fails):
     r = run(i_key, "imp-name-long", tape_blocks([("ABCDEFGHIJKL", alpha)]))
     check(fails, "imp-name-long", ram_files(r) == [b"ABCDEFGHIJKL"] and r.bytes("RamHeap", 256) == alpha,
           f"RAM {ram_files(r)}")
+    # A over two refused names and a third file: both become NOTE, but
+    # the tape-came-round stop compares the header's name, so C*D
+    # replaces A*B's NOTE and GAMMA follows (lf-1602); on 0850c2d the
+    # second NOTE passed for the first name and GAMMA was never read
+    r = run(a_key, "imp-note-twice", tape_blocks([("A*B", alpha), ("C*D", beta), ("GAMMA", gamma)]))
+    check(fails, "imp-note-twice", ram_files(r) == [b"NOTE", b"GAMMA"] and r.bytes("RamHeap", 512) == beta + gamma
+          and r.peek("CmdStatus") == 11 and left(r) == 0 and r.peek("DgOpenFlag") == 0,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left, "
+          f"512 bytes crc32 {zlib.crc32(r.bytes('RamHeap', 512)):08x}")
+    # the same name with other bytes behind its terminator is the first
+    # name again: the compare ends at the terminator, so A stops there
+    # and ALPHA keeps the first payload
+    tail = b"MSXT" + b"ALPHA\0JUNKJUN" + len(other).to_bytes(2, "little")
+    r = run(a_key, "imp-same-tail", tape_blocks([("ALPHA", alpha), ("BETA", beta), tail, other]))
+    check(fails, "imp-same-tail", ram_files(r) == [b"ALPHA", b"BETA"] and r.bytes("RamHeap", 512) == alpha + beta
+          and r.peek("CmdStatus") == 11 and left(r) == 0,
+          f"RAM {ram_files(r)}, status {r.peek('CmdStatus')}, {left(r)} blocks left, "
+          f"512 bytes crc32 {zlib.crc32(r.bytes('RamHeap', 512)):08x}")
     # I and A on a pane that is not the tape mean nothing
     r = run(tab + i_key + a_key, "imp-not-tape", tape_blocks([("ALPHA", alpha)]))
     check(fails, "imp-not-tape", ram_files(r) == [] and r.peek("CmdStatus") == 0 and left(r) == 2,

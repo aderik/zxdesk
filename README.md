@@ -2689,6 +2689,7 @@ the default suite, on the TAPE=1 ROM) asserts, each from boot:
 | imp-abort-esc, imp-abort-space | ESC or SPACE held while A runs: ALPHA imported, BETA not read, IMPORT STOPPED |
 | imp-prn | P then I: PRN IS NO TARGET, nothing read, the PRN header |
 | imp-name-space, imp-name-long | `MY FILE` arrives as NOTE, `ABCDEFGHIJKL` as itself on RAM |
+| imp-note-twice, imp-same-tail | A over `A*B`, `C*D`, GAMMA: NOTE holds C*D's bytes, GAMMA follows, IMPORTED, none left; a third header `ALPHA` with other bytes behind its terminator and another payload is the first name again: ALPHA and BETA as first written, none left |
 | imp-not-tape | I and A on the RAM pane: nothing |
 | imp-open-disk, imp-disk-screen, imp-name-long-disk, imp-disk-full (Roms_MSX1 + Roms_Disk) | B B B TAB puts the right pane on TAPE; I writes ALPHA to the FAT12 image and TAB, ENTER opens it from the disk pane, owned by the disk; the screen; the twelve-character name is NOTE on the disk; a disk without free clusters: the alert, the image as it was |
 
@@ -2727,3 +2728,19 @@ waits for a leader, as a notepad OPEN without a cassette does. With
 the fix `./test.sh` is 766 ok on C-BIOS_MSX1_EU and 756 ok on
 C-BIOS_MSX1_JP (`--tape-import` 20); crc32 of the padded ROMs: normal
 **c07b1605**, TEST **550efb04**, TAPE=1 **c7cde283**.
+
+**The tape-came-round stop and the NOTE fallback (lf-1602).** Seen by
+dev3 testing lf-1598: A over `A*B`, `C*D`, `GAMMA` imported one NOTE
+and stopped, two blocks left. The first name was kept from `CmdWork`
+after `CmdImportName`'s NOTE fallback and compared over all 13 bytes,
+so the second refused name was `NOTE` too and passed for the first
+name coming round; `MY FILE` and `OTHER ONE` only differed in the
+header bytes left behind the terminator (`NOTE\0LE`). The name kept
+and compared is now the header's own, `TapeIn+4` as the tape holds it,
+and the compare ends at the terminator, so what a header carries
+behind the name is not part of it. The "anything written yet" flag
+moved from the name's first byte to `TapeHdr+17`, the length field,
+free as the name field is while no tape file is open. `imp-note-twice`
+and `imp-same-tail` assert both halves; on `0850c2d`'s source both
+fail on EU and JP (one NOTE, two blocks left; ALPHA rewritten). ROM
++7 bytes in each build, RAM and the heap unchanged.
